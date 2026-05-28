@@ -89,6 +89,7 @@
   align-items: center;
   width: 100%;
   min-width: 0;
+  box-sizing: border-box;
   padding: 4px 8px;
   background: var(--jp-layout-color2);
   border: none;
