@@ -51,14 +51,6 @@ function jsonBody(body: any): RequestInit {
   };
 }
 
-function jsonDeleteBody(body: any): RequestInit {
-  return {
-    method: 'DELETE',
-    body: JSON.stringify(body),
-    headers: { 'Content-Type': 'application/json' }
-  };
-}
-
 // --------------------------------------------------------------------------- //
 // Info
 // --------------------------------------------------------------------------- //
@@ -110,7 +102,9 @@ export function removeShareItems(
   id: string,
   names: string[]
 ): Promise<IShare> {
-  return requestAPI(`api/shares/${id}/items`, s, jsonDeleteBody({ names }));
+  // Names go in query params - DELETE bodies are unreliable through proxies
+  const qs = names.map(n => `name=${encodeURIComponent(n)}`).join('&');
+  return requestAPI(`api/shares/${id}/items?${qs}`, s, { method: 'DELETE' });
 }
 
 // --------------------------------------------------------------------------- //
@@ -139,7 +133,9 @@ export function removeRequestUpload(
   uploader: string,
   name: string
 ): Promise<IRequest> {
-  return requestAPI(`api/requests/${id}/uploads`, s, jsonDeleteBody({ uploader, name }));
+  const qs =
+    `uploader=${encodeURIComponent(uploader)}&name=${encodeURIComponent(name)}`;
+  return requestAPI(`api/requests/${id}/uploads?${qs}`, s, { method: 'DELETE' });
 }
 
 export function markRequestSeen(

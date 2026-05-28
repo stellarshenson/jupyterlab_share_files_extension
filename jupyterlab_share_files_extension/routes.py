@@ -230,10 +230,16 @@ class ShareItemsHandler(_Base):
 
     @tornado.web.authenticated
     def delete(self, id_):
-        body = self.get_json_body() or {}
-        names = body.get("names") or []
-        if not isinstance(names, list) or not names:
-            return self.write_error_json(400, "'names' must be a non-empty list")
+        """Remove items from a share.
+
+        Names come via query parameters (`?name=foo&name=bar`) rather than
+        request body - browsers' fetch() does send DELETE bodies, but the
+        downstream Jupyter ServerConnection layer can drop them, and many
+        proxies strip them too. Query params are universally reliable.
+        """
+        names = [n for n in self.get_arguments("name") if n]
+        if not names:
+            return self.write_error_json(400, "Pass at least one ?name=...")
         try:
             manifest = self.share_store.remove_items(id_, names)
         except NotFoundError as exc:
@@ -288,11 +294,11 @@ class RequestItemHandler(_Base):
 class RequestUploadsHandler(_Base):
     @tornado.web.authenticated
     def delete(self, id_):
-        body = self.get_json_body() or {}
-        uploader = body.get("uploader")
-        name = body.get("name")
+        """Remove an upload. Pass uploader and name as query params, not body."""
+        uploader = self.get_argument("uploader", default="")
+        name = self.get_argument("name", default="")
         if not uploader or not name:
-            return self.write_error_json(400, "Missing 'uploader' or 'name'")
+            return self.write_error_json(400, "Missing ?uploader=... or ?name=...")
         try:
             manifest = self.request_store.remove_upload(id_, uploader, name)
         except NotFoundError as exc:
