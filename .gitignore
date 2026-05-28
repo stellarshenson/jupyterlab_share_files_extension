@@ -15,6 +15,9 @@ jupyterlab_share_files_extension/_version.py
 ui-tests/test-results/
 ui-tests/playwright-report/
 
+# Playwright MCP artefacts (screenshots, console logs) from in-session checks
+.playwright-mcp/
+
 # Created by https://www.gitignore.io/api/python
 # Edit at https://www.gitignore.io/?templates=python
 
