@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Share Files</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
+    background: #f5f7fa;
+    color: #1f2937;
+    min-height: 100vh;
+  }
+  main {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 32px 24px;
+  }
+  header {
+    margin-bottom: 24px;
+  }
+  h1 {
+    margin: 0 0 4px;
+    font-size: 24px;
+    font-weight: 600;
+  }
+  .meta {
+    margin: 0;
+    color: #6b7280;
+    font-size: 14px;
+  }
+  .panel {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid #f3f4f6;
+    font-size: 14px;
+  }
+  .row:last-child { border-bottom: none; }
+  .row .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row .size {
+    color: #9ca3af;
+    font-size: 12px;
+    margin-right: 12px;
+  }
+  .row .indent { display: inline-block; width: 20px; }
+  .row .twisty {
+    display: inline-block;
+    width: 16px;
+    text-align: center;
+    cursor: pointer;
+    color: #9ca3af;
+    user-select: none;
+    margin-right: 4px;
+  }
+  .row .icon {
+    width: 16px;
+    height: 16px;
+    margin-right: 8px;
+    flex-shrink: 0;
+  }
+  .btn {
+    background: #3b82f6;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  .btn:hover { background: #2563eb; }
+  .btn:disabled { background: #93c5fd; cursor: not-allowed; }
+  .btn.secondary { background: #e5e7eb; color: #1f2937; }
+  .btn.secondary:hover { background: #d1d5db; }
+  .actions {
+    margin-top: 16px;
+    display: flex;
+    gap: 8px;
+  }
+  .dropzone {
+    border: 2px dashed #d1d5db;
+    border-radius: 8px;
+    padding: 48px 24px;
+    text-align: center;
+    background: #ffffff;
+    transition: all 0.15s;
+  }
+  .dropzone.drag-over {
+    border-color: #3b82f6;
+    background: #eff6ff;
+  }
+  .dropzone p {
+    margin: 0 0 12px;
+    color: #6b7280;
+    font-size: 15px;
+  }
+  .dropzone input[type=file] {
+    display: none;
+  }
+  .progress {
+    margin-top: 16px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 12px 16px;
+    font-size: 13px;
+  }
+  .progress-bar {
+    height: 6px;
+    background: #e5e7eb;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 8px;
+  }
+  .progress-bar > div {
+    height: 100%;
+    background: #3b82f6;
+    transition: width 0.2s;
+  }
+  .status {
+    margin-top: 16px;
+    padding: 12px 16px;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .status.ok { background: #d1fae5; color: #065f46; }
+  .status.err { background: #fee2e2; color: #991b1b; }
+  footer {
+    margin-top: 32px;
+    text-align: center;
+    color: #9ca3af;
+    font-size: 12px;
+  }
+  .empty {
+    padding: 24px;
+    text-align: center;
+    color: #9ca3af;
+    font-size: 14px;
+  }
+</style>
+<script>
+  window.__SHARE_FILES_CONTEXT__ = __CONTEXT__;
+</script>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Loading...</h1>
+    <p class="meta" id="meta"></p>
+  </header>
+  <section id="content"></section>
+  <footer>Share Files - JupyterLab Extension</footer>
+</main>
+<script>
+(function() {
+  const ctx = window.__SHARE_FILES_CONTEXT__;
+  const titleEl = document.getElementById('title');
+  const metaEl = document.getElementById('meta');
+  const contentEl = document.getElementById('content');
+
+  function fmtSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+    if (bytes < 1024*1024*1024) return (bytes/(1024*1024)).toFixed(1) + ' MB';
+    return (bytes/(1024*1024*1024)).toFixed(1) + ' GB';
+  }
+
+  function api(path) {
+    return ctx.api_base.replace(/\/$/, '') + '/' + ctx.kind + '/' + ctx.id + path;
+  }
+
+  if (ctx.kind === 'share') {
+    loadShare();
+  } else if (ctx.kind === 'request') {
+    loadRequest();
+  }
+
+  async function loadShare() {
+    try {
+      const r = await fetch(api('/manifest'));
+      if (!r.ok) throw new Error('Share unavailable');
+      const m = await r.json();
+      titleEl.textContent = m.name;
+      const totalSize = (m.entries || []).reduce((a, e) => a + (e.size || 0), 0);
+      metaEl.textContent = (m.entries || []).length + ' item(s) - ' + fmtSize(totalSize);
+      renderShare(m);
+    } catch (err) {
+      titleEl.textContent = 'Share unavailable';
+      metaEl.textContent = err.message || 'Could not load this share';
+    }
+  }
+
+  function renderShare(m) {
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    if (!m.entries || m.entries.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = 'This share is empty.';
+      panel.appendChild(empty);
+    } else {
+      for (const e of m.entries) {
+        panel.appendChild(renderEntry(e));
+      }
+    }
+    contentEl.appendChild(panel);
+
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const allBtn = document.createElement('a');
+    allBtn.className = 'btn';
+    allBtn.textContent = 'Download All as ZIP';
+    allBtn.href = api('/download-all');
+    actions.appendChild(allBtn);
+    contentEl.appendChild(actions);
+  }
+
+  function renderEntry(entry) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const isDir = entry.type === 'directory';
+    const icon = document.createElement('span');
+    icon.className = 'icon';
+    icon.textContent = isDir ? '📁' : '📄';
+    row.appendChild(icon);
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = entry.name;
+    row.appendChild(name);
+    const size = document.createElement('span');
+    size.className = 'size';
+    size.textContent = fmtSize(entry.size || 0);
+    row.appendChild(size);
+    const dl = document.createElement('a');
+    dl.className = 'btn secondary';
+    dl.textContent = isDir ? 'Download ZIP' : 'Download';
+    dl.href = api('/download/' + encodeURIComponent(entry.name));
+    row.appendChild(dl);
+    return row;
+  }
+
+  async function loadRequest() {
+    try {
+      const r = await fetch(api('/manifest'));
+      if (!r.ok) throw new Error('Request unavailable');
+      const m = await r.json();
+      titleEl.textContent = m.name;
+      metaEl.textContent = 'Drop files below to upload';
+      renderRequest(m);
+    } catch (err) {
+      titleEl.textContent = 'Request unavailable';
+      metaEl.textContent = err.message || 'Could not load this request';
+    }
+  }
+
+  function renderRequest(m) {
+    const wrap = document.createElement('div');
+
+    const uploaderRow = document.createElement('div');
+    uploaderRow.style.marginBottom = '12px';
+    uploaderRow.innerHTML = '<label style="font-size:13px;color:#6b7280;display:block;margin-bottom:4px;">Your name (optional)</label>';
+    const uploaderInput = document.createElement('input');
+    uploaderInput.type = 'text';
+    uploaderInput.placeholder = 'anonymous';
+    uploaderInput.style.cssText = 'width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;';
+    uploaderRow.appendChild(uploaderInput);
+    wrap.appendChild(uploaderRow);
+
+    const dropzone = document.createElement('div');
+    dropzone.className = 'dropzone';
+    dropzone.innerHTML = '<p>Drop files here to upload</p>';
+    const browseBtn = document.createElement('button');
+    browseBtn.className = 'btn secondary';
+    browseBtn.textContent = 'Browse files...';
+    dropzone.appendChild(browseBtn);
+
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.multiple = true;
+    dropzone.appendChild(fileInput);
+    wrap.appendChild(dropzone);
+
+    const progressContainer = document.createElement('div');
+    wrap.appendChild(progressContainer);
+
+    browseBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      fileInput.click();
+    });
+    fileInput.addEventListener('change', () => {
+      handleFiles(Array.from(fileInput.files), uploaderInput.value || 'anonymous', progressContainer);
+      fileInput.value = '';
+    });
+    dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropzone.classList.add('drag-over');
+    });
+    dropzone.addEventListener('dragleave', () => {
+      dropzone.classList.remove('drag-over');
+    });
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('drag-over');
+      const files = [];
+      if (e.dataTransfer.items) {
+        for (const item of e.dataTransfer.items) {
+          if (item.kind === 'file') {
+            const f = item.getAsFile();
+            if (f) files.push(f);
+          }
+        }
+      } else {
+        for (const f of e.dataTransfer.files) files.push(f);
+      }
+      handleFiles(files, uploaderInput.value || 'anonymous', progressContainer);
+    });
+
+    contentEl.appendChild(wrap);
+  }
+
+  async function handleFiles(files, uploader, container) {
+    for (const file of files) {
+      await uploadOne(file, uploader, container);
+    }
+  }
+
+  function uploadOne(file, uploader, container) {
+    return new Promise((resolve) => {
+      const progress = document.createElement('div');
+      progress.className = 'progress';
+      progress.innerHTML = '<div class="row"><span class="name">' + escapeHtml(file.name) + '</span><span class="size">' + fmtSize(file.size) + '</span></div><div class="progress-bar"><div style="width:0%"></div></div>';
+      container.appendChild(progress);
+      const bar = progress.querySelector('.progress-bar > div');
+
+      const fd = new FormData();
+      fd.append('file', file, file.webkitRelativePath || file.name);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', api('/upload?uploader=' + encodeURIComponent(uploader)));
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          bar.style.width = ((e.loaded / e.total) * 100).toFixed(0) + '%';
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          bar.style.width = '100%';
+          const status = document.createElement('div');
+          status.className = 'status ok';
+          status.textContent = 'Uploaded: ' + file.name;
+          container.appendChild(status);
+        } else {
+          const status = document.createElement('div');
+          status.className = 'status err';
+          status.textContent = 'Failed: ' + file.name + ' (' + xhr.status + ')';
+          container.appendChild(status);
+        }
+        resolve();
+      };
+      xhr.onerror = () => {
+        const status = document.createElement('div');
+        status.className = 'status err';
+        status.textContent = 'Network error: ' + file.name;
+        container.appendChild(status);
+        resolve();
+      };
+      xhr.send(fd);
+    });
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+})();
+</script>
+</body>
+</html>

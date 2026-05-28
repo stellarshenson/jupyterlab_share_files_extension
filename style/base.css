@@ -1,5 +1,482 @@
 /*
-    See the JupyterLab Developer Guide for useful CSS Patterns:
+ * Share Files - side panel styles
+ * Uses JupyterLab CSS variables so the panel inherits the user's theme,
+ * font family and font sizes.
+ */
 
-    https://jupyterlab.readthedocs.io/en/stable/developer/css.html
-*/
+.jp-ShareFilesPanel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--jp-layout-color1);
+  color: var(--jp-ui-font-color1);
+  font-family: var(--jp-ui-font-family);
+  font-size: var(--jp-ui-font-size1);
+}
+
+.jp-ShareFilesPanel-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--jp-border-color2);
+  background: var(--jp-layout-color1);
+  flex-shrink: 0;
+}
+
+.jp-ShareFilesPanel-headerTitle {
+  flex: 1;
+  font-weight: 600;
+  font-size: var(--jp-ui-font-size1);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--jp-ui-font-color1);
+}
+
+.jp-ShareFilesPanel-iconButton {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  color: var(--jp-ui-font-color2);
+}
+
+.jp-ShareFilesPanel-iconButton:hover {
+  background: var(--jp-layout-color2);
+  color: var(--jp-ui-font-color0);
+}
+
+.jp-ShareFilesPanel-iconButton svg {
+  width: 16px;
+  height: 16px;
+}
+
+.jp-ShareFilesPanel-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.jp-ShareFilesPanel-section {
+  border-bottom: 1px solid var(--jp-border-color2);
+  flex-shrink: 0;
+}
+
+/* Section header rendered as a subtle named divider:
+ *   ────────  My Shares  (2)  ──────────
+ * No triangle. Background blends with the panel, with a thin border line
+ * extending on either side of the label.
+ */
+.jp-ShareFilesPanel-sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 4px;
+  cursor: pointer;
+  background: transparent;
+  font-size: var(--jp-ui-font-size0);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--jp-ui-font-color2);
+  user-select: none;
+}
+
+.jp-ShareFilesPanel-sectionHeader:hover {
+  color: var(--jp-ui-font-color1);
+}
+
+.jp-ShareFilesPanel-sectionHeader::before,
+.jp-ShareFilesPanel-sectionHeader::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--jp-border-color2);
+}
+
+/* hidden in this design - kept for backwards compat with existing markup */
+.jp-ShareFilesPanel-sectionTwisty {
+  display: none;
+}
+
+.jp-ShareFilesPanel-sectionTitle {
+  flex: 0 0 auto;
+}
+
+.jp-ShareFilesPanel-sectionCount {
+  flex: 0 0 auto;
+  color: var(--jp-ui-font-color3);
+  font-weight: normal;
+}
+
+/* When the section is collapsed, dim the label slightly */
+.jp-ShareFilesPanel-section.jp-mod-collapsed .jp-ShareFilesPanel-sectionHeader {
+  color: var(--jp-ui-font-color3);
+}
+
+.jp-ShareFilesPanel-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.jp-ShareFilesPanel-empty {
+  padding: 12px 16px;
+  color: var(--jp-ui-font-color3);
+  font-size: var(--jp-ui-font-size0);
+  font-style: italic;
+}
+
+/* Item rows (shares, requests, connections) */
+.jp-ShareFilesPanel-item {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+}
+
+.jp-ShareFilesPanel-item.jp-mod-dropTarget {
+  background: var(--jp-brand-color3, rgba(33, 150, 243, 0.18));
+  outline: 2px solid var(--jp-brand-color1);
+  outline-offset: -2px;
+}
+
+.jp-ShareFilesPanel-item.jp-mod-dropTarget .jp-ShareFilesPanel-itemName::after {
+  content: ' ← drop to add';
+  color: var(--jp-brand-color1);
+  font-size: var(--jp-ui-font-size0);
+  font-weight: 600;
+  margin-left: 6px;
+}
+
+.jp-ShareFilesPanel-itemHeader {
+  display: flex;
+  align-items: center;
+  padding: 5px 10px;
+  cursor: pointer;
+  user-select: none;
+  min-height: 24px;
+}
+
+.jp-ShareFilesPanel-itemHeader:hover {
+  background: var(--jp-layout-color2);
+}
+
+.jp-ShareFilesPanel-itemTwisty {
+  width: 12px;
+  text-align: center;
+  font-size: var(--jp-ui-font-size0);
+  line-height: 1;
+  color: var(--jp-ui-font-color2);
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.jp-ShareFilesPanel-itemIcon {
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  flex-shrink: 0;
+  color: var(--jp-ui-font-color2);
+}
+
+.jp-ShareFilesPanel-itemName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--jp-ui-font-size1);
+}
+
+.jp-ShareFilesPanel-itemMeta {
+  margin-left: 8px;
+  color: var(--jp-ui-font-color3);
+  font-size: var(--jp-ui-font-size0);
+  flex-shrink: 0;
+}
+
+.jp-ShareFilesPanel-itemOwner {
+  margin-left: 6px;
+  color: var(--jp-ui-font-color3);
+  font-size: var(--jp-ui-font-size0);
+  flex-shrink: 0;
+}
+
+/* Inline icon button (e.g. "copy link") shown in item rows on hover */
+.jp-ShareFilesPanel-rowIconButton {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--jp-ui-font-color2);
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s;
+  flex-shrink: 0;
+}
+
+.jp-ShareFilesPanel-itemHeader:hover .jp-ShareFilesPanel-rowIconButton {
+  opacity: 1;
+}
+
+.jp-ShareFilesPanel-rowIconButton:hover {
+  color: var(--jp-brand-color1);
+}
+
+.jp-ShareFilesPanel-rowIconButton svg {
+  width: 14px;
+  height: 14px;
+}
+
+.jp-ShareFilesPanel-rowIconButton.jp-mod-copied {
+  opacity: 1 !important;
+  color: var(--jp-success-color1, #2e7d32);
+  animation: jp-ShareFilesPanel-copyFlash 0.7s ease-out;
+}
+
+@keyframes jp-ShareFilesPanel-copyFlash {
+  0%   { transform: scale(1); }
+  20%  { transform: scale(1.4); }
+  60%  { transform: scale(1); }
+  100% { transform: scale(1); }
+}
+
+/* Entry tree (files/folders inside an item) */
+.jp-ShareFilesPanel-entryList {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 4px;
+}
+
+.jp-ShareFilesPanel-entry {
+  display: flex;
+  align-items: center;
+  padding: 2px 10px;
+  cursor: default;
+  min-height: 20px;
+  line-height: 1.3;
+}
+
+.jp-ShareFilesPanel-entry:hover {
+  background: var(--jp-layout-color2);
+}
+
+.jp-ShareFilesPanel-entry.jp-mod-clickable {
+  cursor: pointer;
+}
+
+.jp-ShareFilesPanel-entryIndent {
+  flex-shrink: 0;
+  width: 16px;
+}
+
+.jp-ShareFilesPanel-entryIcon {
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  flex-shrink: 0;
+  color: var(--jp-ui-font-color2);
+}
+
+.jp-ShareFilesPanel-entryName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--jp-ui-font-size0);
+}
+
+.jp-ShareFilesPanel-entrySize {
+  margin-left: 8px;
+  color: var(--jp-ui-font-color3);
+  font-size: var(--jp-ui-font-size0);
+}
+
+.jp-ShareFilesPanel-entryRemove {
+  margin-left: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+  color: var(--jp-ui-font-color3);
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.jp-ShareFilesPanel-entry:hover .jp-ShareFilesPanel-entryRemove {
+  opacity: 1;
+}
+
+.jp-ShareFilesPanel-entryRemove:hover {
+  color: var(--jp-error-color1);
+}
+
+.jp-ShareFilesPanel-entryRemove svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* uploader sub-header inside a request - just a label, no toggle */
+.jp-ShareFilesPanel-uploaderHeader {
+  display: flex;
+  align-items: center;
+  padding: 4px 10px 2px 14px;
+  font-size: var(--jp-ui-font-size0);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--jp-ui-font-color2);
+  font-weight: 600;
+}
+
+.jp-ShareFilesPanel-uploaderHeader .jp-ShareFilesPanel-entryIcon {
+  width: 12px;
+  height: 12px;
+  margin-right: 4px;
+}
+
+.jp-ShareFilesPanel-uploaderName {
+  flex: 1;
+}
+
+/* Action buttons inside an item */
+.jp-ShareFilesPanel-itemActions {
+  display: flex;
+  gap: 6px;
+  padding: 4px 10px 8px 26px;
+}
+
+.jp-ShareFilesPanel-itemAction {
+  background: var(--jp-layout-color1);
+  border: 1px solid var(--jp-border-color2);
+  border-radius: 3px;
+  padding: 3px 8px;
+  font-size: var(--jp-ui-font-size0);
+  font-family: var(--jp-ui-font-family);
+  cursor: pointer;
+  color: var(--jp-ui-font-color1);
+}
+
+.jp-ShareFilesPanel-itemAction:hover {
+  background: var(--jp-layout-color2);
+  border-color: var(--jp-border-color1);
+}
+
+.jp-ShareFilesPanel-itemAction:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.jp-ShareFilesPanel-itemAction.jp-mod-primary {
+  background: var(--jp-brand-color1);
+  color: white;
+  border-color: var(--jp-brand-color1);
+}
+
+.jp-ShareFilesPanel-itemAction.jp-mod-primary:hover {
+  background: var(--jp-brand-color0);
+}
+
+/* Storage path hint shown above the drop zone */
+.jp-ShareFilesPanel-infoLine {
+  padding: 6px 12px 0;
+  font-size: var(--jp-ui-font-size0);
+  color: var(--jp-ui-font-color3);
+  font-style: italic;
+  flex-shrink: 0;
+}
+
+/* Drop zone at the bottom */
+.jp-ShareFilesPanel-dropZone {
+  margin: 12px 10px 6px;
+  padding: 18px 12px;
+  border: 2px dashed var(--jp-border-color1);
+  border-radius: 6px;
+  text-align: center;
+  font-size: var(--jp-ui-font-size1);
+  color: var(--jp-ui-font-color2);
+  background: var(--jp-layout-color1);
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.jp-ShareFilesPanel-dropZone.jp-mod-dropTarget {
+  border-color: var(--jp-brand-color1);
+  background: var(--jp-brand-color3, rgba(33, 150, 243, 0.1));
+  color: var(--jp-brand-color1);
+}
+
+/* Connect input area */
+.jp-ShareFilesPanel-connect {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px 10px;
+  flex-shrink: 0;
+}
+
+.jp-ShareFilesPanel-connectInput {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--jp-border-color1);
+  border-radius: 3px;
+  background: var(--jp-input-background, var(--jp-layout-color1));
+  color: var(--jp-ui-font-color1);
+  font-size: var(--jp-ui-font-size1);
+  font-family: var(--jp-ui-font-family);
+}
+
+.jp-ShareFilesPanel-connectInput:focus {
+  outline: none;
+  border-color: var(--jp-brand-color1);
+}
+
+.jp-ShareFilesPanel-connectButton {
+  padding: 4px 12px;
+  background: var(--jp-brand-color1);
+  color: white;
+  border: none;
+  border-radius: 3px;
+  font-size: var(--jp-ui-font-size1);
+  font-family: var(--jp-ui-font-family);
+  cursor: pointer;
+}
+
+.jp-ShareFilesPanel-connectButton:hover {
+  background: var(--jp-brand-color0);
+}
+
+.jp-ShareFilesPanel-connectButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Spinner */
+.jp-ShareFilesPanel-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--jp-ui-font-color3);
+  border-top-color: var(--jp-brand-color1);
+  border-radius: 50%;
+  animation: jp-ShareFilesPanel-spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+
+@keyframes jp-ShareFilesPanel-spin {
+  to { transform: rotate(360deg); }
+}
+
+.jp-ShareFilesPanel-offline {
+  color: var(--jp-warn-color1);
+  font-size: var(--jp-ui-font-size0);
+  margin-left: 6px;
+  text-transform: uppercase;
+}

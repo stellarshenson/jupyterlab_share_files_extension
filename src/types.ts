@@ -1,0 +1,69 @@
+/**
+ * Type definitions matching the backend JSON shape.
+ */
+
+export interface IShareEntry {
+  name: string;
+  type: 'file' | 'directory';
+  size: number;
+}
+
+export interface IShare {
+  id: string;
+  name: string;
+  slug: string;
+  kind: 'share';
+  created_at: number;
+  entries: IShareEntry[];
+  link: string;
+}
+
+export interface IUploaderEntry {
+  name: string;
+  entries: IShareEntry[];
+}
+
+export interface IRequest {
+  id: string;
+  name: string;
+  slug: string;
+  kind: 'request';
+  created_at: number;
+  upload_count: number;
+  last_upload_at: number;
+  last_seen_upload_at: number;
+  uploaders: IUploaderEntry[];
+  link: string;
+}
+
+export interface IConnection {
+  key: string;
+  kind: 'share' | 'request';
+  id: string;
+  host: string;
+  name: string;
+  owner: string;
+  added_at: number;
+  link?: string;
+}
+
+/** Remote share manifest as returned by /public/share/<id>/manifest */
+export interface IRemoteShare {
+  id: string;
+  name: string;
+  slug: string;
+  kind: 'share';
+  created_at: number;
+  entries: IShareEntry[];
+  link: string;
+}
+
+/** Remote request manifest as returned by /public/request/<id>/manifest */
+export interface IRemoteRequest {
+  id: string;
+  name: string;
+  slug: string;
+  kind: 'request';
+  created_at: number;
+  link: string;
+}

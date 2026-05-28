@@ -11,13 +11,44 @@
 > [!TIP]
 > This extension is part of the [stellars_jupyterlab_extensions](https://github.com/stellarshenson/stellars_jupyterlab_extensions) metapackage. Install all Stellars extensions at once: `pip install stellars_jupyterlab_extensions`
 
-Share files and directories from your JupyterLab file browser with a single click. Right-click any file or folder and select "Share" to generate a shareable link that other users on the same JupyterHub can use to access the content.
+Peer-to-peer file sharing for JupyterLab. Create a named **share** (a read-only drop) or a **request** (an inbox), copy the link, paste it in chat. The recipient opens the link either in their own JupyterLab side panel or in any plain browser - no account, no extension required on their side.
+
+Think AirDrop, except the link is the discovery mechanism and the JupyterLab server is the peer.
 
 ## Features
 
-- **Context menu in file browser** - Right-click any file or directory to reveal the "Share" option
-- **Shareable link generation** - Creates links that other JupyterHub users can use to access shared content
-- **Server-side link resolution** - Server extension handles link generation and access control
+- **Side panel** - dedicated panel on the right rail with three sections: My Shares, My Requests, Connected. Each row has copy-link, delete, drag-drop, and download actions
+- **Shares (file drops)** - "Here are my files, grab them via this link." Drag files/folders from the file browser into the panel to create or extend a share. Recipients download via the link
+- **Requests (inboxes)** - "Send me files here." Anyone with the link can upload files or folders, organized per uploader in your local storage
+- **Connections** - paste someone else's link into your panel to subscribe to their share (browse and download files) or their request (drag your local files to upload)
+- **Drag-and-drop** - drag from the JupyterLab file browser onto the panel drop-zone (new share), an existing share row (add files), or a connected request (upload)
+- **Folder support** - shares and requests work for both individual files and entire folders. Directory structure is preserved
+- **Standalone web page** - every link opens a self-contained HTML page for non-JupyterLab users (download buttons for shares, drag-drop upload zone for requests). No login, no JS framework, no special browser
+- **Symlink-friendly** - sharing files from symlinked locations like `@shared/...` works transparently
+- **Live upload notifications** - when someone uploads to your request, a JupyterLab notification pops up
+- **Theme-aware UI** - panel inherits JupyterLab's font, font-size and theme variables
+
+## How it works
+
+Files are stored under `<server_root_dir>/uploads/` by default:
+
+```
+<workspace>/uploads/
+  shares/
+    <slug>-<id>/
+      manifest.json
+      data/                # copies of shared files
+        ...
+  requests/
+    <slug>-<id>/
+      manifest.json
+      uploads/
+        <uploader>/        # subfolder per uploader
+          ...
+  connections.json         # links you have connected to
+```
+
+Each share and request is identified by an 8-character base32 token. The folder name is `<slug>-<id>` so you can find a share visually in the file browser while routes still resolve by ID. The token is the secret - anyone with the link gets access.
 
 ## Installation
 
@@ -26,6 +57,16 @@ Requires JupyterLab 4.0.0 or higher.
 ```bash
 pip install jupyterlab_share_files_extension
 ```
+
+## Configuration
+
+By default, shares and requests live in `<server_root_dir>/uploads/`. To change the location, add to your `jupyter_server_config.py`:
+
+```python
+c.ShareFilesConfig.shares_dir = "/path/to/your/storage"
+```
+
+Relative paths resolve against the server root. The directory is created on demand - no setup step required.
 
 ## Uninstall
 

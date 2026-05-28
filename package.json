@@ -1,7 +1,7 @@
 {
     "name": "jupyterlab_share_files_extension",
-    "version": "0.1.0",
-    "description": "A JupyterLab extension.",
+    "version": "0.6.13",
+    "description": "Peer-to-peer file sharing for JupyterLab - create named shares (drops) or requests (inboxes), get a link, share it. Files served directly from your server; recipients can use a JupyterLab panel or a plain browser.",
     "keywords": [
         "jupyter",
         "jupyterlab",
@@ -53,12 +53,18 @@
         "test": "jest --coverage",
         "watch": "run-p watch:src watch:labextension",
         "watch:src": "tsc -w --sourceMap",
-        "watch:labextension": "jupyter labextension watch ."
+        "watch:labextension": "jupyter labextension watch .",
+        "postinstall": "node scripts/patch-license-webpack-plugin.js"
     },
     "dependencies": {
         "@jupyterlab/application": "^4.0.0",
+        "@jupyterlab/apputils": "^4.0.0",
         "@jupyterlab/coreutils": "^6.0.0",
-        "@jupyterlab/services": "^7.0.0"
+        "@jupyterlab/filebrowser": "^4.0.0",
+        "@jupyterlab/services": "^7.0.0",
+        "@jupyterlab/ui-components": "^4.0.0",
+        "@lumino/commands": "^2.0.0",
+        "@lumino/widgets": "^2.0.0"
     },
     "devDependencies": {
         "@jupyterlab/builder": "^4.0.0",
@@ -89,7 +95,8 @@
         "yjs": "^13.5.0"
     },
     "resolutions": {
-        "lib0": "0.2.111"
+        "lib0": "0.2.111",
+        "license-webpack-plugin": "^4.0.2"
     },
     "sideEffects": [
         "style/*.css",
@@ -111,6 +118,7 @@
             }
         },
         "extension": true,
+        "schemaDir": "schema",
         "outputDir": "jupyterlab_share_files_extension/labextension"
     },
     "eslintIgnore": [

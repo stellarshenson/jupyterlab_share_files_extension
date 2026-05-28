@@ -1,0 +1,20 @@
+{
+  "title": "Share Files",
+  "description": "Settings for the Share Files extension. Toggles take effect immediately - no reload required.",
+  "type": "object",
+  "properties": {
+    "enableShares": {
+      "type": "boolean",
+      "default": true,
+      "title": "Enable file sharing",
+      "description": "Show the 'My Shares' section, the 'Share Files...' context menu in the file browser, and the 'New Share' command. When off, you can still receive files via connections."
+    },
+    "enableRequests": {
+      "type": "boolean",
+      "default": true,
+      "title": "Enable file requests",
+      "description": "Show the 'My Requests' section and the 'New Request' command. When off, you can still upload to other people's requests via connections."
+    }
+  },
+  "additionalProperties": false
+}

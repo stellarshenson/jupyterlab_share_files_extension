@@ -7,7 +7,9 @@ except ImportError:
     import warnings
     warnings.warn("Importing 'jupyterlab_share_files_extension' outside a proper installation.")
     __version__ = "dev"
+from .config import ShareFilesConfig
 from .routes import setup_route_handlers
+from .storage import resolve_shares_dir
 
 
 def _jupyter_labextension_paths():
@@ -24,13 +26,19 @@ def _jupyter_server_extension_points():
 
 
 def _load_jupyter_server_extension(server_app):
-    """Registers the API handler to receive HTTP requests from the frontend extension.
+    """Registers the API handlers and instantiates user-overridable config.
+
+    Configurable via jupyter_server_config.py:
+        c.ShareFilesConfig.shares_dir = "/path/to/store"
 
     Parameters
     ----------
     server_app: jupyterlab.labapp.LabApp
         JupyterLab application instance
     """
-    setup_route_handlers(server_app.web_app)
+    config = ShareFilesConfig(parent=server_app)
+    setup_route_handlers(server_app.web_app, config=config)
     name = "jupyterlab_share_files_extension"
-    server_app.log.info(f"Registered {name} server extension")
+    workspace_root = server_app.web_app.settings.get("server_root_dir", "")
+    resolved = resolve_shares_dir(workspace_root, config.shares_dir)
+    server_app.log.info(f"Registered {name} server extension (shares_dir={resolved})")
