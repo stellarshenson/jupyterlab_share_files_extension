@@ -20,11 +20,13 @@ const FILEBROWSER_SELECTOR = '.jp-DirListing-item';
 interface IPluginSettings {
   enableShares: boolean;
   enableRequests: boolean;
+  showHiddenFiles: boolean;
 }
 
 const DEFAULT_SETTINGS: IPluginSettings = {
   enableShares: true,
-  enableRequests: true
+  enableRequests: true,
+  showHiddenFiles: true
 };
 
 /**
@@ -139,7 +141,8 @@ const plugin: JupyterFrontEndPlugin<void> = {
       const applySettings = (settings: ISettingRegistry.ISettings): void => {
         const next: IPluginSettings = {
           enableShares: settings.get('enableShares').composite as boolean,
-          enableRequests: settings.get('enableRequests').composite as boolean
+          enableRequests: settings.get('enableRequests').composite as boolean,
+          showHiddenFiles: settings.get('showHiddenFiles').composite as boolean
         };
         panel.updateSettings(next);
       };

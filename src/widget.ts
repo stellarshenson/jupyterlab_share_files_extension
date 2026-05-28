@@ -62,11 +62,16 @@ interface IPanelState {
   expandedItems: Set<string>;
   lastSeenUploads: Map<string, number>;
   info: IExtensionInfo | null;
+  /** Sub-path inside each owned share's data dir (workspace-relative). Missing key = at root. */
+  shareSubPath: Map<string, string>;
+  /** Cached entries by workspace-relative folder path (Contents API result). */
+  subEntries: Map<string, IShareEntry[]>;
 }
 
 export interface IShareFilesSettings {
   enableShares: boolean;
   enableRequests: boolean;
+  showHiddenFiles: boolean;
 }
 
 export interface IShareFilesPanelOptions {
@@ -105,7 +110,9 @@ export class ShareFilesPanel extends Widget {
       expanded: { shares: true, requests: true, connected: true },
       expandedItems: new Set(),
       lastSeenUploads: new Map(),
-      info: null
+      info: null,
+      shareSubPath: new Map(),
+      subEntries: new Map()
     };
     this._registerCommands();
     this._buildShell();
@@ -236,6 +243,9 @@ export class ShareFilesPanel extends Widget {
         this._state.shares = s.shares || [];
         this._state.requests = r.requests || [];
         this._state.connections = c.connections || [];
+        // Drilled-in folder listings come from the Contents API and can go
+        // stale after files are added/removed - drop the cache each refresh.
+        this._state.subEntries.clear();
         this._detectNewUploads();
         // fetch info once - storage path doesn't change at runtime
         if (this._state.info === null) {
@@ -567,21 +577,153 @@ export class ShareFilesPanel extends Widget {
   private _renderShareEntries(share: IShare): HTMLElement {
     const list = document.createElement('div');
     list.className = 'jp-ShareFilesPanel-entryList';
-    if (share.entries.length === 0) {
+    const subPath = this._state.shareSubPath.get(share.id) || '';
+    // At the share root we use share.entries (synced via the extension's own
+    // /api/shares listing). Inside a sub-folder we query JupyterLab's
+    // Contents API on demand and cache the result for the current render.
+    const drillIn = (entry: IShareEntry) => {
+      if (entry.path) {
+        this._state.shareSubPath.set(share.id, entry.path);
+        this._render();
+      }
+    };
+    if (!subPath) {
+      const visible = this._applyHiddenFilter(share.entries);
+      if (visible.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'jp-ShareFilesPanel-empty';
+        empty.textContent =
+          share.entries.length === 0
+            ? 'Empty - drag files onto this share to add'
+            : 'No visible files (hidden ones filtered)';
+        list.appendChild(empty);
+        return list;
+      }
+      for (const entry of visible) {
+        list.appendChild(
+          this._renderEntryRow(
+            entry,
+            () => {
+              void this._removeEntryFromShare(share.id, entry.name);
+            },
+            0,
+            drillIn
+          )
+        );
+      }
+      return list;
+    }
+    // Inside a sub-folder: prepend a `..` row, then list cached entries.
+    list.appendChild(this._renderUpRow(share.id, subPath));
+    const cached = this._state.subEntries.get(subPath);
+    if (cached === undefined) {
+      // Trigger a fetch; re-render lands when the cache fills.
+      void this._fetchSubEntries(subPath);
+      const loading = document.createElement('div');
+      loading.className = 'jp-ShareFilesPanel-empty';
+      loading.textContent = 'Loading...';
+      list.appendChild(loading);
+      return list;
+    }
+    const visibleCached = this._applyHiddenFilter(cached);
+    if (visibleCached.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'jp-ShareFilesPanel-empty';
-      empty.textContent = 'Empty - drag files onto this share to add';
+      empty.textContent =
+        cached.length === 0
+          ? 'Folder is empty'
+          : 'No visible files (hidden ones filtered)';
       list.appendChild(empty);
       return list;
     }
-    for (const entry of share.entries) {
-      list.appendChild(
-        this._renderEntryRow(entry, () => {
-          void this._removeEntryFromShare(share.id, entry.name);
-        })
-      );
+    for (const entry of visibleCached) {
+      list.appendChild(this._renderEntryRow(entry, undefined, 0, drillIn));
     }
     return list;
+  }
+
+  private _applyHiddenFilter(entries: IShareEntry[]): IShareEntry[] {
+    if (this._settings.showHiddenFiles) {
+      return entries;
+    }
+    return entries.filter(e => !e.name.startsWith('.'));
+  }
+
+  private _renderUpRow(shareId: string, currentSubPath: string): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'jp-ShareFilesPanel-entry jp-mod-clickable';
+    row.title = 'Double-click to go up one level';
+    const indent = document.createElement('span');
+    indent.className = 'jp-ShareFilesPanel-entryIndent';
+    row.appendChild(indent);
+    const icon = this._svgNode(
+      folderIcon.svgstr,
+      'jp-ShareFilesPanel-entryIcon'
+    );
+    row.appendChild(icon);
+    const name = document.createElement('span');
+    name.className = 'jp-ShareFilesPanel-entryName';
+    name.textContent = '..';
+    row.appendChild(name);
+    const handler = (ev: MouseEvent) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this._goUp(shareId, currentSubPath);
+    };
+    row.addEventListener('dblclick', handler);
+    return row;
+  }
+
+  private _goUp(shareId: string, currentSubPath: string): void {
+    const share = this._state.shares.find(s => s.id === shareId);
+    if (!share) {
+      return;
+    }
+    // Trim the last path segment. If that lands us at or above the share's
+    // data dir (or we can no longer detect one because the backend has not
+    // been restarted to ship share.path), drop back to root.
+    const slash = currentSubPath.lastIndexOf('/');
+    const parent = slash > 0 ? currentSubPath.slice(0, slash) : '';
+    const dataRoot = share.path || '';
+    if (!parent || (dataRoot && parent === dataRoot)) {
+      this._state.shareSubPath.delete(shareId);
+    } else if (dataRoot && !parent.startsWith(dataRoot)) {
+      this._state.shareSubPath.delete(shareId);
+    } else {
+      this._state.shareSubPath.set(shareId, parent);
+    }
+    this._render();
+  }
+
+  private async _fetchSubEntries(subPath: string): Promise<void> {
+    try {
+      const model = await this._contents.get(subPath, {
+        content: true,
+        type: 'directory'
+      });
+      const children = Array.isArray(model.content) ? model.content : [];
+      const entries: IShareEntry[] = children
+        .map(
+          (c: any): IShareEntry => ({
+            name: c.name,
+            type: c.type === 'directory' ? 'directory' : 'file',
+            size: typeof c.size === 'number' ? c.size : 0,
+            path: c.path
+          })
+        )
+        .sort((a: IShareEntry, b: IShareEntry) => {
+          // directories first, then alphabetical
+          if (a.type !== b.type) {
+            return a.type === 'directory' ? -1 : 1;
+          }
+          return a.name.localeCompare(b.name);
+        });
+      this._state.subEntries.set(subPath, entries);
+    } catch (err: any) {
+      this._state.subEntries.set(subPath, []);
+      Notification.error(`Could not list folder: ${err.message || err}`);
+    }
+    this._render();
   }
 
   private _renderRequests(): HTMLElement {
@@ -863,7 +1005,8 @@ export class ShareFilesPanel extends Widget {
   private _renderEntryRow(
     entry: IShareEntry,
     onRemove?: () => void,
-    indentLevel = 0
+    indentLevel = 0,
+    onOpenFolder?: (entry: IShareEntry) => void
   ): HTMLElement {
     const row = document.createElement('div');
     row.className = 'jp-ShareFilesPanel-entry';
@@ -913,7 +1056,11 @@ export class ShareFilesPanel extends Widget {
       row.addEventListener('dblclick', evt => {
         evt.preventDefault();
         evt.stopPropagation();
-        void this._openEntry(entry);
+        if (entry.type === 'directory' && onOpenFolder) {
+          onOpenFolder(entry);
+        } else {
+          void this._openEntry(entry);
+        }
       });
     }
     return row;

@@ -20,13 +20,17 @@ Create a **share** (file drop) or **request** (inbox) from a side panel, copy th
 - **Requests** - inboxes; recipients upload, organised per uploader
 - **Connections** - paste someone's link to subscribe to their share or upload to their request
 - **Drag-and-drop** from the file browser - drop zone (new share), share row (add files), request row (upload)
-- **Right-click context menu** in the file browser ("Share Files...") and on panel entries ("Copy to Current Folder", "Show in File Browser")
+- **Browse inside a share** - double-click a folder to drill in; the `..` row takes you back up
+- **Open files directly** - double-click a file in the panel and JupyterLab opens it with the right viewer
+- **Right-click context menu** - in the file browser ("Share Files..."), and on panel rows ("Copy to Current Folder", "Show in File Browser")
+- **Hidden files visible by default** - dotfiles like `.env`, `.gitignore`, `.ssh/config` are easy to share; toggle in Settings if you want them hidden
 - **Standalone HTML page** - link works in any browser, no JupyterLab needed
 - **Live upload notifications** when someone uploads to your request
+- **Self-connect guard** - pasting your own link shows a clear "you already own this" dialog instead of a silent toast
 - **Symlink-friendly** - sharing `@shared/...` and similar works
 - **Delete to trash** - panel deletes move files to the OS trash by default (toggle with `c.ShareFilesConfig.use_trash`)
 - **HTTPS-aware links** - share URLs follow the scheme the browser is on (HTTPS behind a proxy, HTTP for direct peer-to-peer)
-- **Settings toggles** - turn shares or requests on/off independently
+- **Settings toggles** - turn shares, requests, or hidden-file visibility on/off independently
 
 ## Requirements
 

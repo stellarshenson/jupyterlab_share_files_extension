@@ -14,6 +14,12 @@
       "default": true,
       "title": "Enable file requests",
       "description": "Show the 'My Requests' section and the 'New Request' command. When off, you can still upload to other people's requests via connections."
+    },
+    "showHiddenFiles": {
+      "type": "boolean",
+      "default": true,
+      "title": "Show hidden files",
+      "description": "Show files and folders whose name starts with a dot (.env, .ssh, .ipynb_checkpoints, ...). Useful for sharing config files between team members."
     }
   },
   "additionalProperties": false
