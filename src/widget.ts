@@ -6,7 +6,7 @@
  */
 
 import { Dialog, Notification, showDialog } from '@jupyterlab/apputils';
-import { ServerConnection } from '@jupyterlab/services';
+import { Contents, ServerConnection } from '@jupyterlab/services';
 import { CommandRegistry } from '@lumino/commands';
 import { Menu, Widget } from '@lumino/widgets';
 
@@ -73,6 +73,12 @@ export interface IShareFilesPanelOptions {
   serverSettings: ServerConnection.ISettings;
   commands: CommandRegistry;
   settings: IShareFilesSettings;
+  /** JupyterLab contents service for copy-to-file-browser */
+  contents: Contents.IManager;
+  /** Returns the file browser's current relative directory */
+  getCurrentDir: () => string;
+  /** Navigate the file browser to a given relative directory and select a name */
+  revealInFileBrowser: (dirPath: string, name?: string) => Promise<void>;
 }
 
 export class ShareFilesPanel extends Widget {
@@ -86,6 +92,9 @@ export class ShareFilesPanel extends Widget {
     this._serverSettings = options.serverSettings;
     this._commands = options.commands;
     this._settings = { ...options.settings };
+    this._contents = options.contents;
+    this._getCurrentDir = options.getCurrentDir;
+    this._revealInFileBrowser = options.revealInFileBrowser;
     this._state = {
       shares: [],
       requests: [],
@@ -878,7 +887,32 @@ export class ShareFilesPanel extends Widget {
       });
       row.appendChild(btn);
     }
+    if (entry.path) {
+      row.title = 'Right-click for actions';
+      row.classList.add('jp-mod-clickable');
+      row.addEventListener('contextmenu', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this._openEntryContextMenu(evt, entry);
+      });
+    }
     return row;
+  }
+
+  private _openEntryContextMenu(evt: MouseEvent, entry: IShareEntry): void {
+    if (!entry.path) {
+      return;
+    }
+    const menu = new Menu({ commands: this._commands });
+    menu.addItem({
+      command: 'share-files-panel:copy-entry-to-cwd',
+      args: { path: entry.path, name: entry.name }
+    });
+    menu.addItem({
+      command: 'share-files-panel:show-entry-in-browser',
+      args: { path: entry.path }
+    });
+    menu.open(evt.clientX, evt.clientY);
   }
 
   private _renderEmpty(text: string): HTMLElement {
@@ -951,6 +985,53 @@ export class ShareFilesPanel extends Widget {
           void this.createRequestFlow();
         }
       });
+      c.addCommand('share-files-panel:copy-entry-to-cwd', {
+        label: 'Copy to Current Folder',
+        execute: args => {
+          const path = String(args.path || '');
+          const name = String(args.name || '');
+          if (!path) {
+            return;
+          }
+          void this._copyEntryToCurrentDir(path, name);
+        }
+      });
+      c.addCommand('share-files-panel:show-entry-in-browser', {
+        label: 'Show in File Browser',
+        execute: args => {
+          const path = String(args.path || '');
+          if (!path) {
+            return;
+          }
+          void this._showEntryInFileBrowser(path);
+        }
+      });
+    }
+  }
+
+  private async _copyEntryToCurrentDir(
+    sourcePath: string,
+    entryName: string
+  ): Promise<void> {
+    const target = this._getCurrentDir();
+    try {
+      await this._contents.copy(sourcePath, target);
+      const dest = target ? `./${target}/` : './';
+      Notification.success(`Copied ${entryName} → ${dest}`);
+    } catch (err: any) {
+      Notification.error(`Could not copy: ${err.message || err}`);
+    }
+  }
+
+  private async _showEntryInFileBrowser(sourcePath: string): Promise<void> {
+    // sourcePath is workspace-relative, e.g. "uploads/shares/foo-AB/data/x.txt"
+    const slash = sourcePath.lastIndexOf('/');
+    const dir = slash >= 0 ? sourcePath.slice(0, slash) : '';
+    const name = slash >= 0 ? sourcePath.slice(slash + 1) : sourcePath;
+    try {
+      await this._revealInFileBrowser(dir, name);
+    } catch (err: any) {
+      Notification.error(`Could not navigate: ${err.message || err}`);
     }
   }
 
@@ -1492,6 +1573,12 @@ export class ShareFilesPanel extends Widget {
   private _serverSettings: ServerConnection.ISettings;
   private _commands: CommandRegistry;
   private _settings: IShareFilesSettings;
+  private _contents: Contents.IManager;
+  private _getCurrentDir: () => string;
+  private _revealInFileBrowser: (
+    dirPath: string,
+    name?: string
+  ) => Promise<void>;
   private _state: IPanelState;
   private _body: HTMLElement | null = null;
   private _dropZone: HTMLElement | null = null;

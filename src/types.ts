@@ -6,6 +6,8 @@ export interface IShareEntry {
   name: string;
   type: 'file' | 'directory';
   size: number;
+  /** Workspace-relative path of the entry on disk (when within workspace) */
+  path?: string;
 }
 
 export interface IShare {

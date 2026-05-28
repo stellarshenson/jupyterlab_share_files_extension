@@ -64,11 +64,44 @@ const plugin: JupyterFrontEndPlugin<void> = {
       return paths;
     };
 
+    // Helper - current file browser directory (workspace-relative).
+    const getCurrentDir = (): string => {
+      const browser = factory.tracker.currentWidget;
+      return browser?.model.path || '';
+    };
+
+    // Helper - navigate the file browser to a directory and select a file.
+    const revealInFileBrowser = async (
+      dirPath: string,
+      name?: string
+    ): Promise<void> => {
+      const browser = factory.tracker.currentWidget;
+      if (!browser) {
+        return;
+      }
+      // Bring the file browser tab to focus first
+      labShell.activateById(browser.id);
+      await browser.model.cd('/' + dirPath);
+      if (name) {
+        // Reveal and select the entry once the directory has loaded
+        await browser.model.refresh();
+        try {
+          await (browser as any).selectItemByName?.(name);
+        } catch {
+          // selectItemByName not available on older JupyterLab - just leave
+          // the directory open
+        }
+      }
+    };
+
     // Create the side panel widget.
     const panel = new ShareFilesPanel({
       serverSettings: serviceManager.serverSettings,
       commands,
-      settings: { ...DEFAULT_SETTINGS }
+      settings: { ...DEFAULT_SETTINGS },
+      contents: serviceManager.contents,
+      getCurrentDir,
+      revealInFileBrowser
     });
 
     labShell.add(panel, 'right', { rank: 600 });

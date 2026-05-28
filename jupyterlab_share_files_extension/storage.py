@@ -66,24 +66,31 @@ def _is_safe_relative(path: str) -> bool:
     return ".." not in parts
 
 
-def _list_entries(directory: Path) -> list[dict[str, Any]]:
-    """Return [{name, type, size}] for the top-level items in directory."""
+def _list_entries(directory: Path, workspace_root: Path | None = None) -> list[dict[str, Any]]:
+    """Return [{name, type, size, path?}] for the top-level items in directory.
+
+    When `workspace_root` is provided and the entry lies inside it, the
+    workspace-relative `path` is added so the frontend can pass it to
+    JupyterLab's Contents API (e.g. for copy-to-file-browser).
+    """
     if not directory.exists():
         return []
     entries = []
     for child in sorted(directory.iterdir()):
+        entry: dict[str, Any] = {"name": child.name}
         if child.is_dir():
-            entries.append({
-                "name": child.name,
-                "type": "directory",
-                "size": _dir_size(child),
-            })
+            entry["type"] = "directory"
+            entry["size"] = _dir_size(child)
         else:
-            entries.append({
-                "name": child.name,
-                "type": "file",
-                "size": child.stat().st_size,
-            })
+            entry["type"] = "file"
+            entry["size"] = child.stat().st_size
+        if workspace_root is not None:
+            try:
+                rel = child.resolve().relative_to(workspace_root)
+                entry["path"] = str(rel).replace(os.sep, "/")
+            except ValueError:
+                pass
+        entries.append(entry)
     return entries
 
 
@@ -251,7 +258,7 @@ class ShareStore(BaseStore):
                     manifest = json.load(f)
             except (OSError, json.JSONDecodeError):
                 continue
-            manifest["entries"] = _list_entries(child / "data")
+            manifest["entries"] = _list_entries(child / "data", self.workspace_root)
             result.append(manifest)
         return result
 
@@ -277,13 +284,13 @@ class ShareStore(BaseStore):
             "kind": "share",
             "created_at": _now(),
         }
-        manifest["entries"] = _list_entries(data_dir)
+        manifest["entries"] = _list_entries(data_dir, self.workspace_root)
         self._write_manifest(id_, manifest)
         return manifest
 
     def get(self, id_: str) -> dict[str, Any]:
         manifest = self._read_manifest(id_)
-        manifest["entries"] = _list_entries(self._path_for(id_) / "data")
+        manifest["entries"] = _list_entries(self._path_for(id_) / "data", self.workspace_root)
         return manifest
 
     def add_items(self, id_: str, source_paths: list[str]) -> dict[str, Any]:
@@ -357,7 +364,7 @@ class RequestStore(BaseStore):
             for child in sorted(uploads_dir.iterdir()):
                 if not child.is_dir():
                     continue
-                entries = _list_entries(child)
+                entries = _list_entries(child, self.workspace_root)
                 upload_count += len(entries)
                 uploaders.append({
                     "name": child.name,

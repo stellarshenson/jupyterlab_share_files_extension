@@ -41,6 +41,12 @@ Think AirDrop, except the link is the discovery mechanism and the JupyterLab ser
 - **Self-connect refused** - the panel and backend both refuse links pointing back to your own server, so you never get a circular connection
 - **Disconnect** - drop a connection from the panel without affecting the remote side
 
+### Working with files in the panel
+
+- **Copy to Current Folder** - right-click any file or folder shown in the panel (My Shares, My Requests uploads) and pick "Copy to Current Folder" - it gets copied via JupyterLab's Contents API into whatever directory the file browser is currently showing. Toast confirms the destination
+- **Show in File Browser** - right-click and pick "Show in File Browser" to switch focus to the file browser tab, navigate to the entry's parent directory, and select it - useful when you want to inspect or move the file with standard JupyterLab tools
+- **Workspace-aware** - both actions work for any entry inside the workspace; if you have configured `shares_dir` to point outside the workspace, the right-click menu just does not appear for those entries (graceful fallback)
+
 ### Links and recipients
 
 - **Standalone HTML page** - every share or request link opens a self-contained page in any browser (no login, no JS framework, no extension required on the recipient side)
