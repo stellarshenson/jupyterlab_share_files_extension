@@ -8,6 +8,8 @@
 import { Dialog, Notification, showDialog } from '@jupyterlab/apputils';
 import { Contents, ServerConnection } from '@jupyterlab/services';
 import { CommandRegistry } from '@lumino/commands';
+import { MimeData } from '@lumino/coreutils';
+import { Drag } from '@lumino/dragdrop';
 import { Menu, Widget } from '@lumino/widgets';
 
 import {
@@ -1045,8 +1047,8 @@ export class ShareFilesPanel extends Widget {
     if (entry.path) {
       row.title =
         entry.type === 'directory'
-          ? 'Double-click to open folder; right-click for actions'
-          : 'Double-click to open file; right-click for actions';
+          ? 'Double-click to open folder; drag to copy to a folder; right-click for actions'
+          : 'Double-click to open file; drag to copy to a folder; right-click for actions';
       row.classList.add('jp-mod-clickable');
       row.addEventListener('contextmenu', evt => {
         evt.preventDefault();
@@ -1062,8 +1064,88 @@ export class ShareFilesPanel extends Widget {
           void this._openEntry(entry);
         }
       });
+      this._attachEntryDragSource(row, entry);
     }
     return row;
+  }
+
+  /**
+   * Attach mousedown-based drag source so entries can be dragged to the
+   * file browser (or any drop target accepting `application/x-jupyter-icontents`).
+   * Drops on the file browser trigger a Contents copy of the source path -
+   * the file browser's native drop handler does the work.
+   */
+  private _attachEntryDragSource(row: HTMLElement, entry: IShareEntry): void {
+    const DRAG_THRESHOLD = 5;
+    row.addEventListener('mousedown', (down: MouseEvent) => {
+      // Only left-button, and never start a drag from the inline trash button
+      if (down.button !== 0 || !entry.path) {
+        return;
+      }
+      const target = down.target as HTMLElement | null;
+      if (target && target.closest('.jp-ShareFilesPanel-entryRemove')) {
+        return;
+      }
+      const startX = down.clientX;
+      const startY = down.clientY;
+      let dragStarted = false;
+      const onMove = (move: MouseEvent) => {
+        if (dragStarted) {
+          return;
+        }
+        const dx = Math.abs(move.clientX - startX);
+        const dy = Math.abs(move.clientY - startY);
+        if (dx < DRAG_THRESHOLD && dy < DRAG_THRESHOLD) {
+          return;
+        }
+        dragStarted = true;
+        document.removeEventListener('mousemove', onMove, true);
+        document.removeEventListener('mouseup', onUp, true);
+        this._startEntryDrag(entry, row, move.clientX, move.clientY);
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove, true);
+        document.removeEventListener('mouseup', onUp, true);
+      };
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('mouseup', onUp, true);
+    });
+  }
+
+  private _startEntryDrag(
+    entry: IShareEntry,
+    row: HTMLElement,
+    x: number,
+    y: number
+  ): void {
+    if (!entry.path) {
+      return;
+    }
+    const mimeData = new MimeData();
+    // Contents.IModel-shaped payload - matches what the JupyterLab file
+    // browser drop handler reads to drive `contents.copy(path, target)`.
+    const payload: Partial<Contents.IModel>[] = [
+      {
+        name: entry.name,
+        path: entry.path,
+        type: entry.type
+      }
+    ];
+    mimeData.setData(CONTENTS_MIME, payload);
+    const dragImage = row.cloneNode(true) as HTMLElement;
+    dragImage.style.width = `${row.offsetWidth}px`;
+    dragImage.style.background = 'var(--jp-layout-color1)';
+    dragImage.style.border = '1px solid var(--jp-brand-color1)';
+    dragImage.style.borderRadius = '2px';
+    dragImage.style.opacity = '0.9';
+    const drag = new Drag({
+      mimeData,
+      dragImage,
+      proposedAction: 'copy',
+      supportedActions: 'copy',
+      source: this
+    });
+    void drag.start(x, y);
   }
 
   private async _openEntry(entry: IShareEntry): Promise<void> {
