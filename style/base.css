@@ -288,6 +288,7 @@
   height: 22px;
   line-height: 22px;
   cursor: default;
+  user-select: none;
 }
 
 .jp-ShareFilesPanel-entry:hover {
@@ -437,11 +438,12 @@
 }
 
 .jp-ShareFilesPanel-dropZone.jp-mod-dropTarget {
-  /* Thick brand-coloured solid frame, faint overlay - same treatment as the
-     row drop targets. The base background stays so the hint text is
-     unchanged; only the border weight signals "drop here". */
-  border: 2px solid var(--jp-brand-color1);
-  background: var(--jp-brand-color3, rgb(33 150 243 / 8%));
+  /* Same treatment as the share/request row drop targets - outline (does not
+     affect layout, no 1px shift) + inset box-shadow as the faint overlay.
+     The existing dashed border underneath stays put. */
+  outline: 2px solid var(--jp-brand-color1);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 9999px rgb(33 150 243 / 8%);
   color: var(--jp-brand-color1);
   opacity: 1;
 }
