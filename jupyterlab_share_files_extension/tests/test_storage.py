@@ -126,9 +126,12 @@ class TestShareStore:
         store = ShareStore(str(tmp_path))
         manifest = store.create("My Cool Share", ["x.txt"])
         shares_dir = tmp_path / SHARES_DIR_NAME / "shares"
-        folder = list(shares_dir.iterdir())[0]
+        folder = next(c for c in shares_dir.iterdir() if c.is_dir())
         assert folder.name.endswith(f"-{manifest['id']}")
         assert folder.name.startswith("My-Cool-Share")
+        # sidecar manifest sits next to the folder
+        sidecar = shares_dir / f"{folder.name}.json"
+        assert sidecar.exists()
 
     def test_create_with_folder_preserves_structure(self, tmp_path):
         src = tmp_path / "src"
@@ -141,8 +144,10 @@ class TestShareStore:
         assert manifest["entries"][0]["type"] == "directory"
         assert manifest["entries"][0]["name"] == "src"
 
-        # contents preserved on disk
-        data_dir = next((tmp_path / SHARES_DIR_NAME / "shares").iterdir()) / "data"
+        # contents preserved on disk - directly under the share folder
+        data_dir = next(
+            c for c in (tmp_path / SHARES_DIR_NAME / "shares").iterdir() if c.is_dir()
+        )
         assert (data_dir / "src" / "main.py").exists()
         assert (data_dir / "src" / "sub" / "helper.py").exists()
 
@@ -217,22 +222,25 @@ class TestShareStore:
         with pytest.raises(NotFoundError):
             store.delete("ABCDEFGH")
 
-    def test_path_for_finds_legacy_layout(self, tmp_path):
-        """Old shares stored at <root>/<id>/ (no slug prefix) must still resolve."""
+    def test_existing_share_with_sidecar_manifest_can_be_read(self, tmp_path):
+        """Hand-rolling a share on disk: `<slug>-<id>.json` sidecar +
+        `<slug>-<id>/` content directory - the store reads it back without
+        having created it."""
         store = ShareStore(str(tmp_path))
-        legacy_dir = tmp_path / SHARES_DIR_NAME / "shares" / "ABCDEF23"
-        (legacy_dir / "data").mkdir(parents=True)
-        (legacy_dir / "data" / "f.txt").write_text("legacy")
+        shares_dir = tmp_path / SHARES_DIR_NAME / "shares"
+        content = shares_dir / "fixture-ABCDEF23"
+        content.mkdir()
+        (content / "f.txt").write_text("hand-rolled")
         manifest = {
             "id": "ABCDEF23",
-            "name": "Legacy",
-            "slug": "Legacy",
+            "name": "fixture",
+            "slug": "fixture",
             "kind": "share",
             "created_at": 0,
         }
-        (legacy_dir / "manifest.json").write_text(json.dumps(manifest))
+        (shares_dir / "fixture-ABCDEF23.json").write_text(json.dumps(manifest))
         fetched = store.get("ABCDEF23")
-        assert fetched["name"] == "Legacy"
+        assert fetched["name"] == "fixture"
         assert fetched["entries"][0]["name"] == "f.txt"
 
     def test_resolve_data_path_within_share(self, tmp_path):
@@ -290,9 +298,9 @@ class TestRequestStore:
         store = RequestStore(str(tmp_path))
         req = store.create("project-uploads")
         store.add_upload(req["id"], "bob", "results/output.csv", b"x")
-        uploads_dir = tmp_path / SHARES_DIR_NAME / "requests"
-        req_folder = next(uploads_dir.iterdir())
-        assert (req_folder / "uploads" / "bob" / "results" / "output.csv").exists()
+        requests_dir = tmp_path / SHARES_DIR_NAME / "requests"
+        req_folder = next(c for c in requests_dir.iterdir() if c.is_dir())
+        assert (req_folder / "bob" / "results" / "output.csv").exists()
 
     def test_add_upload_rejects_traversal_filename(self, tmp_path):
         store = RequestStore(str(tmp_path))
@@ -303,9 +311,9 @@ class TestRequestStore:
         # nothing escaped the workspace
         assert not (tmp_path / "etc").exists()
         # the upload sits under the uploader folder, never above it
-        uploads_dir = tmp_path / SHARES_DIR_NAME / "requests"
-        req_folder = next(uploads_dir.iterdir())
-        assert (req_folder / "uploads" / "bob" / "etc" / "passwd").exists()
+        requests_dir = tmp_path / SHARES_DIR_NAME / "requests"
+        req_folder = next(c for c in requests_dir.iterdir() if c.is_dir())
+        assert (req_folder / "bob" / "etc" / "passwd").exists()
 
     def test_remove_upload(self, tmp_path):
         store = RequestStore(str(tmp_path))

@@ -188,19 +188,14 @@ class BaseStore:
         self.use_trash = use_trash
 
     def _path_for(self, id_: str) -> Path:
-        """Resolve the on-disk directory for a share/request id.
+        """Resolve the on-disk content directory for a share/request id.
 
-        Folders are named `<slug>-<id>` so the filesystem layout is human
-        readable. We resolve by scanning for a directory ending in `-<id>`
-        (or just `<id>` for backward compatibility with the old layout).
+        Folders are named `<slug>-<id>` and sit next to a sibling
+        `<slug>-<id>.json` manifest. We resolve by scanning for a directory
+        ending in `-<id>`.
         """
         if not re.fullmatch(r"[A-Z2-7]{6,16}", id_):
             raise NotFoundError(f"Invalid id: {id_}")
-        # backward-compat: old layout used just the id as folder name
-        legacy = self.root / id_
-        if legacy.exists():
-            return legacy
-        # current layout: <slug>-<id>
         if self.root.exists():
             for child in self.root.iterdir():
                 if child.is_dir() and child.name.endswith("-" + id_):
@@ -208,28 +203,49 @@ class BaseStore:
         # fall back to a synthetic path - used when creating a new entry
         return self.root / id_
 
+    def _manifest_path_for(self, id_: str) -> Path:
+        """Resolve the on-disk manifest path (`<slug>-<id>.json`)."""
+        if not re.fullmatch(r"[A-Z2-7]{6,16}", id_):
+            raise NotFoundError(f"Invalid id: {id_}")
+        if self.root.exists():
+            for child in self.root.iterdir():
+                if child.is_file() and child.name.endswith(f"-{id_}.json"):
+                    return child
+        return self.root / f"{id_}.json"
+
     def _new_path(self, name: str, id_: str) -> Path:
         """Build the directory name for a freshly-created entry."""
         slug = _safe_name(name)
         candidate = self.root / f"{slug}-{id_}"
         return candidate
 
+    def _new_manifest_path(self, name: str, id_: str) -> Path:
+        slug = _safe_name(name)
+        return self.root / f"{slug}-{id_}.json"
+
     def _read_manifest(self, id_: str) -> dict[str, Any]:
-        path = self._path_for(id_) / "manifest.json"
+        path = self._manifest_path_for(id_)
         if not path.exists():
             raise NotFoundError(f"No manifest at {path}")
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
     def _write_manifest(self, id_: str, data: dict[str, Any]) -> None:
-        path = self._path_for(id_) / "manifest.json"
+        """Write the manifest. Uses the existing path if found, otherwise
+        builds one from the manifest's slug + id."""
+        existing = self._manifest_path_for(id_)
+        if existing.exists():
+            path = existing
+        else:
+            slug = data.get("slug") or _safe_name(data.get("name", ""))
+            path = self.root / f"{slug}-{id_}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     def exists(self, id_: str) -> bool:
         try:
-            return self._path_for(id_).exists()
+            return self._manifest_path_for(id_).exists()
         except NotFoundError:
             return False
 
@@ -239,23 +255,25 @@ class BaseStore:
         if not self.root.exists():
             return result
         for child in sorted(self.root.iterdir()):
-            if not child.is_dir():
-                continue
-            manifest_path = child / "manifest.json"
-            if not manifest_path.exists():
+            if not child.is_file() or not child.name.endswith(".json"):
                 continue
             try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
+                with open(child, "r", encoding="utf-8") as f:
                     result.append(json.load(f))
             except (OSError, json.JSONDecodeError):
                 continue
         return result
 
     def delete(self, id_: str) -> None:
-        path = self._path_for(id_)
-        if not path.exists():
+        """Remove both the content directory and the sidecar manifest."""
+        manifest_path = self._manifest_path_for(id_)
+        content_path = self._path_for(id_)
+        if not manifest_path.exists() and not content_path.exists():
             raise NotFoundError(f"Not found: {id_}")
-        _remove(path, self.use_trash)
+        if content_path.exists():
+            _remove(content_path, self.use_trash)
+        if manifest_path.exists():
+            _remove(manifest_path, self.use_trash)
 
 
 class ShareStore(BaseStore):
@@ -264,28 +282,29 @@ class ShareStore(BaseStore):
     def list(self) -> list[dict[str, Any]]:
         """Override base list to refresh `entries` from disk each time.
 
-        The manifest.json stores a snapshot of entries at create time, but the
-        data/ directory is the source of truth - files may have been added or
-        removed since. Re-scan on every list so the panel stays in sync.
+        The sidecar manifest stores a snapshot of entries at create time,
+        but the share folder is the source of truth - files may have been
+        added or removed since. Re-scan on every list so the panel stays
+        in sync.
         """
         result = []
         if not self.root.exists():
             return result
         for child in sorted(self.root.iterdir()):
-            if not child.is_dir():
-                continue
-            manifest_path = child / "manifest.json"
-            if not manifest_path.exists():
+            if not child.is_file() or not child.name.endswith(".json"):
                 continue
             try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
+                with open(child, "r", encoding="utf-8") as f:
                     manifest = json.load(f)
             except (OSError, json.JSONDecodeError):
                 continue
-            data_dir = child / "data"
-            manifest["entries"] = _list_entries(data_dir, self.workspace_root)
+            id_ = manifest.get("id")
+            if not id_:
+                continue
+            content_dir = self._path_for(id_)
+            manifest["entries"] = _list_entries(content_dir, self.workspace_root)
             try:
-                manifest["path"] = str(data_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
+                manifest["path"] = str(content_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
             except ValueError:
                 pass
             result.append(manifest)
@@ -295,8 +314,7 @@ class ShareStore(BaseStore):
         """Create a share, copying source_paths (relative to workspace) into it."""
         id_ = generate_token()
         share_dir = self._new_path(name, id_)
-        data_dir = share_dir / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
+        share_dir.mkdir(parents=True, exist_ok=True)
 
         for rel in source_paths:
             if not _is_safe_relative(rel):
@@ -304,7 +322,7 @@ class ShareStore(BaseStore):
             source = self.workspace_root / rel
             if not source.exists():
                 raise NotFoundError(f"Source not found: {rel}")
-            _copy_into(source, data_dir)
+            _copy_into(source, share_dir)
 
         manifest = {
             "id": id_,
@@ -313,53 +331,53 @@ class ShareStore(BaseStore):
             "kind": "share",
             "created_at": _now(),
         }
-        manifest["entries"] = _list_entries(data_dir, self.workspace_root)
+        manifest["entries"] = _list_entries(share_dir, self.workspace_root)
         self._write_manifest(id_, manifest)
         return manifest
 
     def get(self, id_: str) -> dict[str, Any]:
         manifest = self._read_manifest(id_)
-        data_dir = self._path_for(id_) / "data"
-        manifest["entries"] = _list_entries(data_dir, self.workspace_root)
+        content_dir = self._path_for(id_)
+        manifest["entries"] = _list_entries(content_dir, self.workspace_root)
         try:
-            manifest["path"] = str(data_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
+            manifest["path"] = str(content_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
         except ValueError:
             pass
         return manifest
 
     def add_items(self, id_: str, source_paths: list[str]) -> dict[str, Any]:
-        data_dir = self._path_for(id_) / "data"
-        if not data_dir.exists():
-            raise NotFoundError(f"Share data missing: {id_}")
+        content_dir = self._path_for(id_)
+        if not content_dir.exists():
+            raise NotFoundError(f"Share content missing: {id_}")
         for rel in source_paths:
             if not _is_safe_relative(rel):
                 raise StorageError(f"Unsafe path: {rel}")
             source = self.workspace_root / rel
             if not source.exists():
                 raise NotFoundError(f"Source not found: {rel}")
-            _copy_into(source, data_dir)
+            _copy_into(source, content_dir)
         return self.get(id_)
 
     def remove_items(self, id_: str, item_names: list[str]) -> dict[str, Any]:
-        data_dir = self._path_for(id_) / "data"
+        content_dir = self._path_for(id_)
         for name in item_names:
             if not name or "/" in name or "\\" in name or name in (".", ".."):
                 raise StorageError(f"Invalid item name: {name}")
-            target = data_dir / name
+            target = content_dir / name
             if not target.exists():
                 continue
             _remove(target, self.use_trash)
         return self.get(id_)
 
     def resolve_data_path(self, id_: str, sub_path: str = "") -> Path:
-        """Resolve a sub-path inside a share's data/ directory safely."""
-        data_dir = (self._path_for(id_) / "data").resolve()
+        """Resolve a sub-path inside a share's content directory safely."""
+        content_dir = self._path_for(id_).resolve()
         if not sub_path:
-            return data_dir
+            return content_dir
         if not _is_safe_relative(sub_path):
             raise StorageError(f"Unsafe sub-path: {sub_path}")
-        target = (data_dir / sub_path).resolve()
-        if not target.is_relative_to(data_dir):
+        target = (content_dir / sub_path).resolve()
+        if not target.is_relative_to(content_dir):
             raise StorageError(f"Path escapes share: {sub_path}")
         if not target.exists():
             raise NotFoundError(f"Not found: {sub_path}")
@@ -372,7 +390,7 @@ class RequestStore(BaseStore):
     def create(self, name: str) -> dict[str, Any]:
         id_ = generate_token()
         request_dir = self._new_path(name, id_)
-        (request_dir / "uploads").mkdir(parents=True, exist_ok=True)
+        request_dir.mkdir(parents=True, exist_ok=True)
         manifest = {
             "id": id_,
             "name": name,
@@ -388,11 +406,11 @@ class RequestStore(BaseStore):
 
     def get(self, id_: str) -> dict[str, Any]:
         manifest = self._read_manifest(id_)
-        uploads_dir = self._path_for(id_) / "uploads"
+        content_dir = self._path_for(id_)
         uploaders = []
         upload_count = 0
-        if uploads_dir.exists():
-            for child in sorted(uploads_dir.iterdir()):
+        if content_dir.exists():
+            for child in sorted(content_dir.iterdir()):
                 if not child.is_dir():
                     continue
                 entries = _list_entries(child, self.workspace_root)
@@ -404,7 +422,7 @@ class RequestStore(BaseStore):
         manifest["uploaders"] = uploaders
         manifest["upload_count"] = upload_count
         try:
-            manifest["path"] = str(uploads_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
+            manifest["path"] = str(content_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
         except ValueError:
             pass
         return manifest
@@ -421,7 +439,7 @@ class RequestStore(BaseStore):
         if not parts:
             raise StorageError("Invalid filename")
         safe_parts = [_safe_name(p) for p in parts]
-        target_dir = self._path_for(id_) / "uploads" / uploader_slug
+        target_dir = self._path_for(id_) / uploader_slug
         target_dir.mkdir(parents=True, exist_ok=True)
         # nested folders for path-bearing filenames
         nested_dir = target_dir.joinpath(*safe_parts[:-1]) if len(safe_parts) > 1 else target_dir
@@ -441,7 +459,7 @@ class RequestStore(BaseStore):
             raise StorageError(f"Invalid uploader: {uploader}")
         if not item_name or "/" in item_name or "\\" in item_name or item_name in (".", ".."):
             raise StorageError(f"Invalid item: {item_name}")
-        target = self._path_for(id_) / "uploads" / uploader / item_name
+        target = self._path_for(id_) / uploader / item_name
         if not target.exists():
             raise NotFoundError(f"Upload not found")
         _remove(target, self.use_trash)
@@ -460,14 +478,14 @@ class RequestStore(BaseStore):
         self._write_manifest(id_, manifest)
 
     def resolve_upload_path(self, id_: str, sub_path: str = "") -> Path:
-        uploads_dir = (self._path_for(id_) / "uploads").resolve()
+        request_dir = self._path_for(id_).resolve()
         if not sub_path:
-            return uploads_dir
+            return request_dir
         if not _is_safe_relative(sub_path):
             raise StorageError(f"Unsafe sub-path: {sub_path}")
-        target = (uploads_dir / sub_path).resolve()
-        if not target.is_relative_to(uploads_dir):
-            raise StorageError(f"Path escapes uploads: {sub_path}")
+        target = (request_dir / sub_path).resolve()
+        if not target.is_relative_to(request_dir):
+            raise StorageError(f"Path escapes request: {sub_path}")
         if not target.exists():
             raise NotFoundError(f"Not found: {sub_path}")
         return target

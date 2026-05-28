@@ -364,11 +364,6 @@ export class ShareFilesPanel extends Widget {
     this._body.className = 'jp-ShareFilesPanel-body';
     root.appendChild(this._body);
 
-    // storage path hint
-    this._infoLine = document.createElement('div');
-    this._infoLine.className = 'jp-ShareFilesPanel-infoLine';
-    root.appendChild(this._infoLine);
-
     // bottom drop zone
     this._dropZone = document.createElement('div');
     this._dropZone.className = 'jp-ShareFilesPanel-dropZone';
@@ -435,13 +430,6 @@ export class ShareFilesPanel extends Widget {
       this._state.connections.length,
       () => this._renderConnections()
     );
-    if (this._infoLine) {
-      const path = this._state.info?.storage_path || './uploads';
-      this._infoLine.textContent = 'Files kept in ' + path;
-      this._infoLine.title =
-        'Shares and uploads land in this folder. ' +
-        'Set c.ShareFilesConfig.shares_dir in jupyter_server_config.py to change it.';
-    }
     // The drop zone is for creating a new share - hide it if shares are off.
     if (this._dropZone) {
       this._dropZone.style.display = this._settings.enableShares ? '' : 'none';
@@ -1122,30 +1110,46 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     const mimeData = new MimeData();
-    // Contents.IModel-shaped payload - matches what the JupyterLab file
-    // browser drop handler reads to drive `contents.copy(path, target)`.
-    const payload: Partial<Contents.IModel>[] = [
-      {
-        name: entry.name,
-        path: entry.path,
-        type: entry.type
-      }
-    ];
-    mimeData.setData(CONTENTS_MIME, payload);
-    const dragImage = row.cloneNode(true) as HTMLElement;
-    dragImage.style.width = `${row.offsetWidth}px`;
-    dragImage.style.background = 'var(--jp-layout-color1)';
-    dragImage.style.border = '1px solid var(--jp-brand-color1)';
-    dragImage.style.borderRadius = '2px';
-    dragImage.style.opacity = '0.9';
+    // JupyterLab's file browser drop handler iterates this as `string[]`
+    // (`paths.map(p => manager.services.contents.localPath(p))`) - sending
+    // objects breaks `localPath(obj)` silently. Match that contract.
+    mimeData.setData(CONTENTS_MIME, [entry.path]);
+    const dragImage = this._createEntryDragImage(row);
     const drag = new Drag({
       mimeData,
       dragImage,
       proposedAction: 'copy',
-      supportedActions: 'copy',
+      supportedActions: 'copy-link',
       source: this
     });
     void drag.start(x, y);
+  }
+
+  /**
+   * Build a drag image that visually matches the file browser's own drags:
+   * clone the source row, replace the entry icon's class with JupyterLab's
+   * shared `jp-DragIcon` so the same compact glyph + filename is shown next
+   * to the pointer.
+   */
+  private _createEntryDragImage(row: HTMLElement): HTMLElement {
+    const clone = row.cloneNode(true) as HTMLElement;
+    clone.style.width = `${row.offsetWidth}px`;
+    clone.style.background = 'var(--jp-layout-color1)';
+    clone.style.border = '1px solid var(--jp-brand-color1)';
+    clone.style.borderRadius = '2px';
+    clone.style.opacity = '0.9';
+    // Drop the inline trash button from the drag image
+    const trash = clone.querySelector('.jp-ShareFilesPanel-entryRemove');
+    if (trash) {
+      trash.parentElement?.removeChild(trash);
+    }
+    // Swap the file/folder icon's wrapper class to jp-DragIcon so the same
+    // styling as the file browser drag applies (uniform spacing).
+    const icon = clone.querySelector('.jp-ShareFilesPanel-entryIcon');
+    if (icon) {
+      icon.classList.add('jp-DragIcon');
+    }
+    return clone;
   }
 
   private async _openEntry(entry: IShareEntry): Promise<void> {
@@ -1875,7 +1879,6 @@ export class ShareFilesPanel extends Widget {
   private _state: IPanelState;
   private _body: HTMLElement | null = null;
   private _dropZone: HTMLElement | null = null;
-  private _infoLine: HTMLElement | null = null;
   private _refreshBtn: HTMLElement | null = null;
   private _pollHandle: number | null = null;
 }
