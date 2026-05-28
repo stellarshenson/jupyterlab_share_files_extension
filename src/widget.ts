@@ -1427,12 +1427,12 @@ export class ShareFilesPanel extends Widget {
     if (alreadyCopied) {
       const status = document.createElement('div');
       status.style.cssText =
-        'padding: 4px 10px;' +
+        'padding: 6px 12px;' +
         ' background: var(--jp-layout-color2);' +
         ' color: var(--jp-ui-font-color2);' +
         ' border-left: 2px solid var(--jp-success-color1);' +
         ' border-radius: 2px;' +
-        ' font-size: var(--jp-ui-font-size0);' +
+        ' font-size: var(--jp-ui-font-size1);' +
         ' font-family: var(--jp-ui-font-family);' +
         ' font-style: italic;';
       status.textContent = '✓  Link copied to clipboard';
@@ -1445,9 +1445,9 @@ export class ShareFilesPanel extends Widget {
     input.readOnly = true;
     input.style.cssText =
       'width: 100%;' +
-      ' padding: 6px 8px;' +
+      ' padding: 8px 10px;' +
       ' font-family: var(--jp-code-font-family, monospace);' +
-      ' font-size: var(--jp-ui-font-size0);' +
+      ' font-size: var(--jp-ui-font-size1);' +
       ' color: var(--jp-ui-font-color1);' +
       ' background: var(--jp-layout-color1);' +
       ' border: 1px solid var(--jp-border-color2);' +

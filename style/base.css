@@ -88,6 +88,7 @@
   display: flex;
   align-items: center;
   width: 100%;
+  min-width: 0;
   padding: 4px 8px;
   background: var(--jp-layout-color2);
   border: none;
@@ -99,6 +100,7 @@
   font-weight: 600;
   letter-spacing: 1px;
   text-transform: uppercase;
+  overflow: hidden;
 }
 
 .jp-ShareFilesPanel-sectionHeader:hover {
@@ -114,6 +116,10 @@
 
 .jp-ShareFilesPanel-sectionTitle {
   flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .jp-ShareFilesPanel-sectionCount {
