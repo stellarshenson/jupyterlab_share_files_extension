@@ -56,6 +56,11 @@
   height: 16px;
 }
 
+/* Spin the refresh button while a refresh is in flight */
+.jp-ShareFilesPanel-iconButton.jp-mod-spinning svg {
+  animation: jp-ShareFilesPanel-spin 0.9s linear infinite;
+}
+
 .jp-ShareFilesPanel-body {
   flex: 1;
   overflow-y: auto;

@@ -201,6 +201,9 @@ export class ShareFilesPanel extends Widget {
 
   /** Force-refresh from the server. */
   async refresh(): Promise<void> {
+    if (this._refreshBtn) {
+      this._refreshBtn.classList.add('jp-mod-spinning');
+    }
     try {
       const [s, r, c] = await Promise.all([
         listShares(this._serverSettings),
@@ -227,6 +230,9 @@ export class ShareFilesPanel extends Widget {
       console.error('Share Files: refresh failed', err);
     }
     this._render();
+    if (this._refreshBtn) {
+      this._refreshBtn.classList.remove('jp-mod-spinning');
+    }
   }
 
   /** Submit a link to connect to. Used by the connect input. */
@@ -294,10 +300,10 @@ export class ShareFilesPanel extends Widget {
     });
     header.appendChild(addBtn);
 
-    const refreshBtn = this._makeIconButton(refreshIcon.svgstr, 'Refresh', () => {
+    this._refreshBtn = this._makeIconButton(refreshIcon.svgstr, 'Refresh', () => {
       void this.refresh();
     });
-    header.appendChild(refreshBtn);
+    header.appendChild(this._refreshBtn);
 
     root.appendChild(header);
 
@@ -1346,5 +1352,6 @@ export class ShareFilesPanel extends Widget {
   private _body: HTMLElement | null = null;
   private _dropZone: HTMLElement | null = null;
   private _infoLine: HTMLElement | null = null;
+  private _refreshBtn: HTMLElement | null = null;
   private _pollHandle: number | null = null;
 }
