@@ -44,6 +44,9 @@ const plugin: JupyterFrontEndPlugin<void> = {
     restorer: ILayoutRestorer | null,
     settingRegistry: ISettingRegistry | null
   ) => {
+    console.log(
+      'JupyterLab extension jupyterlab_share_files_extension is activated!'
+    );
     const { commands, serviceManager } = app;
 
     // Helper - get currently selected paths in the file browser (relative paths).

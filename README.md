@@ -17,18 +17,58 @@ Think AirDrop, except the link is the discovery mechanism and the JupyterLab ser
 
 ## Features
 
-- **Side panel** - dedicated right-rail panel with three foldable sections (My Shares, My Requests, Connected) and a refresh button that spins while polling
-- **Shares (file drops)** - "Here are my files, grab them via this link." Drag files or folders from the file browser into the panel to create or extend a share. Recipients download via the link
-- **Requests (inboxes)** - "Send me files here." Anyone with the link can upload files or folders, organized per uploader in your local storage
-- **Connections** - paste someone else's link into your panel to subscribe to their share (browse and click to download) or their request (drag your local files to upload)
-- **Drag-and-drop** - drag from the file browser onto the bottom drop-zone (new share), an existing share row (add files), or a connected request (upload)
-- **Per-row inline actions** - hover over any share or request to reveal a copy-link icon and a delete icon. The copy-link icon flashes green on click and opens a popup with the selectable link
-- **Folder support** - shares and requests work for both individual files and entire folders. Directory structure is preserved
-- **Standalone web page** - every link opens a self-contained HTML page for non-JupyterLab users (download buttons for shares, drag-drop upload zone for requests). No login, no JS framework, no special browser needed
-- **Symlink-friendly** - sharing files from symlinked locations like `@shared/...` works transparently
-- **Live upload notifications** - when someone uploads to your request, a JupyterLab notification pops up
-- **Toggleable features** - turn off sharing or requests individually in JupyterLab Settings (both on by default)
-- **Theme-aware UI** - panel inherits JupyterLab's font, font-size, theme variables and colour scheme; designed to look at home next to the file browser
+### Sharing files
+
+- **Shares (file drops)** - "Here are my files, grab them via this link." Create a named, read-only snapshot of one or more files or folders. Anyone with the link can download
+- **File browser context menu** - right-click any file or folder and pick "Share Files..." - the selected items become a new share, the link is auto-copied to clipboard, and a popup shows it for verification
+- **Drag-and-drop to create** - drag from the JupyterLab file browser onto the panel's bottom drop-zone to start a new share
+- **Extend a share by drag** - drop more files onto an existing share row to add them; folders are copied recursively, structure preserved
+- **Remove items** - hover any file inside an expanded share and click the small [x] to remove just that item from the share
+- **Delete share** - hover any share row to reveal a trash icon, or right-click for the context menu
+
+### Requesting files
+
+- **Requests (inboxes)** - "Send me files here." Create a named landing zone; anyone with the link can upload one or many files or folders
+- **Per-uploader organisation** - uploads are placed under subfolders named after the uploader (or `anonymous` if they did not provide a name)
+- **Live upload notifications** - JupyterLab pops a notification when someone uploads to your request, so you know without having to refresh
+- **Delete request** - same hover trash icon as shares; deleting also removes all uploads
+
+### Connecting to other people's links
+
+- **Connect by paste** - paste someone else's share link into the panel's connect field to subscribe to it; the share's contents appear in the Connected section
+- **Click-to-download** - click any file in a connected share to open the direct download URL in a new browser tab; folders download as ZIP
+- **Drag-to-upload** - if the connection is a remote request, drag files from your file browser onto the request row to upload them to the other peer
+- **Self-connect refused** - the panel and backend both refuse links pointing back to your own server, so you never get a circular connection
+- **Disconnect** - drop a connection from the panel without affecting the remote side
+
+### Links and recipients
+
+- **Standalone HTML page** - every share or request link opens a self-contained page in any browser (no login, no JS framework, no extension required on the recipient side)
+- **Copy-link popup** - hover any share or request to reveal a copy-link icon; clicking flashes the icon and opens a popup with the selectable, copyable URL
+- **8-character base32 token** - the share/request ID; the link itself is the credential (no extra password by default)
+
+### Storage and configuration
+
+- **Local filesystem layout** - files live under `<server_root_dir>/uploads/` by default in a human-readable `<slug>-<id>` folder structure, so you can find a share visually in the file browser
+- **Configurable storage path** - admins can set `c.ShareFilesConfig.shares_dir` in `jupyter_server_config.py` to redirect storage anywhere on disk
+- **Symlink-friendly** - sharing files from symlinked locations like `@shared/...` works transparently; the share contains a real copy of whatever the symlink points to
+- **Filesystem is the source of truth** - if you delete a share folder directly from the file browser, the panel picks it up on the next poll and cleans the entry
+
+### UI
+
+- **Side panel** - dedicated right-rail panel with three foldable sections: My Shares, My Requests, Connected
+- **Auto-refresh** - polls every 15 seconds; refresh icon in the header spins while polling and can be clicked for an immediate refresh
+- **Drag-target highlight** - dropping files onto a valid target (share row, request row, drop-zone) shows a clear blue outline before commit
+- **Toggleable features** - turn file sharing or file requests off individually under **Settings → Settings Editor → Share Files**; both default to on
+- **Theme-aware UI** - panel inherits JupyterLab's font family, font sizes, theme colours and layout dimensions; mirrors the file browser visual conventions so it reads as a native sidebar
+
+### Security
+
+- **Link is the credential** - 40 bits of token entropy (8-char base32) protects against guessing; share links carry no other auth
+- **Inherits HTTPS** - if your JupyterHub or Jupyter server is HTTPS-terminated (e.g. behind Traefik, nginx, or the hub's built-in proxy), links are encrypted end-to-end
+- **No accidental cross-user access** - the public endpoints only expose data from the share/request directories; the rest of your workspace is unreachable through the link
+- **Path traversal blocked** - file and folder names from incoming uploads are sanitised; `..` components are stripped, absolute paths are rejected
+- **No automatic expiry** - links live until you delete the share; suitable for trusted-channel sharing (Slack, email, etc.)
 
 ## How it works
 
