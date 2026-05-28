@@ -18,6 +18,8 @@ export interface IShare {
   created_at: number;
   entries: IShareEntry[];
   link: string;
+  /** Workspace-relative path of the share's data directory */
+  path?: string;
 }
 
 export interface IUploaderEntry {
@@ -36,6 +38,8 @@ export interface IRequest {
   last_seen_upload_at: number;
   uploaders: IUploaderEntry[];
   link: string;
+  /** Workspace-relative path of the request's uploads directory */
+  path?: string;
 }
 
 export interface IConnection {

@@ -270,9 +270,14 @@ export class ShareFilesPanel extends Widget {
       const linkHost = new URL(link).host;
       const ownHost = window.location.host;
       if (linkHost === ownHost) {
-        Notification.warning(
-          'That link is hosted on your own server - you already own it.'
-        );
+        await showDialog({
+          title: 'Cannot connect to your own link',
+          body:
+            'This share or request is hosted on your own server, so you ' +
+            'already own it. Look for it in My Shares or My Requests, ' +
+            'or paste a link from someone else.',
+          buttons: [Dialog.okButton({ label: 'OK' })]
+        });
         return;
       }
     } catch {
@@ -895,15 +900,40 @@ export class ShareFilesPanel extends Widget {
       row.appendChild(btn);
     }
     if (entry.path) {
-      row.title = 'Right-click for actions';
+      row.title =
+        entry.type === 'directory'
+          ? 'Double-click to open folder; right-click for actions'
+          : 'Double-click to open file; right-click for actions';
       row.classList.add('jp-mod-clickable');
       row.addEventListener('contextmenu', evt => {
         evt.preventDefault();
         evt.stopPropagation();
         this._openEntryContextMenu(evt, entry);
       });
+      row.addEventListener('dblclick', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        void this._openEntry(entry);
+      });
     }
     return row;
+  }
+
+  private async _openEntry(entry: IShareEntry): Promise<void> {
+    if (!entry.path) {
+      return;
+    }
+    if (entry.type === 'directory') {
+      // Reveal the folder's contents in the file browser
+      await this._showEntryInFileBrowser(entry.path, 'directory');
+      return;
+    }
+    // Open via JupyterLab's document manager - it picks the right viewer
+    try {
+      await this._commands.execute('docmanager:open', { path: entry.path });
+    } catch (err: any) {
+      Notification.error(`Could not open: ${err.message || err}`);
+    }
   }
 
   private _openEntryContextMenu(evt: MouseEvent, entry: IShareEntry): void {
@@ -917,7 +947,7 @@ export class ShareFilesPanel extends Widget {
     });
     menu.addItem({
       command: 'share-files-panel:show-entry-in-browser',
-      args: { path: entry.path }
+      args: { path: entry.path, type: entry.type }
     });
     menu.open(evt.clientX, evt.clientY);
   }
@@ -1010,7 +1040,8 @@ export class ShareFilesPanel extends Widget {
           if (!path) {
             return;
           }
-          void this._showEntryInFileBrowser(path);
+          const type = String(args.type || '');
+          void this._showEntryInFileBrowser(path, type);
         }
       });
     }
@@ -1030,13 +1061,22 @@ export class ShareFilesPanel extends Widget {
     }
   }
 
-  private async _showEntryInFileBrowser(sourcePath: string): Promise<void> {
+  private async _showEntryInFileBrowser(
+    sourcePath: string,
+    type: string
+  ): Promise<void> {
     // sourcePath is workspace-relative, e.g. "uploads/shares/foo-AB/data/x.txt"
-    const slash = sourcePath.lastIndexOf('/');
-    const dir = slash >= 0 ? sourcePath.slice(0, slash) : '';
-    const name = slash >= 0 ? sourcePath.slice(slash + 1) : sourcePath;
+    // For files we cd into the parent and select the file. For directories we
+    // cd into the directory itself so the user can browse its contents.
     try {
-      await this._revealInFileBrowser(dir, name);
+      if (type === 'directory') {
+        await this._revealInFileBrowser(sourcePath);
+      } else {
+        const slash = sourcePath.lastIndexOf('/');
+        const dir = slash >= 0 ? sourcePath.slice(0, slash) : '';
+        const name = slash >= 0 ? sourcePath.slice(slash + 1) : sourcePath;
+        await this._revealInFileBrowser(dir, name);
+      }
     } catch (err: any) {
       Notification.error(`Could not navigate: ${err.message || err}`);
     }
@@ -1052,6 +1092,12 @@ export class ShareFilesPanel extends Widget {
       command: 'share-files-panel:open-link',
       args: { link: share.link }
     });
+    if (share.path) {
+      menu.addItem({
+        command: 'share-files-panel:show-entry-in-browser',
+        args: { path: share.path, type: 'directory' }
+      });
+    }
     menu.addItem({ type: 'separator' });
     menu.addItem({
       command: 'share-files-panel:delete-share',
@@ -1070,6 +1116,12 @@ export class ShareFilesPanel extends Widget {
       command: 'share-files-panel:open-link',
       args: { link: req.link }
     });
+    if (req.path) {
+      menu.addItem({
+        command: 'share-files-panel:show-entry-in-browser',
+        args: { path: req.path, type: 'directory' }
+      });
+    }
     menu.addItem({ type: 'separator' });
     menu.addItem({
       command: 'share-files-panel:delete-request',
@@ -1431,7 +1483,12 @@ export class ShareFilesPanel extends Widget {
     alreadyCopied: boolean
   ): Promise<void> {
     const wrap = document.createElement('div');
-    wrap.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+    // Wider than the default ~480px dialog so the full link fits on one line
+    wrap.style.cssText =
+      'display: flex;' +
+      ' flex-direction: column;' +
+      ' gap: 8px;' +
+      ' min-width: min(720px, 90vw);';
 
     if (alreadyCopied) {
       const status = document.createElement('div');

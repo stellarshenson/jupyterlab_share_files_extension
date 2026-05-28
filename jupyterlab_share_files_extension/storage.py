@@ -282,7 +282,12 @@ class ShareStore(BaseStore):
                     manifest = json.load(f)
             except (OSError, json.JSONDecodeError):
                 continue
-            manifest["entries"] = _list_entries(child / "data", self.workspace_root)
+            data_dir = child / "data"
+            manifest["entries"] = _list_entries(data_dir, self.workspace_root)
+            try:
+                manifest["path"] = str(data_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
+            except ValueError:
+                pass
             result.append(manifest)
         return result
 
@@ -314,7 +319,12 @@ class ShareStore(BaseStore):
 
     def get(self, id_: str) -> dict[str, Any]:
         manifest = self._read_manifest(id_)
-        manifest["entries"] = _list_entries(self._path_for(id_) / "data", self.workspace_root)
+        data_dir = self._path_for(id_) / "data"
+        manifest["entries"] = _list_entries(data_dir, self.workspace_root)
+        try:
+            manifest["path"] = str(data_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
+        except ValueError:
+            pass
         return manifest
 
     def add_items(self, id_: str, source_paths: list[str]) -> dict[str, Any]:
@@ -393,6 +403,10 @@ class RequestStore(BaseStore):
                 })
         manifest["uploaders"] = uploaders
         manifest["upload_count"] = upload_count
+        try:
+            manifest["path"] = str(uploads_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
+        except ValueError:
+            pass
         return manifest
 
     def add_upload(self, id_: str, uploader: str, filename: str, data: bytes) -> dict[str, Any]:
