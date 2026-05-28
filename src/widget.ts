@@ -7,7 +7,7 @@
 
 import { Dialog, Notification, showDialog } from '@jupyterlab/apputils';
 import { Contents, ServerConnection } from '@jupyterlab/services';
-import { filterListIcon } from '@jupyterlab/ui-components';
+import { filterIcon } from '@jupyterlab/ui-components';
 import { CommandRegistry } from '@lumino/commands';
 import { MimeData } from '@lumino/coreutils';
 import { Drag } from '@lumino/dragdrop';
@@ -365,7 +365,7 @@ export class ShareFilesPanel extends Widget {
     filterBox.className = 'jp-ShareFilesPanel-filterBox';
     const filterIconNode = document.createElement('span');
     filterIconNode.className = 'jp-ShareFilesPanel-filterIcon';
-    filterListIcon.element({ container: filterIconNode });
+    filterIcon.element({ container: filterIconNode });
     filterBox.appendChild(filterIconNode);
     this._filterInput = document.createElement('input');
     this._filterInput.type = 'search';
