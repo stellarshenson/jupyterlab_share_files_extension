@@ -51,6 +51,14 @@ def _shares_dir_setting(handler) -> str:
     return cfg.shares_dir or ""
 
 
+def _use_trash_setting(handler) -> bool:
+    """Return whether deletes should go to the OS trash."""
+    cfg: ShareFilesConfig = handler.settings.get("share_files_config")
+    if cfg is None:
+        return True  # match default
+    return bool(cfg.use_trash)
+
+
 # --------------------------------------------------------------------------- #
 # Base classes
 # --------------------------------------------------------------------------- #
@@ -68,12 +76,16 @@ class _Base(APIHandler):
         return _shares_dir_setting(self)
 
     @property
+    def use_trash(self) -> bool:
+        return _use_trash_setting(self)
+
+    @property
     def share_store(self) -> ShareStore:
-        return ShareStore(self.workspace_root, self.shares_dir)
+        return ShareStore(self.workspace_root, self.shares_dir, self.use_trash)
 
     @property
     def request_store(self) -> RequestStore:
-        return RequestStore(self.workspace_root, self.shares_dir)
+        return RequestStore(self.workspace_root, self.shares_dir, self.use_trash)
 
     @property
     def connection_store(self) -> ConnectionStore:
@@ -128,17 +140,33 @@ class _PublicBase(tornado.web.RequestHandler):
         return RequestStore(self.workspace_root, self.shares_dir)
 
 
+def _public_origin(handler: tornado.web.RequestHandler) -> str:
+    """Pick scheme + host the browser actually sees.
+
+    Behind a TLS-terminating proxy (JupyterHub, Traefik, nginx) Tornado's
+    ``request.protocol`` reports ``http`` unless ``trust_xheaders`` is enabled
+    on the server. Honour ``X-Forwarded-Proto`` / ``X-Forwarded-Host``
+    explicitly so HTTPS-facing sessions emit HTTPS links, while plain p2p
+    sessions stay on HTTP.
+    """
+    proto = handler.request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
+    if not proto:
+        proto = handler.request.protocol
+    host = handler.request.headers.get("X-Forwarded-Host", "").split(",")[0].strip()
+    if not host:
+        host = handler.request.host
+    return proto + "://" + host
+
+
 def _public_share_url(handler: tornado.web.RequestHandler, id_: str) -> str:
     """Build an absolute URL the share's public page is reachable at."""
-    base = handler.request.protocol + "://" + handler.request.host
     path = url_path_join(handler.settings.get("base_url", "/"), EXTENSION_NAMESPACE, "public", "share", id_)
-    return base + path
+    return _public_origin(handler) + path
 
 
 def _public_request_url(handler: tornado.web.RequestHandler, id_: str) -> str:
-    base = handler.request.protocol + "://" + handler.request.host
     path = url_path_join(handler.settings.get("base_url", "/"), EXTENSION_NAMESPACE, "public", "request", id_)
-    return base + path
+    return _public_origin(handler) + path
 
 
 # --------------------------------------------------------------------------- #

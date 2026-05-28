@@ -8,44 +8,53 @@
 [![Brought To You By KOLOMOLO](https://img.shields.io/badge/Brought%20To%20You%20By-KOLOMOLO-00ffff?style=flat)](https://kolomolo.com)
 [![Donate PayPal](https://img.shields.io/badge/Donate-PayPal-blue?style=flat)](https://www.paypal.com/donate/?hosted_button_id=B4KPBJDLLXTSA)
 
-> [!TIP]
-> Part of [stellars_jupyterlab_extensions](https://github.com/stellarshenson/stellars_jupyterlab_extensions). Install all at once: `pip install stellars_jupyterlab_extensions`
+If you live in JupyterLab and have ever had to "just send over that dataset" or "could you please upload your CSV somewhere I can grab it" - you know the routine. Email it (too big). Drop it in OneDrive (sync it first, share it, accept the corporate Terms of the Universe). Spin up an S3 bucket (and a meeting). By the time anyone has the file, you've forgotten what you needed it for.
 
-AirDrop for JupyterLab. Create a **share** (file drop) or **request** (inbox), copy the link, paste it in chat. Recipients open it in their JupyterLab panel or any plain browser.
+This extension does not try to replace any of that. OneDrive, Dropbox, S3, that one Slack channel called `#files-final-FINAL` - they remain undefeated for serious file logistics. This is the small, embarrassingly specific tool for the other 90% of the time, when two people on JupyterLab just need to pass a folder back and forth and would prefer not to involve an enterprise.
+
+Create a **share** (file drop) or **request** (inbox) from a side panel, copy the link, paste it in chat. Recipients open it in their JupyterLab panel or any plain browser. That is the whole pitch.
 
 ## Features
 
-- **Shares** - read-only file/folder drops; recipients download
+- **Shares** - read-only drops of files and folders; recipients download
 - **Requests** - inboxes; recipients upload, organised per uploader
 - **Connections** - paste someone's link to subscribe to their share or upload to their request
 - **Drag-and-drop** from the file browser - drop zone (new share), share row (add files), request row (upload)
-- **Right-click context menu** on the file browser ("Share Files..."), and on panel entries ("Copy to Current Folder", "Show in File Browser")
+- **Right-click context menu** in the file browser ("Share Files...") and on panel entries ("Copy to Current Folder", "Show in File Browser")
 - **Standalone HTML page** - link works in any browser, no JupyterLab needed
 - **Live upload notifications** when someone uploads to your request
 - **Symlink-friendly** - sharing `@shared/...` and similar works
+- **Delete to trash** - panel deletes move files to the OS trash by default (toggle with `c.ShareFilesConfig.use_trash`)
+- **HTTPS-aware links** - share URLs follow the scheme the browser is on (HTTPS behind a proxy, HTTP for direct peer-to-peer)
 - **Settings toggles** - turn shares or requests on/off independently
+
+## Requirements
+
+- JupyterLab >= 4.0.0
+- Python >= 3.9
 
 ## Install
 
-Requires JupyterLab 4.0+.
+Developers install via the project `Makefile`:
+
+```bash
+make install
+```
+
+End-users install the published package from PyPI:
 
 ```bash
 pip install jupyterlab_share_files_extension
 ```
 
-## Storage
+## Configuration
 
-Files live under `<server_root_dir>/uploads/<shares|requests>/<slug>-<id>/`. Each share/request is identified by an 8-char base32 token; the token is the credential.
-
-Change the location via `jupyter_server_config.py`:
+Optional, set in `jupyter_server_config.py`:
 
 ```python
-c.ShareFilesConfig.shares_dir = "/path/to/storage"
+c.ShareFilesConfig.shares_dir = "/path/to/storage"  # default: ./uploads
+c.ShareFilesConfig.use_trash = True                 # default: True
 ```
-
-## Settings
-
-**Settings → Settings Editor → Share Files** toggles `enableShares` and `enableRequests` independently (both default on). Connections stay available either way.
 
 ## Security
 

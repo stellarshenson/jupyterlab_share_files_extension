@@ -20,6 +20,29 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    from send2trash import send2trash as _send2trash
+except ImportError:  # pragma: no cover - send2trash is a hard dep, this is a safety net
+    _send2trash = None
+
+
+def _remove(target: Path, use_trash: bool) -> None:
+    """Delete `target` permanently, or move it to the OS trash when use_trash.
+
+    Falls back to permanent delete if send2trash is unavailable or fails (e.g.
+    target lives on a filesystem with no trash mount, common in containers).
+    """
+    if use_trash and _send2trash is not None:
+        try:
+            _send2trash(str(target))
+            return
+        except Exception:
+            pass  # fall through to permanent delete
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+
 
 SHARES_DIR_NAME = "uploads"
 TOKEN_BYTES = 5  # 5 bytes => 8 chars base32 (e.g. "A3KM7X2P")
@@ -157,11 +180,12 @@ class BaseStore:
 
     subdir: str = ""  # 'shares' or 'requests'
 
-    def __init__(self, workspace_root: str, shares_dir: str = ""):
+    def __init__(self, workspace_root: str, shares_dir: str = "", use_trash: bool = False):
         self.workspace_root = Path(os.path.expanduser(workspace_root)).resolve()
         self.shares_base = resolve_shares_dir(workspace_root, shares_dir)
         self.root = self.shares_base / self.subdir
         self.root.mkdir(parents=True, exist_ok=True)
+        self.use_trash = use_trash
 
     def _path_for(self, id_: str) -> Path:
         """Resolve the on-disk directory for a share/request id.
@@ -231,7 +255,7 @@ class BaseStore:
         path = self._path_for(id_)
         if not path.exists():
             raise NotFoundError(f"Not found: {id_}")
-        shutil.rmtree(path)
+        _remove(path, self.use_trash)
 
 
 class ShareStore(BaseStore):
@@ -314,10 +338,7 @@ class ShareStore(BaseStore):
             target = data_dir / name
             if not target.exists():
                 continue
-            if target.is_dir():
-                shutil.rmtree(target)
-            else:
-                target.unlink()
+            _remove(target, self.use_trash)
         return self.get(id_)
 
     def resolve_data_path(self, id_: str, sub_path: str = "") -> Path:
@@ -409,10 +430,7 @@ class RequestStore(BaseStore):
         target = self._path_for(id_) / "uploads" / uploader / item_name
         if not target.exists():
             raise NotFoundError(f"Upload not found")
-        if target.is_dir():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
+        _remove(target, self.use_trash)
         # remove empty uploader dirs
         uploader_dir = target.parent
         try:

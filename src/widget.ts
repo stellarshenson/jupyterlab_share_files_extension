@@ -467,9 +467,7 @@ export class ShareFilesPanel extends Widget {
     list.className = 'jp-ShareFilesPanel-list';
     if (this._state.shares.length === 0) {
       list.appendChild(
-        this._renderEmpty(
-          'No shares yet. Drag files in or use the file browser context menu.'
-        )
+        this._renderEmpty('No shares yet. Drag files in to start.')
       );
       return list;
     }

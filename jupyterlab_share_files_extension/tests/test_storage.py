@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
+from jupyterlab_share_files_extension import storage as storage_mod
 from jupyterlab_share_files_extension.storage import (
     SHARES_DIR_NAME,
     ConnectionStore,
@@ -21,6 +23,7 @@ from jupyterlab_share_files_extension.storage import (
     ShareStore,
     StorageError,
     _is_safe_relative,
+    _remove,
     _safe_name,
     generate_token,
     resolve_shares_dir,
@@ -414,3 +417,116 @@ class TestConfigurableSharesDir:
             "share", "ABCDEFGH", "https://x"
         )
         assert (tmp_path / "shared_root" / "connections.json").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# Trash behaviour (use_trash)
+# --------------------------------------------------------------------------- #
+
+
+class TestUseTrash:
+    """Verify the _remove helper and that stores route deletes through it.
+
+    send2trash itself can fail in containerised CI (no XDG trash mount on
+    tmpfs), so we monkeypatch the underlying send2trash callable and assert
+    on the call rather than on filesystem trash side-effects.
+    """
+
+    def test_remove_permanent_when_trash_disabled(self, tmp_path, monkeypatch):
+        called = []
+        monkeypatch.setattr(storage_mod, "_send2trash", lambda p: called.append(p))
+        target = tmp_path / "x.txt"
+        target.write_text("x")
+        _remove(target, use_trash=False)
+        assert not target.exists()
+        assert called == []
+
+    def test_remove_uses_send2trash_when_enabled(self, tmp_path, monkeypatch):
+        called = []
+
+        def fake_trash(p):
+            called.append(p)
+            Path(p).unlink()
+
+        monkeypatch.setattr(storage_mod, "_send2trash", fake_trash)
+        target = tmp_path / "x.txt"
+        target.write_text("x")
+        _remove(target, use_trash=True)
+        assert called == [str(target)]
+        assert not target.exists()
+
+    def test_remove_falls_back_when_send2trash_fails(self, tmp_path, monkeypatch):
+        def raising(p):
+            raise RuntimeError("no trash mount")
+
+        monkeypatch.setattr(storage_mod, "_send2trash", raising)
+        target = tmp_path / "x.txt"
+        target.write_text("x")
+        _remove(target, use_trash=True)
+        # Permanent-delete fallback kicked in - file is gone, no exception
+        assert not target.exists()
+
+    def test_remove_falls_back_when_send2trash_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(storage_mod, "_send2trash", None)
+        target = tmp_path / "x.txt"
+        target.write_text("x")
+        _remove(target, use_trash=True)
+        assert not target.exists()
+
+    def test_remove_handles_directory(self, tmp_path, monkeypatch):
+        called = []
+        monkeypatch.setattr(storage_mod, "_send2trash", lambda p: called.append(p))
+        d = tmp_path / "d"
+        (d / "nested").mkdir(parents=True)
+        (d / "nested" / "f.txt").write_text("f")
+        _remove(d, use_trash=False)
+        assert not d.exists()
+        assert called == []
+
+    def test_share_store_delete_routes_through_trash(self, tmp_path, monkeypatch):
+        called = []
+        monkeypatch.setattr(
+            storage_mod,
+            "_send2trash",
+            lambda p: (called.append(p), __import__("shutil").rmtree(p))[1],
+        )
+        (tmp_path / "x.txt").write_text("x")
+        store = ShareStore(str(tmp_path), use_trash=True)
+        share = store.create("trashed", ["x.txt"])
+        store.delete(share["id"])
+        assert called and "trashed" in called[0]
+
+    def test_share_store_remove_items_routes_through_trash(self, tmp_path, monkeypatch):
+        called = []
+        monkeypatch.setattr(
+            storage_mod,
+            "_send2trash",
+            lambda p: (called.append(p), Path(p).unlink())[1],
+        )
+        (tmp_path / "a.txt").write_text("a")
+        (tmp_path / "b.txt").write_text("b")
+        store = ShareStore(str(tmp_path), use_trash=True)
+        share = store.create("s", ["a.txt", "b.txt"])
+        store.remove_items(share["id"], ["a.txt"])
+        assert len(called) == 1
+        assert called[0].endswith("a.txt")
+
+    def test_request_store_remove_upload_routes_through_trash(
+        self, tmp_path, monkeypatch
+    ):
+        called = []
+        monkeypatch.setattr(
+            storage_mod,
+            "_send2trash",
+            lambda p: (called.append(p), Path(p).unlink())[1],
+        )
+        store = RequestStore(str(tmp_path), use_trash=True)
+        req = store.create("inbox")
+        store.add_upload(req["id"], "alice", "note.txt", b"hi")
+        store.remove_upload(req["id"], "alice", "note.txt")
+        assert called and called[0].endswith("note.txt")
+
+    def test_store_default_use_trash_is_false(self, tmp_path):
+        """Stores called without use_trash keep current behaviour."""
+        store = ShareStore(str(tmp_path))
+        assert store.use_trash is False
