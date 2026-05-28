@@ -7,6 +7,7 @@
 
 import { Dialog, Notification, showDialog } from '@jupyterlab/apputils';
 import { Contents, ServerConnection } from '@jupyterlab/services';
+import { filterListIcon } from '@jupyterlab/ui-components';
 import { CommandRegistry } from '@lumino/commands';
 import { MimeData } from '@lumino/coreutils';
 import { Drag } from '@lumino/dragdrop';
@@ -359,6 +360,24 @@ export class ShareFilesPanel extends Widget {
 
     root.appendChild(header);
 
+    // filter input - funnel icon prefix, type to narrow visible shares/requests by name
+    const filterBox = document.createElement('div');
+    filterBox.className = 'jp-ShareFilesPanel-filterBox';
+    const filterIconNode = document.createElement('span');
+    filterIconNode.className = 'jp-ShareFilesPanel-filterIcon';
+    filterListIcon.element({ container: filterIconNode });
+    filterBox.appendChild(filterIconNode);
+    this._filterInput = document.createElement('input');
+    this._filterInput.type = 'search';
+    this._filterInput.className = 'jp-ShareFilesPanel-filterInput';
+    this._filterInput.placeholder = 'Filter shares and requests';
+    this._filterInput.addEventListener('input', () => {
+      this._filterText = this._filterInput!.value.trim().toLowerCase();
+      this._render();
+    });
+    filterBox.appendChild(this._filterInput);
+    root.appendChild(filterBox);
+
     // body
     this._body = document.createElement('div');
     this._body.className = 'jp-ShareFilesPanel-body';
@@ -408,27 +427,27 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     this._body.innerHTML = '';
+    const visibleShares = this._applyNameFilter(this._state.shares);
+    const visibleRequests = this._applyNameFilter(this._state.requests);
+    const visibleConnections = this._applyNameFilter(this._state.connections);
     if (this._settings.enableShares) {
-      this._renderSection(
-        'shares',
-        'My Shares',
-        this._state.shares.length,
-        () => this._renderShares()
+      this._renderSection('shares', 'My Shares', visibleShares.length, () =>
+        this._renderShares(visibleShares)
       );
     }
     if (this._settings.enableRequests) {
       this._renderSection(
         'requests',
         'My Requests',
-        this._state.requests.length,
-        () => this._renderRequests()
+        visibleRequests.length,
+        () => this._renderRequests(visibleRequests)
       );
     }
     this._renderSection(
       'connected',
       'Connected',
-      this._state.connections.length,
-      () => this._renderConnections()
+      visibleConnections.length,
+      () => this._renderConnections(visibleConnections)
     );
     // The drop zone is for creating a new share - hide it if shares are off.
     if (this._dropZone) {
@@ -476,16 +495,20 @@ export class ShareFilesPanel extends Widget {
     this._body!.appendChild(section);
   }
 
-  private _renderShares(): HTMLElement {
+  private _renderShares(shares: IShare[]): HTMLElement {
     const list = document.createElement('div');
     list.className = 'jp-ShareFilesPanel-list';
-    if (this._state.shares.length === 0) {
+    if (shares.length === 0) {
       list.appendChild(
-        this._renderEmpty('No shares yet. Drag files in to start.')
+        this._renderEmpty(
+          this._filterText
+            ? 'No shares match the filter.'
+            : 'No shares yet. Drag files in to start.'
+        )
       );
       return list;
     }
-    for (const share of this._state.shares) {
+    for (const share of shares) {
       list.appendChild(this._renderShareItem(share));
     }
     return list;
@@ -632,6 +655,13 @@ export class ShareFilesPanel extends Widget {
     return list;
   }
 
+  private _applyNameFilter<T extends { name: string }>(items: T[]): T[] {
+    if (!this._filterText) {
+      return items;
+    }
+    return items.filter(i => i.name.toLowerCase().includes(this._filterText));
+  }
+
   private _applyHiddenFilter(entries: IShareEntry[]): IShareEntry[] {
     if (this._settings.showHiddenFiles) {
       return entries;
@@ -716,16 +746,20 @@ export class ShareFilesPanel extends Widget {
     this._render();
   }
 
-  private _renderRequests(): HTMLElement {
+  private _renderRequests(requests: IRequest[]): HTMLElement {
     const list = document.createElement('div');
     list.className = 'jp-ShareFilesPanel-list';
-    if (this._state.requests.length === 0) {
+    if (requests.length === 0) {
       list.appendChild(
-        this._renderEmpty('No requests yet. Use [+] to create one.')
+        this._renderEmpty(
+          this._filterText
+            ? 'No requests match the filter.'
+            : 'No requests yet. Use [+] to create one.'
+        )
       );
       return list;
     }
-    for (const req of this._state.requests) {
+    for (const req of requests) {
       list.appendChild(this._renderRequestItem(req));
     }
     return list;
@@ -839,16 +873,20 @@ export class ShareFilesPanel extends Widget {
     return list;
   }
 
-  private _renderConnections(): HTMLElement {
+  private _renderConnections(connections: IConnection[]): HTMLElement {
     const list = document.createElement('div');
     list.className = 'jp-ShareFilesPanel-list';
-    if (this._state.connections.length === 0) {
+    if (connections.length === 0) {
       list.appendChild(
-        this._renderEmpty('No connections yet. Paste a link below.')
+        this._renderEmpty(
+          this._filterText
+            ? 'No connections match the filter.'
+            : 'No connections yet. Paste a link below.'
+        )
       );
       return list;
     }
-    for (const conn of this._state.connections) {
+    for (const conn of connections) {
       list.appendChild(this._renderConnectionItem(conn));
     }
     return list;
@@ -1880,5 +1918,7 @@ export class ShareFilesPanel extends Widget {
   private _body: HTMLElement | null = null;
   private _dropZone: HTMLElement | null = null;
   private _refreshBtn: HTMLElement | null = null;
+  private _filterInput: HTMLInputElement | null = null;
+  private _filterText = '';
   private _pollHandle: number | null = null;
 }

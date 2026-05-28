@@ -37,6 +37,46 @@
   color: var(--jp-ui-font-color1);
 }
 
+.jp-ShareFilesPanel-filterBox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--jp-layout-color1);
+  border-bottom: 1px solid var(--jp-border-color3);
+  flex: 0 0 auto;
+}
+
+.jp-ShareFilesPanel-filterIcon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  color: var(--jp-ui-font-color2);
+  flex: 0 0 auto;
+}
+
+.jp-ShareFilesPanel-filterIcon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.jp-ShareFilesPanel-filterInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--jp-border-color2);
+  border-radius: 2px;
+  background: var(--jp-layout-color1);
+  color: var(--jp-ui-font-color1);
+  font-family: var(--jp-ui-font-family);
+  font-size: var(--jp-ui-font-size1);
+  outline: none;
+}
+
+.jp-ShareFilesPanel-filterInput:focus {
+  border-color: var(--jp-brand-color1);
+}
+
 .jp-ShareFilesPanel-iconButton {
   background: transparent;
   border: none;
