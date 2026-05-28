@@ -220,32 +220,41 @@ export class ShareFilesPanel extends Widget {
     if (this._refreshBtn) {
       this._refreshBtn.classList.add('jp-mod-spinning');
     }
-    try {
-      const [s, r, c] = await Promise.all([
-        listShares(this._serverSettings),
-        listRequests(this._serverSettings),
-        listConnections(this._serverSettings)
-      ]);
-      this._state.shares = s.shares || [];
-      this._state.requests = r.requests || [];
-      this._state.connections = c.connections || [];
-      this._detectNewUploads();
-      // fetch info once - storage path doesn't change at runtime
-      if (this._state.info === null) {
-        try {
-          this._state.info = await getInfo(this._serverSettings);
-        } catch {
-          // keep null - we just won't show the path hint
+    // Local fetches return in <100 ms - without a floor the spinner runs for
+    // a single frame and reads as "nothing happened". Hold for at least
+    // ~600 ms so the click visibly registers.
+    const minSpin = new Promise<void>(resolve =>
+      window.setTimeout(resolve, 600)
+    );
+    const work = (async () => {
+      try {
+        const [s, r, c] = await Promise.all([
+          listShares(this._serverSettings),
+          listRequests(this._serverSettings),
+          listConnections(this._serverSettings)
+        ]);
+        this._state.shares = s.shares || [];
+        this._state.requests = r.requests || [];
+        this._state.connections = c.connections || [];
+        this._detectNewUploads();
+        // fetch info once - storage path doesn't change at runtime
+        if (this._state.info === null) {
+          try {
+            this._state.info = await getInfo(this._serverSettings);
+          } catch {
+            // keep null - we just won't show the path hint
+          }
         }
+        // refresh connection data in parallel
+        await Promise.all(
+          this._state.connections.map(conn => this._refreshConnection(conn))
+        );
+      } catch (err: any) {
+        console.error('Share Files: refresh failed', err);
       }
-      // refresh connection data in parallel
-      await Promise.all(
-        this._state.connections.map(conn => this._refreshConnection(conn))
-      );
-    } catch (err: any) {
-      console.error('Share Files: refresh failed', err);
-    }
-    this._render();
+      this._render();
+    })();
+    await Promise.all([work, minSpin]);
     if (this._refreshBtn) {
       this._refreshBtn.classList.remove('jp-mod-spinning');
     }

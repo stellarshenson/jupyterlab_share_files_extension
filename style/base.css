@@ -50,6 +50,9 @@
   justify-content: center;
   color: var(--jp-ui-font-color2);
   margin-left: 2px;
+  transition:
+    transform 80ms ease-out,
+    background 80ms ease-out;
 }
 
 .jp-ShareFilesPanel-iconButton:hover {
@@ -57,9 +60,15 @@
   color: var(--jp-ui-font-color1);
 }
 
+.jp-ShareFilesPanel-iconButton:active {
+  transform: scale(0.88);
+  background: var(--jp-layout-color2);
+}
+
 .jp-ShareFilesPanel-iconButton svg {
   width: 14px;
   height: 14px;
+  transform-origin: 50% 50%;
 }
 
 .jp-ShareFilesPanel-iconButton.jp-mod-spinning svg {
@@ -213,8 +222,13 @@
   opacity: 0;
   transition:
     opacity 0.1s,
-    color 0.1s;
+    color 0.1s,
+    transform 80ms ease-out;
   flex: 0 0 auto;
+}
+
+.jp-ShareFilesPanel-rowIconButton:active {
+  transform: scale(0.85);
 }
 
 .jp-ShareFilesPanel-itemHeader:hover .jp-ShareFilesPanel-rowIconButton {
