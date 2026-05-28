@@ -34,10 +34,10 @@ import {
   closeIcon,
   fileIcon,
   folderIcon,
-  inboxIcon,
   linkIcon,
   refreshIcon,
-  shareIcon
+  shareIcon,
+  trashIcon
 } from './icons';
 import {
   IConnection,
@@ -132,7 +132,9 @@ export class ShareFilesPanel extends Widget {
     }
     const suggested = this._suggestName(paths);
     const name = await this._promptForName('Create new share', suggested);
-    if (!name) return;
+    if (!name) {
+      return;
+    }
     const tempKey = '__pending_share';
     this._state.busyKeys.add(tempKey);
     this._render();
@@ -157,7 +159,9 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     const name = await this._promptForName('Create new file request', '');
-    if (!name) return;
+    if (!name) {
+      return;
+    }
     try {
       const req = await createRequest(this._serverSettings, name);
       await this._copyLinkToClipboard(req.link);
@@ -185,7 +189,10 @@ export class ShareFilesPanel extends Widget {
   }
 
   /** Upload local files to a connected request. */
-  async uploadToConnectionFlow(connectionKey: string, paths: string[]): Promise<void> {
+  async uploadToConnectionFlow(
+    connectionKey: string,
+    paths: string[]
+  ): Promise<void> {
     this._state.busyKeys.add(connectionKey);
     this._render();
     try {
@@ -237,7 +244,9 @@ export class ShareFilesPanel extends Widget {
 
   /** Submit a link to connect to. Used by the connect input. */
   async connectToLink(link: string): Promise<void> {
-    if (!link) return;
+    if (!link) {
+      return;
+    }
     // refuse to connect to ourselves - that produces a loop and is never useful
     try {
       const linkHost = new URL(link).host;
@@ -295,14 +304,22 @@ export class ShareFilesPanel extends Widget {
     title.textContent = 'Share Files';
     header.appendChild(title);
 
-    const addBtn = this._makeIconButton(addIcon.svgstr, 'New share or request', evt => {
-      this._openNewMenu(evt);
-    });
+    const addBtn = this._makeIconButton(
+      addIcon.svgstr,
+      'New share or request',
+      evt => {
+        this._openNewMenu(evt);
+      }
+    );
     header.appendChild(addBtn);
 
-    this._refreshBtn = this._makeIconButton(refreshIcon.svgstr, 'Refresh', () => {
-      void this.refresh();
-    });
+    this._refreshBtn = this._makeIconButton(
+      refreshIcon.svgstr,
+      'Refresh',
+      () => {
+        void this.refresh();
+      }
+    );
     header.appendChild(this._refreshBtn);
 
     root.appendChild(header);
@@ -320,7 +337,8 @@ export class ShareFilesPanel extends Widget {
     // bottom drop zone
     this._dropZone = document.createElement('div');
     this._dropZone.className = 'jp-ShareFilesPanel-dropZone';
-    this._dropZone.textContent = 'Drag files here to share, or paste a link below';
+    this._dropZone.textContent =
+      'Drag files here to share, or paste a link below';
     root.appendChild(this._dropZone);
 
     // connect row
@@ -356,11 +374,16 @@ export class ShareFilesPanel extends Widget {
   }
 
   private _render(): void {
-    if (!this._body) return;
+    if (!this._body) {
+      return;
+    }
     this._body.innerHTML = '';
     if (this._settings.enableShares) {
-      this._renderSection('shares', 'My Shares', this._state.shares.length, () =>
-        this._renderShares()
+      this._renderSection(
+        'shares',
+        'My Shares',
+        this._state.shares.length,
+        () => this._renderShares()
       );
     }
     if (this._settings.enableRequests) {
@@ -371,8 +394,11 @@ export class ShareFilesPanel extends Widget {
         () => this._renderRequests()
       );
     }
-    this._renderSection('connected', 'Connected', this._state.connections.length, () =>
-      this._renderConnections()
+    this._renderSection(
+      'connected',
+      'Connected',
+      this._state.connections.length,
+      () => this._renderConnections()
     );
     if (this._infoLine) {
       const path = this._state.info?.storage_path || './uploads';
@@ -403,6 +429,10 @@ export class ShareFilesPanel extends Widget {
     const header = document.createElement('div');
     header.className = 'jp-ShareFilesPanel-sectionHeader';
     header.title = expanded ? 'Click to collapse' : 'Click to expand';
+    const caret = document.createElement('span');
+    caret.className = 'jp-ShareFilesPanel-sectionTwisty';
+    caret.textContent = expanded ? '▾' : '▸'; // ▾ / ▸
+    header.appendChild(caret);
     const title = document.createElement('span');
     title.className = 'jp-ShareFilesPanel-sectionTitle';
     title.textContent = label;
@@ -427,7 +457,11 @@ export class ShareFilesPanel extends Widget {
     const list = document.createElement('div');
     list.className = 'jp-ShareFilesPanel-list';
     if (this._state.shares.length === 0) {
-      list.appendChild(this._renderEmpty('No shares yet. Drag files in or use the file browser context menu.'));
+      list.appendChild(
+        this._renderEmpty(
+          'No shares yet. Drag files in or use the file browser context menu.'
+        )
+      );
       return list;
     }
     for (const share of this._state.shares) {
@@ -448,7 +482,7 @@ export class ShareFilesPanel extends Widget {
 
     const twisty = document.createElement('span');
     twisty.className = 'jp-ShareFilesPanel-itemTwisty';
-    twisty.textContent = expanded ? '▼' : '▶';
+    twisty.textContent = expanded ? '▾' : '▸';
     header.appendChild(twisty);
 
     const name = document.createElement('span');
@@ -465,11 +499,26 @@ export class ShareFilesPanel extends Widget {
     }
     header.appendChild(meta);
 
-    const copyBtn = this._makeRowIconButton(linkIcon.svgstr, 'Copy link', evt => {
-      evt.stopPropagation();
-      void this._copyLinkWithFeedback(share.link, copyBtn);
-    });
+    const copyBtn = this._makeRowIconButton(
+      linkIcon.svgstr,
+      'Copy link',
+      evt => {
+        evt.stopPropagation();
+        void this._copyLinkWithFeedback(share.link, copyBtn);
+      }
+    );
     header.appendChild(copyBtn);
+
+    const trashBtn = this._makeRowIconButton(
+      trashIcon.svgstr,
+      'Delete share',
+      evt => {
+        evt.stopPropagation();
+        void this._deleteShare(share.id);
+      }
+    );
+    trashBtn.classList.add('jp-mod-danger');
+    header.appendChild(trashBtn);
 
     header.addEventListener('click', () => {
       const key = `share:${share.id}`;
@@ -505,9 +554,11 @@ export class ShareFilesPanel extends Widget {
       return list;
     }
     for (const entry of share.entries) {
-      list.appendChild(this._renderEntryRow(entry, () => {
-        void this._removeEntryFromShare(share.id, entry.name);
-      }));
+      list.appendChild(
+        this._renderEntryRow(entry, () => {
+          void this._removeEntryFromShare(share.id, entry.name);
+        })
+      );
     }
     return list;
   }
@@ -516,7 +567,9 @@ export class ShareFilesPanel extends Widget {
     const list = document.createElement('div');
     list.className = 'jp-ShareFilesPanel-list';
     if (this._state.requests.length === 0) {
-      list.appendChild(this._renderEmpty('No requests yet. Use [+] to create one.'));
+      list.appendChild(
+        this._renderEmpty('No requests yet. Use [+] to create one.')
+      );
       return list;
     }
     for (const req of this._state.requests) {
@@ -535,7 +588,7 @@ export class ShareFilesPanel extends Widget {
 
     const twisty = document.createElement('span');
     twisty.className = 'jp-ShareFilesPanel-itemTwisty';
-    twisty.textContent = expanded ? '▼' : '▶';
+    twisty.textContent = expanded ? '▾' : '▸';
     header.appendChild(twisty);
 
     const name = document.createElement('span');
@@ -552,11 +605,26 @@ export class ShareFilesPanel extends Widget {
     }
     header.appendChild(meta);
 
-    const copyBtn = this._makeRowIconButton(linkIcon.svgstr, 'Copy link', evt => {
-      evt.stopPropagation();
-      void this._copyLinkWithFeedback(req.link, copyBtn);
-    });
+    const copyBtn = this._makeRowIconButton(
+      linkIcon.svgstr,
+      'Copy link',
+      evt => {
+        evt.stopPropagation();
+        void this._copyLinkWithFeedback(req.link, copyBtn);
+      }
+    );
     header.appendChild(copyBtn);
+
+    const trashBtn = this._makeRowIconButton(
+      trashIcon.svgstr,
+      'Delete request',
+      evt => {
+        evt.stopPropagation();
+        void this._deleteRequest(req.id);
+      }
+    );
+    trashBtn.classList.add('jp-mod-danger');
+    header.appendChild(trashBtn);
 
     header.addEventListener('click', () => {
       const key = `request:${req.id}`;
@@ -593,7 +661,10 @@ export class ShareFilesPanel extends Widget {
     for (const uploader of req.uploaders) {
       const groupRow = document.createElement('div');
       groupRow.className = 'jp-ShareFilesPanel-uploaderHeader';
-      const iconNode = this._svgNode(folderIcon.svgstr, 'jp-ShareFilesPanel-entryIcon');
+      const iconNode = this._svgNode(
+        folderIcon.svgstr,
+        'jp-ShareFilesPanel-entryIcon'
+      );
       groupRow.appendChild(iconNode);
       const nameNode = document.createElement('span');
       nameNode.className = 'jp-ShareFilesPanel-uploaderName';
@@ -602,9 +673,13 @@ export class ShareFilesPanel extends Widget {
       list.appendChild(groupRow);
 
       for (const entry of uploader.entries) {
-        const row = this._renderEntryRow(entry, () => {
-          void this._removeUpload(req.id, uploader.name, entry.name);
-        }, 1);
+        const row = this._renderEntryRow(
+          entry,
+          () => {
+            void this._removeUpload(req.id, uploader.name, entry.name);
+          },
+          1
+        );
         list.appendChild(row);
       }
     }
@@ -615,7 +690,9 @@ export class ShareFilesPanel extends Widget {
     const list = document.createElement('div');
     list.className = 'jp-ShareFilesPanel-list';
     if (this._state.connections.length === 0) {
-      list.appendChild(this._renderEmpty('No connections yet. Paste a link below.'));
+      list.appendChild(
+        this._renderEmpty('No connections yet. Paste a link below.')
+      );
       return list;
     }
     for (const conn of this._state.connections) {
@@ -637,14 +714,8 @@ export class ShareFilesPanel extends Widget {
 
     const twisty = document.createElement('span');
     twisty.className = 'jp-ShareFilesPanel-itemTwisty';
-    twisty.textContent = expanded ? '▼' : '▶';
+    twisty.textContent = expanded ? '▾' : '▸';
     header.appendChild(twisty);
-
-    const iconNode = this._svgNode(
-      conn.kind === 'share' ? shareIcon.svgstr : inboxIcon.svgstr,
-      'jp-ShareFilesPanel-itemIcon'
-    );
-    header.appendChild(iconNode);
 
     const data = this._state.connectionData.get(conn.key);
     const name = document.createElement('span');
@@ -694,7 +765,9 @@ export class ShareFilesPanel extends Widget {
         const actions = document.createElement('div');
         actions.className = 'jp-ShareFilesPanel-itemActions';
         actions.appendChild(
-          this._makeActionButton('Disconnect', false, () => this._disconnect(conn))
+          this._makeActionButton('Disconnect', false, () =>
+            this._disconnect(conn)
+          )
         );
         item.appendChild(actions);
       } else if (conn.kind === 'request') {
@@ -705,7 +778,9 @@ export class ShareFilesPanel extends Widget {
         const actions = document.createElement('div');
         actions.className = 'jp-ShareFilesPanel-itemActions';
         actions.appendChild(
-          this._makeActionButton('Disconnect', false, () => this._disconnect(conn))
+          this._makeActionButton('Disconnect', false, () =>
+            this._disconnect(conn)
+          )
         );
         item.appendChild(actions);
       } else if (!data) {
@@ -752,7 +827,10 @@ export class ShareFilesPanel extends Widget {
       size.textContent = this._formatSize(entry.size);
       row.appendChild(size);
       const url = baseLink + '/download/' + encodeURIComponent(entry.name);
-      row.title = entry.type === 'directory' ? 'Click to download as ZIP' : 'Click to download';
+      row.title =
+        entry.type === 'directory'
+          ? 'Click to download as ZIP'
+          : 'Click to download';
       row.addEventListener('click', () => {
         window.open(url, '_blank');
       });
@@ -821,7 +899,9 @@ export class ShareFilesPanel extends Widget {
         label: 'Copy Link',
         execute: args => {
           const link = String(args.link || '');
-          if (!link) return;
+          if (!link) {
+            return;
+          }
           void this._copyLinkToClipboard(link).then(ok => {
             void this._showLinkDialog(link, ok);
           });
@@ -845,14 +925,18 @@ export class ShareFilesPanel extends Widget {
         label: 'Disconnect',
         execute: args => {
           const key = String(args.key || '');
-          void removeConnection(this._serverSettings, key).then(() => this.refresh());
+          void removeConnection(this._serverSettings, key).then(() =>
+            this.refresh()
+          );
         }
       });
       c.addCommand('share-files-panel:open-link', {
         label: 'Open in Browser',
         execute: args => {
           const link = String(args.link || '');
-          if (link) window.open(link, '_blank');
+          if (link) {
+            window.open(link, '_blank');
+          }
         }
       });
       c.addCommand('share-files-panel:new-share', {
@@ -948,7 +1032,10 @@ export class ShareFilesPanel extends Widget {
   // Internal: actions
   // ------------------------------------------------------------------ //
 
-  private async _removeEntryFromShare(shareId: string, name: string): Promise<void> {
+  private async _removeEntryFromShare(
+    shareId: string,
+    name: string
+  ): Promise<void> {
     this._state.busyKeys.add(shareId);
     this._render();
     try {
@@ -969,7 +1056,12 @@ export class ShareFilesPanel extends Widget {
     this._state.busyKeys.add(requestId);
     this._render();
     try {
-      await removeRequestUpload(this._serverSettings, requestId, uploader, name);
+      await removeRequestUpload(
+        this._serverSettings,
+        requestId,
+        uploader,
+        name
+      );
     } catch (err: any) {
       Notification.error(`Could not remove: ${err.message || err}`);
     } finally {
@@ -984,7 +1076,9 @@ export class ShareFilesPanel extends Widget {
       body: 'This will remove the share permanently. The link will stop working.',
       buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Delete' })]
     });
-    if (!result.button.accept) return;
+    if (!result.button.accept) {
+      return;
+    }
     try {
       await deleteShare(this._serverSettings, id);
     } catch (err: any) {
@@ -999,7 +1093,9 @@ export class ShareFilesPanel extends Widget {
       body: 'This will remove the request and any uploads permanently.',
       buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Delete' })]
     });
-    if (!result.button.accept) return;
+    if (!result.button.accept) {
+      return;
+    }
     try {
       await deleteRequest(this._serverSettings, id);
     } catch (err: any) {
@@ -1022,7 +1118,9 @@ export class ShareFilesPanel extends Widget {
   // ------------------------------------------------------------------ //
 
   private async _refreshConnection(conn: IConnection): Promise<void> {
-    if (!conn.link && !this._linkFor(conn)) return;
+    if (!conn.link && !this._linkFor(conn)) {
+      return;
+    }
     const link = conn.link || this._linkFor(conn);
     try {
       let data: IRemoteShare | IRemoteRequest;
@@ -1042,7 +1140,13 @@ export class ShareFilesPanel extends Widget {
     // Reconstruct from key parts if conn.link not stored
     const base = conn.host.replace(/\/$/, '');
     // we don't know base_url here; rely on conn.link from server
-    return base + '/jupyterlab-share-files-extension/public/' + conn.kind + '/' + conn.id;
+    return (
+      base +
+      '/jupyterlab-share-files-extension/public/' +
+      conn.kind +
+      '/' +
+      conn.id
+    );
   }
 
   // ------------------------------------------------------------------ //
@@ -1160,7 +1264,9 @@ export class ShareFilesPanel extends Widget {
   // ------------------------------------------------------------------ //
 
   private _suggestName(paths: string[]): string {
-    if (paths.length === 0) return 'shared-files';
+    if (paths.length === 0) {
+      return 'shared-files';
+    }
     if (paths.length === 1) {
       const base = paths[0].split('/').pop() || 'shared';
       return base.replace(/\.[^.]+$/, '');
@@ -1168,7 +1274,10 @@ export class ShareFilesPanel extends Widget {
     return 'shared-files';
   }
 
-  private async _promptForName(title: string, suggested: string): Promise<string | null> {
+  private async _promptForName(
+    title: string,
+    suggested: string
+  ): Promise<string | null> {
     const input = document.createElement('input');
     input.type = 'text';
     input.value = suggested;
@@ -1180,7 +1289,9 @@ export class ShareFilesPanel extends Widget {
       body: widget,
       buttons: [Dialog.cancelButton(), Dialog.okButton({ label: 'Create' })]
     });
-    if (!result.button.accept) return null;
+    if (!result.button.accept) {
+      return null;
+    }
     return input.value.trim() || null;
   }
 
@@ -1211,7 +1322,10 @@ export class ShareFilesPanel extends Widget {
    * also flashes briefly to acknowledge the click. No toast - the popup IS
    * the feedback.
    */
-  private async _copyLinkWithFeedback(link: string, btn: HTMLElement): Promise<void> {
+  private async _copyLinkWithFeedback(
+    link: string,
+    btn: HTMLElement
+  ): Promise<void> {
     const ok = await this._copyLinkToClipboard(link);
     if (btn) {
       btn.classList.add('jp-mod-copied');
@@ -1224,15 +1338,25 @@ export class ShareFilesPanel extends Widget {
    * Show a dialog with the link visible and a Copy button. Used by the
    * right-click "Copy Link" command so the user sees what they're copying.
    */
-  private async _showLinkDialog(link: string, alreadyCopied: boolean): Promise<void> {
+  private async _showLinkDialog(
+    link: string,
+    alreadyCopied: boolean
+  ): Promise<void> {
     const wrap = document.createElement('div');
     wrap.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
 
     if (alreadyCopied) {
       const status = document.createElement('div');
       status.style.cssText =
-        'padding: 6px 10px; background: var(--jp-success-color3, #d1fae5); color: var(--jp-success-color1, #065f46); border-radius: 4px; font-size: 13px;';
-      status.textContent = 'Link copied to clipboard';
+        'padding: 4px 10px;' +
+        ' background: var(--jp-layout-color2);' +
+        ' color: var(--jp-ui-font-color2);' +
+        ' border-left: 2px solid var(--jp-success-color1);' +
+        ' border-radius: 2px;' +
+        ' font-size: var(--jp-ui-font-size0);' +
+        ' font-family: var(--jp-ui-font-family);' +
+        ' font-style: italic;';
+      status.textContent = '✓  Link copied to clipboard';
       wrap.appendChild(status);
     }
 
@@ -1241,7 +1365,15 @@ export class ShareFilesPanel extends Widget {
     input.value = link;
     input.readOnly = true;
     input.style.cssText =
-      'width: 100%; padding: 6px 8px; font-family: monospace; font-size: 12px; box-sizing: border-box;';
+      'width: 100%;' +
+      ' padding: 6px 8px;' +
+      ' font-family: var(--jp-code-font-family, monospace);' +
+      ' font-size: var(--jp-ui-font-size0);' +
+      ' color: var(--jp-ui-font-color1);' +
+      ' background: var(--jp-layout-color1);' +
+      ' border: 1px solid var(--jp-border-color2);' +
+      ' border-radius: 2px;' +
+      ' box-sizing: border-box;';
     input.addEventListener('focus', () => input.select());
     wrap.appendChild(input);
 
@@ -1277,13 +1409,23 @@ export class ShareFilesPanel extends Widget {
   }
 
   private _formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    if (bytes < 1024) {
+      return `${bytes} B`;
+    }
+    if (bytes < 1024 * 1024) {
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+    if (bytes < 1024 * 1024 * 1024) {
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 
-  private _makeIconButton(svg: string, title: string, onClick: (evt: MouseEvent) => void): HTMLElement {
+  private _makeIconButton(
+    svg: string,
+    title: string,
+    onClick: (evt: MouseEvent) => void
+  ): HTMLElement {
     const btn = document.createElement('button');
     btn.className = 'jp-ShareFilesPanel-iconButton';
     btn.title = title;
@@ -1330,7 +1472,9 @@ export class ShareFilesPanel extends Widget {
 
   private _svgNode(svgString: string, extraClass?: string): HTMLElement {
     const wrap = document.createElement('span');
-    if (extraClass) wrap.className = extraClass;
+    if (extraClass) {
+      wrap.className = extraClass;
+    }
     wrap.innerHTML = svgString;
     return wrap;
   }

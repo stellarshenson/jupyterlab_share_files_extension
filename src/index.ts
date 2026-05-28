@@ -32,7 +32,8 @@ const DEFAULT_SETTINGS: IPluginSettings = {
  */
 const plugin: JupyterFrontEndPlugin<void> = {
   id: PLUGIN_ID,
-  description: 'Peer-to-peer file sharing for JupyterLab via named shares and requests.',
+  description:
+    'Peer-to-peer file sharing for JupyterLab via named shares and requests.',
   autoStart: true,
   requires: [IFileBrowserFactory, ILabShell],
   optional: [ILayoutRestorer, ISettingRegistry],
@@ -48,7 +49,9 @@ const plugin: JupyterFrontEndPlugin<void> = {
     // Helper - get currently selected paths in the file browser (relative paths).
     const getSelectedPaths = (): string[] => {
       const browser = factory.tracker.currentWidget;
-      if (!browser) return [];
+      if (!browser) {
+        return [];
+      }
       const paths: string[] = [];
       for (const item of browser.selectedItems()) {
         if (item && item.path) {

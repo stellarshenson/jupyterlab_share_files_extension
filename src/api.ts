@@ -24,7 +24,11 @@ async function requestAPI<T>(
   const requestUrl = URLExt.join(serverSettings.baseUrl, NAMESPACE, endPoint);
   let response: Response;
   try {
-    response = await ServerConnection.makeRequest(requestUrl, init, serverSettings);
+    response = await ServerConnection.makeRequest(
+      requestUrl,
+      init,
+      serverSettings
+    );
   } catch (error) {
     throw new ServerConnection.NetworkError(error as any);
   }
@@ -61,7 +65,9 @@ export interface IExtensionInfo {
   requests_subdir: string;
 }
 
-export function getInfo(s: ServerConnection.ISettings): Promise<IExtensionInfo> {
+export function getInfo(
+  s: ServerConnection.ISettings
+): Promise<IExtensionInfo> {
   return requestAPI('api/info', s);
 }
 
@@ -69,7 +75,9 @@ export function getInfo(s: ServerConnection.ISettings): Promise<IExtensionInfo> 
 // Shares
 // --------------------------------------------------------------------------- //
 
-export function listShares(s: ServerConnection.ISettings): Promise<{ shares: IShare[] }> {
+export function listShares(
+  s: ServerConnection.ISettings
+): Promise<{ shares: IShare[] }> {
   return requestAPI('api/shares', s);
 }
 
@@ -81,11 +89,17 @@ export function createShare(
   return requestAPI('api/shares', s, jsonBody({ name, paths }));
 }
 
-export function getShare(s: ServerConnection.ISettings, id: string): Promise<IShare> {
+export function getShare(
+  s: ServerConnection.ISettings,
+  id: string
+): Promise<IShare> {
   return requestAPI(`api/shares/${id}`, s);
 }
 
-export function deleteShare(s: ServerConnection.ISettings, id: string): Promise<{ ok: boolean }> {
+export function deleteShare(
+  s: ServerConnection.ISettings,
+  id: string
+): Promise<{ ok: boolean }> {
   return requestAPI(`api/shares/${id}`, s, { method: 'DELETE' });
 }
 
@@ -111,19 +125,30 @@ export function removeShareItems(
 // Requests
 // --------------------------------------------------------------------------- //
 
-export function listRequests(s: ServerConnection.ISettings): Promise<{ requests: IRequest[] }> {
+export function listRequests(
+  s: ServerConnection.ISettings
+): Promise<{ requests: IRequest[] }> {
   return requestAPI('api/requests', s);
 }
 
-export function createRequest(s: ServerConnection.ISettings, name: string): Promise<IRequest> {
+export function createRequest(
+  s: ServerConnection.ISettings,
+  name: string
+): Promise<IRequest> {
   return requestAPI('api/requests', s, jsonBody({ name }));
 }
 
-export function getRequest(s: ServerConnection.ISettings, id: string): Promise<IRequest> {
+export function getRequest(
+  s: ServerConnection.ISettings,
+  id: string
+): Promise<IRequest> {
   return requestAPI(`api/requests/${id}`, s);
 }
 
-export function deleteRequest(s: ServerConnection.ISettings, id: string): Promise<{ ok: boolean }> {
+export function deleteRequest(
+  s: ServerConnection.ISettings,
+  id: string
+): Promise<{ ok: boolean }> {
   return requestAPI(`api/requests/${id}`, s, { method: 'DELETE' });
 }
 
@@ -133,16 +158,20 @@ export function removeRequestUpload(
   uploader: string,
   name: string
 ): Promise<IRequest> {
-  const qs =
-    `uploader=${encodeURIComponent(uploader)}&name=${encodeURIComponent(name)}`;
-  return requestAPI(`api/requests/${id}/uploads?${qs}`, s, { method: 'DELETE' });
+  const qs = `uploader=${encodeURIComponent(uploader)}&name=${encodeURIComponent(name)}`;
+  return requestAPI(`api/requests/${id}/uploads?${qs}`, s, {
+    method: 'DELETE'
+  });
 }
 
 export function markRequestSeen(
   s: ServerConnection.ISettings,
   id: string
 ): Promise<{ ok: boolean }> {
-  return requestAPI(`api/requests/${id}/seen`, s, { method: 'POST', body: '{}' });
+  return requestAPI(`api/requests/${id}/seen`, s, {
+    method: 'POST',
+    body: '{}'
+  });
 }
 
 // --------------------------------------------------------------------------- //
@@ -166,7 +195,9 @@ export function removeConnection(
   s: ServerConnection.ISettings,
   key: string
 ): Promise<{ ok: boolean }> {
-  return requestAPI(`api/connections/${encodeURIComponent(key)}`, s, { method: 'DELETE' });
+  return requestAPI(`api/connections/${encodeURIComponent(key)}`, s, {
+    method: 'DELETE'
+  });
 }
 
 /**
@@ -223,7 +254,9 @@ export async function fetchRemoteShare(link: string): Promise<IRemoteShare> {
   return r.json();
 }
 
-export async function fetchRemoteRequest(link: string): Promise<IRemoteRequest> {
+export async function fetchRemoteRequest(
+  link: string
+): Promise<IRemoteRequest> {
   const url = link.replace(/\/$/, '') + '/manifest';
   const r = await fetch(url, { credentials: 'omit' });
   if (!r.ok) {

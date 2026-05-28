@@ -1,15 +1,15 @@
 {
     "name": "jupyterlab_share_files_extension",
-    "version": "0.6.15",
+    "version": "0.6.21",
     "description": "Peer-to-peer file sharing for JupyterLab - create named shares (drops) or requests (inboxes), get a link, share it. Files served directly from your server; recipients can use a JupyterLab panel or a plain browser.",
     "keywords": [
         "jupyter",
         "jupyterlab",
         "jupyterlab-extension"
     ],
-    "homepage": "",
+    "homepage": "https://github.com/stellarshenson/jupyterlab_share_files_extension",
     "bugs": {
-        "url": "/issues"
+        "url": "https://github.com/stellarshenson/jupyterlab_share_files_extension/issues"
     },
     "license": "BSD-3-Clause",
     "author": {
@@ -26,7 +26,7 @@
     "style": "style/index.css",
     "repository": {
         "type": "git",
-        "url": ".git"
+        "url": "https://github.com/stellarshenson/jupyterlab_share_files_extension.git"
     },
     "scripts": {
         "build": "jlpm build:lib && jlpm build:labextension:dev",
@@ -209,6 +209,7 @@
         ],
         "rules": {
             "csstree/validator": true,
+            "no-descending-specificity": null,
             "property-no-vendor-prefix": null,
             "selector-class-pattern": "^([a-z][A-z\\d]*)(-[A-z\\d]+)*$",
             "selector-no-vendor-prefix": null,

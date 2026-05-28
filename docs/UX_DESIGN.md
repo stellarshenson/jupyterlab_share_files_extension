@@ -2,10 +2,10 @@
 
 ## The Two Things You Can Do
 
-| Action | What it means | Who uses the link |
-|--------|--------------|-------------------|
-| **Create a Share** | "Here are my files/folders, grab them" (readonly) | Anyone with the link can download |
-| **Create a Request** | "Send me files/folders here" | Anyone with the link can upload |
+| Action               | What it means                                     | Who uses the link                 |
+| -------------------- | ------------------------------------------------- | --------------------------------- |
+| **Create a Share**   | "Here are my files/folders, grab them" (readonly) | Anyone with the link can download |
+| **Create a Request** | "Send me files/folders here"                      | Anyone with the link can upload   |
 
 Both produce a link. You paste it in a chat. Done.
 
@@ -251,30 +251,30 @@ Same standalone pages. No panel. Just the link in a browser. Works for shares (d
 
 ### On a Share you own
 
-| Action | Where | What happens |
-|--------|-------|-------------|
-| Copy Link | Context menu on share row | Link to clipboard |
-| Add Items | Drag files/folders from file browser onto share row | Items copied into the share (spinner) |
-| Remove Item | [x] button on a file or folder row | Item removed (folder removed recursively) |
-| Delete Share | Context menu on share row | Entire share deleted after confirm |
+| Action       | Where                                               | What happens                              |
+| ------------ | --------------------------------------------------- | ----------------------------------------- |
+| Copy Link    | Context menu on share row                           | Link to clipboard                         |
+| Add Items    | Drag files/folders from file browser onto share row | Items copied into the share (spinner)     |
+| Remove Item  | [x] button on a file or folder row                  | Item removed (folder removed recursively) |
+| Delete Share | Context menu on share row                           | Entire share deleted after confirm        |
 
 ### On a Request you own
 
-| Action | Where | What happens |
-|--------|-------|-------------|
-| Copy Link | Context menu on request row | Link to clipboard |
-| Save All | Button on request | Creates `<request-name>/` folder in current dir with uploads inside, organized by uploader (spinner) |
-| Remove Upload | [x] on an uploaded file | That file removed |
-| Delete Request | Context menu on request row | Entire request deleted after confirm |
+| Action         | Where                       | What happens                                                                                         |
+| -------------- | --------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Copy Link      | Context menu on request row | Link to clipboard                                                                                    |
+| Save All       | Button on request           | Creates `<request-name>/` folder in current dir with uploads inside, organized by uploader (spinner) |
+| Remove Upload  | [x] on an uploaded file     | That file removed                                                                                    |
+| Delete Request | Context menu on request row | Entire request deleted after confirm                                                                 |
 
 ### On a Connection (someone else's share or request)
 
-| Action | Where | What happens |
-|--------|-------|-------------|
-| Save All | Button on connected share | Creates `<share-name>/` folder in current dir with all contents inside (spinner) |
-| Save Item | Click a file or folder row | File saves directly to current dir; folder saves as named subfolder (spinner on row) |
-| Upload Items | Drag files/folders from file browser onto connected request | Items uploaded (spinner) |
-| Disconnect | Button below connection | Connection removed from panel |
+| Action       | Where                                                       | What happens                                                                         |
+| ------------ | ----------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Save All     | Button on connected share                                   | Creates `<share-name>/` folder in current dir with all contents inside (spinner)     |
+| Save Item    | Click a file or folder row                                  | File saves directly to current dir; folder saves as named subfolder (spinner on row) |
+| Upload Items | Drag files/folders from file browser onto connected request | Items uploaded (spinner)                                                             |
+| Disconnect   | Button below connection                                     | Connection removed from panel                                                        |
 
 ---
 
@@ -284,12 +284,12 @@ Same standalone pages. No panel. Just the link in a browser. Works for shares (d
 
 This uses Lumino's drag events (`lm-dragenter`, `lm-dragover`, `lm-drop`). The file browser already sets the MIME data when you start dragging. The panel listens for drops.
 
-| Drop target | Visual feedback | Result |
-|------------|----------------|--------|
-| Drop zone (empty area) | Zone highlights blue | "Create new share" dialog |
-| Existing share row (yours) | Row highlights blue | Files/folders added to share |
-| Connected request row | Row highlights blue | Files/folders uploaded to request |
-| Anything else | No highlight | Drop rejected |
+| Drop target                | Visual feedback      | Result                            |
+| -------------------------- | -------------------- | --------------------------------- |
+| Drop zone (empty area)     | Zone highlights blue | "Create new share" dialog         |
+| Existing share row (yours) | Row highlights blue  | Files/folders added to share      |
+| Connected request row      | Row highlights blue  | Files/folders uploaded to request |
+| Anything else              | No highlight         | Drop rejected                     |
 
 Folders are copied/uploaded recursively - structure preserved. During the operation, the target row shows a **spinner** replacing the item count until the copy/upload completes.
 
@@ -364,6 +364,7 @@ Folders show as collapsible tree nodes with `v` (expanded) or `>` (collapsed). O
 ### Right-click context menus on rows
 
 **On a share row:**
+
 ```
   Copy Link
   ─────────
@@ -371,6 +372,7 @@ Folders show as collapsible tree nodes with `v` (expanded) or `>` (collapsed). O
 ```
 
 **On a request row:**
+
 ```
   Copy Link
   ─────────
@@ -378,6 +380,7 @@ Folders show as collapsible tree nodes with `v` (expanded) or `>` (collapsed). O
 ```
 
 **On a connected item:**
+
 ```
   Open in Browser    (opens standalone page)
   ─────────
@@ -388,15 +391,15 @@ Folders show as collapsible tree nodes with `v` (expanded) or `>` (collapsed). O
 
 ## Spinners
 
-| Operation | Where spinner shows | Duration |
-|-----------|-------------------|----------|
-| Creating share (copying files) | On the new share row | Until copy completes |
-| Adding files to share | On the share row, replacing file count | Until copy completes |
-| Saving file from connection | On the file row being saved | Until download completes |
-| Save All | On the Save All button | Until all files downloaded |
-| Uploading to request | On the connected request row | Until upload completes |
-| Connecting to link | On the Connect button | Until metadata fetched |
-| Deleting share/request | On the row being deleted | Until deletion completes |
+| Operation                      | Where spinner shows                    | Duration                   |
+| ------------------------------ | -------------------------------------- | -------------------------- |
+| Creating share (copying files) | On the new share row                   | Until copy completes       |
+| Adding files to share          | On the share row, replacing file count | Until copy completes       |
+| Saving file from connection    | On the file row being saved            | Until download completes   |
+| Save All                       | On the Save All button                 | Until all files downloaded |
+| Uploading to request           | On the connected request row           | Until upload completes     |
+| Connecting to link             | On the Connect button                  | Until metadata fetched     |
+| Deleting share/request         | On the row being deleted               | Until deletion completes   |
 
 ---
 
@@ -423,11 +426,11 @@ No other notifications. No toasts. The panel state is the source of truth.
 
 Files are served from the creator's server. No shared filesystem.
 
-| Creator's server | What happens |
-|-----------------|-------------|
-| Running | Links work, connections work |
-| Stopped | Standalone page: "Share unavailable, owner is offline" |
-| | Panel connection: row shows "offline" badge, actions disabled |
+| Creator's server | What happens                                                  |
+| ---------------- | ------------------------------------------------------------- |
+| Running          | Links work, connections work                                  |
+| Stopped          | Standalone page: "Share unavailable, owner is offline"        |
+|                  | Panel connection: row shows "offline" badge, actions disabled |
 
 ---
 

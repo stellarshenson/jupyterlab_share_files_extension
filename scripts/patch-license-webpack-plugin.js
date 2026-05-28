@@ -14,8 +14,18 @@ const fs = require('fs');
 const path = require('path');
 
 const candidates = [
-  path.join('node_modules', 'license-webpack-plugin', 'dist', 'WebpackModuleFileIterator.js'),
-  path.join('node_modules', 'license-webpack-plugin', 'dist', 'WebpackInnerModuleIterator.js')
+  path.join(
+    'node_modules',
+    'license-webpack-plugin',
+    'dist',
+    'WebpackModuleFileIterator.js'
+  ),
+  path.join(
+    'node_modules',
+    'license-webpack-plugin',
+    'dist',
+    'WebpackInnerModuleIterator.js'
+  )
 ];
 
 const BAD = "return filename.split('=')[1].trim();";

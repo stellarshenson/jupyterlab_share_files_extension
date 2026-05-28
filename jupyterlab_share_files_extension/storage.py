@@ -370,7 +370,9 @@ class RequestStore(BaseStore):
     def add_upload(self, id_: str, uploader: str, filename: str, data: bytes) -> dict[str, Any]:
         if not self.exists(id_):
             raise NotFoundError(f"Request not found: {id_}")
-        uploader_slug = _safe_name(uploader) or "anonymous"
+        # default to "anonymous" when uploader is empty rather than going
+        # through _safe_name (which returns "unnamed" for empty input)
+        uploader_slug = _safe_name(uploader) if uploader.strip() else "anonymous"
         # filename may include path components (folder uploads) - keep them but sanitise each
         filename = filename.replace("\\", "/")
         parts = [p for p in filename.split("/") if p and p not in (".", "..")]

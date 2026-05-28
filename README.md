@@ -17,16 +17,18 @@ Think AirDrop, except the link is the discovery mechanism and the JupyterLab ser
 
 ## Features
 
-- **Side panel** - dedicated panel on the right rail with three sections: My Shares, My Requests, Connected. Each row has copy-link, delete, drag-drop, and download actions
-- **Shares (file drops)** - "Here are my files, grab them via this link." Drag files/folders from the file browser into the panel to create or extend a share. Recipients download via the link
+- **Side panel** - dedicated right-rail panel with three foldable sections (My Shares, My Requests, Connected) and a refresh button that spins while polling
+- **Shares (file drops)** - "Here are my files, grab them via this link." Drag files or folders from the file browser into the panel to create or extend a share. Recipients download via the link
 - **Requests (inboxes)** - "Send me files here." Anyone with the link can upload files or folders, organized per uploader in your local storage
-- **Connections** - paste someone else's link into your panel to subscribe to their share (browse and download files) or their request (drag your local files to upload)
-- **Drag-and-drop** - drag from the JupyterLab file browser onto the panel drop-zone (new share), an existing share row (add files), or a connected request (upload)
+- **Connections** - paste someone else's link into your panel to subscribe to their share (browse and click to download) or their request (drag your local files to upload)
+- **Drag-and-drop** - drag from the file browser onto the bottom drop-zone (new share), an existing share row (add files), or a connected request (upload)
+- **Per-row inline actions** - hover over any share or request to reveal a copy-link icon and a delete icon. The copy-link icon flashes green on click and opens a popup with the selectable link
 - **Folder support** - shares and requests work for both individual files and entire folders. Directory structure is preserved
-- **Standalone web page** - every link opens a self-contained HTML page for non-JupyterLab users (download buttons for shares, drag-drop upload zone for requests). No login, no JS framework, no special browser
+- **Standalone web page** - every link opens a self-contained HTML page for non-JupyterLab users (download buttons for shares, drag-drop upload zone for requests). No login, no JS framework, no special browser needed
 - **Symlink-friendly** - sharing files from symlinked locations like `@shared/...` works transparently
 - **Live upload notifications** - when someone uploads to your request, a JupyterLab notification pops up
-- **Theme-aware UI** - panel inherits JupyterLab's font, font-size and theme variables
+- **Toggleable features** - turn off sharing or requests individually in JupyterLab Settings (both on by default)
+- **Theme-aware UI** - panel inherits JupyterLab's font, font-size, theme variables and colour scheme; designed to look at home next to the file browser
 
 ## How it works
 
@@ -49,6 +51,21 @@ Files are stored under `<server_root_dir>/uploads/` by default:
 ```
 
 Each share and request is identified by an 8-character base32 token. The folder name is `<slug>-<id>` so you can find a share visually in the file browser while routes still resolve by ID. The token is the secret - anyone with the link gets access.
+
+Links are served unauthenticated from your own Jupyter server (HTTPS if your hub uses HTTPS), so:
+
+- Your server must be running for the link to work (same as AirDrop needing your phone on)
+- Anyone with the link can access - no password, no expiry by default
+- Suitable for closed JupyterHub teams where the link travels via trusted channels (Slack, email, etc.)
+
+## Settings
+
+Open **Settings → Settings Editor → Share Files** to toggle:
+
+- **Enable file sharing** (default on) - hides My Shares section, the Share Files context menu, and the New Share command
+- **Enable file requests** (default on) - hides My Requests section and the New Request command
+
+Toggles apply live. Connections remain available even with both features off, so you can still consume other people's shares and uploads.
 
 ## Installation
 
