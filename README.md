@@ -56,9 +56,14 @@ pip install jupyterlab_share_files_extension
 Optional, set in `jupyter_server_config.py`:
 
 ```python
-c.ShareFilesConfig.shares_dir = "/path/to/storage"  # default: ./uploads
-c.ShareFilesConfig.use_trash = True                 # default: True
+c.ShareFilesConfig.shares_dir = "uploads"        # default - relative to the notebook root
+c.ShareFilesConfig.shares_dir = "data/uploads"   # any path inside the notebook root
+c.ShareFilesConfig.use_trash = True              # default: True
 ```
+
+A relative `shares_dir` is resolved against the **notebook root** (the same folder the file browser starts in - the Jupyter server's `root_dir`). The directory is created on demand and does not have to exist beforehand.
+
+`shares_dir` must resolve to a location **inside the notebook root**. The extension refuses to start with a `StorageError` if it does not, because shares outside the root are unreachable via JupyterLab's file browser and Contents API - the panel's drag-out, "Copy to Current Folder", and "Show in File Browser" actions would all break silently.
 
 ## Security
 

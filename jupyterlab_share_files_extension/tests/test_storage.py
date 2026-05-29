@@ -93,10 +93,39 @@ class TestResolveSharesDir:
         resolved = resolve_shares_dir(str(tmp_path), "custom_shares")
         assert resolved == (tmp_path / "custom_shares").resolve()
 
-    def test_absolute_passes_through(self, tmp_path):
+    def test_absolute_inside_root_is_accepted(self, tmp_path):
+        """An absolute path that lives inside the notebook root is fine."""
         absolute = str(tmp_path / "elsewhere")
         resolved = resolve_shares_dir(str(tmp_path), absolute)
         assert str(resolved) == absolute
+
+    def test_absolute_outside_root_raises(self, tmp_path):
+        """An absolute path outside the notebook root is refused at resolve
+        time so the server extension fails to start."""
+        outside = tmp_path.parent / "elsewhere"
+        with pytest.raises(StorageError, match="outside the notebook root"):
+            resolve_shares_dir(str(tmp_path), str(outside))
+
+    def test_relative_traversal_escape_raises(self, tmp_path):
+        """A relative path that uses `..` to escape the notebook root is
+        refused even though the syntax looks innocuous."""
+        with pytest.raises(StorageError, match="outside the notebook root"):
+            resolve_shares_dir(str(tmp_path), "../escape")
+
+    def test_tilde_expansion_inside_root_is_accepted(self, tmp_path, monkeypatch):
+        """`~` in the configured path expands to HOME first; if HOME is the
+        notebook root, the path is accepted."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        resolved = resolve_shares_dir(str(tmp_path), "~/uploads")
+        assert resolved == (tmp_path / "uploads").resolve()
+
+    def test_tilde_expansion_outside_root_raises(self, tmp_path, monkeypatch):
+        """`~/anywhere` that expands outside the notebook root is refused."""
+        other_home = tmp_path.parent / "other_home"
+        other_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HOME", str(other_home))
+        with pytest.raises(StorageError, match="outside the notebook root"):
+            resolve_shares_dir(str(tmp_path), "~/uploads")
 
 
 # --------------------------------------------------------------------------- #

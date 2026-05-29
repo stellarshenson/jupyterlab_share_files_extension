@@ -2,11 +2,11 @@
 
 Users can set options in their jupyter_server_config.py:
 
-    c.ShareFilesConfig.shares_dir = "/some/path"
+    c.ShareFilesConfig.shares_dir = "uploads"
 
-If `shares_dir` is unset (default), shares live in `.jupyterlab_shares/` under
-the workspace root (server_root_dir). The directory is created lazily on first
-use.
+A relative `shares_dir` is resolved against the notebook root (the Jupyter
+server's `root_dir`, the folder the file browser starts in). The directory is
+created lazily on first use.
 """
 
 from __future__ import annotations
@@ -19,12 +19,16 @@ class ShareFilesConfig(Configurable):
     """Configurable settings for jupyterlab_share_files_extension.
 
     Set in jupyter_server_config.py:
-        c.ShareFilesConfig.shares_dir = "/absolute/or/relative/path"
+        c.ShareFilesConfig.shares_dir = "uploads"        # relative to notebook root
+        c.ShareFilesConfig.shares_dir = "data/uploads"   # any path INSIDE the root
         c.ShareFilesConfig.use_trash = True
 
-    A relative path is resolved against the server_root_dir. An absolute path
-    is used as-is. The directory is created on demand and does not need to
-    exist before the extension starts.
+    A relative path is resolved against the notebook root (the Jupyter server's
+    `root_dir` - same folder the file browser starts in). An absolute path is
+    used as-is, but it MUST land inside the notebook root. The extension
+    refuses to start otherwise - shares outside the root are unreachable from
+    JupyterLab's file browser and would break the panel's drag-out, copy, and
+    "Show in File Browser" actions. The directory is created on demand.
     """
 
     shares_dir = Unicode(
@@ -32,8 +36,11 @@ class ShareFilesConfig(Configurable):
         config=True,
         help=(
             "Directory where shares, requests, and connections are stored. "
-            "If empty (default), uses `uploads/` under server_root_dir. "
-            "Relative paths are resolved against server_root_dir."
+            "If empty (default), uses `uploads/` under the notebook root "
+            "(Jupyter server's `root_dir`). Relative paths are resolved "
+            "against the notebook root; absolute paths are used as-is. The "
+            "resolved path must live inside the notebook root or the "
+            "extension refuses to start."
         ),
     )
 

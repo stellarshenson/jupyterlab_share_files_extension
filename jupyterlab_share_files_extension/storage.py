@@ -162,17 +162,34 @@ def _copy_into(source: Path, target_dir: Path) -> Path:
 def resolve_shares_dir(workspace_root: str, configured: str = "") -> Path:
     """Resolve the directory where shares/requests/connections are stored.
 
-    Empty `configured` defaults to `<workspace_root>/.jupyterlab_shares/`.
-    Relative paths are resolved against `workspace_root`. Absolute paths are
-    used as-is.
+    `workspace_root` is the notebook root (the Jupyter server's `root_dir`).
+    Empty `configured` defaults to `<notebook_root>/uploads/`. A relative
+    `configured` path is resolved against the notebook root; an absolute path
+    is used as-is.
+
+    The resolved path MUST land inside the notebook root - `..`-escapes in
+    a relative path or an absolute path outside the root raise
+    `StorageError`. Files outside the notebook root are not reachable via
+    JupyterLab's file browser or Contents API, so they would break the
+    panel's drag-out / "Show in File Browser" / "Copy to Current Folder"
+    flows; fail loudly at startup instead of silently producing an
+    unusable share directory.
     """
     ws = Path(os.path.expanduser(workspace_root)).resolve()
     if not configured:
         return ws / SHARES_DIR_NAME
     configured = os.path.expanduser(configured)
     if os.path.isabs(configured):
-        return Path(configured).resolve()
-    return (ws / configured).resolve()
+        result = Path(configured).resolve()
+    else:
+        result = (ws / configured).resolve()
+    if not result.is_relative_to(ws):
+        raise StorageError(
+            f"c.ShareFilesConfig.shares_dir resolves to {result}, which is "
+            f"outside the notebook root ({ws}). The shares directory must "
+            f"live inside the notebook root."
+        )
+    return result
 
 
 class BaseStore:
