@@ -9766,9 +9766,9 @@ __metadata:
   linkType: hard
 
 "tinyexec@npm:^1.0.1":
-  version: 1.2.2
-  resolution: "tinyexec@npm:1.2.2"
-  checksum: 8d7cbfc8cb09087905d021063ef50182ddf2a9b3184ffe1f5b000056721b6bcc34d3f7e38eae0abfa83d31e92948cb0825a4994ead3fe2db3ff7656baeff3cb3
+  version: 1.2.3
+  resolution: "tinyexec@npm:1.2.3"
+  checksum: 28090b63a9e4c98a52628c5eb8d2f29be98d8115c0dcd6ef7f1992d8ed89a1d9885dfbe35ee35e3b815ff232680d16367744af408396eb38bccd0134baf8d920
   languageName: node
   linkType: hard
 
