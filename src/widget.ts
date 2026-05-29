@@ -1140,8 +1140,10 @@ export class ShareFilesPanel extends Widget {
    */
   private _attachEntryDragSource(row: HTMLElement, entry: IShareEntry): void {
     const DRAG_THRESHOLD = 5;
-    row.addEventListener('mousedown', (down: MouseEvent) => {
-      // Only left-button, and never start a drag from the inline trash button
+    // Use mousedown (not pointerdown) because Lumino's Drag itself listens
+    // for mouse* events internally - mixing pointer/mouse on the source can
+    // confuse the gesture handover when drag.start() takes over.
+    const onDown = (down: MouseEvent) => {
       if (down.button !== 0 || !entry.path) {
         return;
       }
@@ -1149,6 +1151,8 @@ export class ShareFilesPanel extends Widget {
       if (target && target.closest('.jp-ShareFilesPanel-entryRemove')) {
         return;
       }
+      // Suppress the browser's native HTML5 drag (would race Lumino's)
+      down.preventDefault();
       const startX = down.clientX;
       const startY = down.clientY;
       let dragStarted = false;
@@ -1172,7 +1176,11 @@ export class ShareFilesPanel extends Widget {
       };
       document.addEventListener('mousemove', onMove, true);
       document.addEventListener('mouseup', onUp, true);
-    });
+    };
+    row.addEventListener('mousedown', onDown);
+    // Disable native HTML5 drag entirely - we only use Lumino's Drag system
+    row.setAttribute('draggable', 'false');
+    row.addEventListener('dragstart', e => e.preventDefault());
   }
 
   private _startEntryDrag(

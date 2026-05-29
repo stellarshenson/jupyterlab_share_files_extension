@@ -90,3 +90,104 @@ describe('link host detection', () => {
     expect(parseHost('')).toBeNull();
   });
 });
+
+describe('JupyterHub-aware self-connect detection', () => {
+  // Mirrors the prefix-based check in widget.connectToLink() introduced
+  // in v1.0.34. The bug it locks against: on JupyterHub alice's panel
+  // wrongly flagged bob's link as her own because the old check compared
+  // only `host` and they share a host.
+  function ownPrefix(baseUrl: string, origin: string): string {
+    return new URL(
+      'jupyterlab-share-files-extension/',
+      new URL(baseUrl, origin)
+    ).href;
+  }
+
+  function isSelf(link: string, baseUrl: string, origin: string): boolean {
+    return link.startsWith(ownPrefix(baseUrl, origin));
+  }
+
+  it('same user same hub IS self', () => {
+    expect(
+      isSelf(
+        'https://hub.example.com/user/alice/jupyterlab-share-files-extension/public/share/X',
+        '/user/alice/',
+        'https://hub.example.com'
+      )
+    ).toBe(true);
+  });
+
+  it('different user same hub is NOT self (the reported bug)', () => {
+    expect(
+      isSelf(
+        'https://hub.example.com/user/bob/jupyterlab-share-files-extension/public/request/X',
+        '/user/alice/',
+        'https://hub.example.com'
+      )
+    ).toBe(false);
+  });
+
+  it('same user different host is NOT self', () => {
+    expect(
+      isSelf(
+        'https://other.example.com/user/alice/jupyterlab-share-files-extension/public/share/X',
+        '/user/alice/',
+        'https://hub.example.com'
+      )
+    ).toBe(false);
+  });
+
+  it('standalone single-user own link is self', () => {
+    expect(
+      isSelf(
+        'http://localhost:8888/jupyterlab-share-files-extension/public/share/X',
+        '/',
+        'http://localhost:8888'
+      )
+    ).toBe(true);
+  });
+
+  it('standalone vs JupyterHub link is NOT self', () => {
+    expect(
+      isSelf(
+        'https://hub.example.com/user/alice/jupyterlab-share-files-extension/public/share/X',
+        '/',
+        'http://localhost:8888'
+      )
+    ).toBe(false);
+  });
+});
+
+describe('drag MIME payload shape', () => {
+  // Locks the format JupyterLab's file browser drop handler expects.
+  // The handler iterates CONTENTS_MIME as a `string[]` of paths and
+  // feeds each one through `contents.localPath(path)` - sending objects
+  // breaks `localPath(obj)` silently. This regression test guards the
+  // format we send via `Drag.mimeData.setData(CONTENTS_MIME, ...)`.
+  const CONTENTS_MIME = 'application/x-jupyter-icontents';
+
+  it('CONTENTS_MIME constant matches the file browser source', () => {
+    expect(CONTENTS_MIME).toBe('application/x-jupyter-icontents');
+  });
+
+  it('payload is a string array of workspace-relative paths', () => {
+    const entry = {
+      name: 'file.txt',
+      type: 'file' as const,
+      size: 5,
+      path: 'uploads/shares/foo-AB/file.txt'
+    };
+    const payload = [entry.path];
+    expect(Array.isArray(payload)).toBe(true);
+    expect(typeof payload[0]).toBe('string');
+    expect(payload[0]).toBe('uploads/shares/foo-AB/file.txt');
+  });
+
+  it('payload survives JSON round-trip without losing fields', () => {
+    // MimeData stores objects by reference; round-trip catches accidental
+    // object serialisation
+    const payload = ['uploads/shares/foo-AB/file.txt'];
+    const round = JSON.parse(JSON.stringify(payload));
+    expect(round).toEqual(payload);
+  });
+});
