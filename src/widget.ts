@@ -349,6 +349,15 @@ export class ShareFilesPanel extends Widget {
     );
     header.appendChild(addBtn);
 
+    this._filterBtn = this._makeIconButton(
+      filterIcon.svgstr,
+      'Toggle filter',
+      () => {
+        this._toggleFilter();
+      }
+    );
+    header.appendChild(this._filterBtn);
+
     this._refreshBtn = this._makeIconButton(
       refreshIcon.svgstr,
       'Refresh',
@@ -360,13 +369,11 @@ export class ShareFilesPanel extends Widget {
 
     root.appendChild(header);
 
-    // filter input - funnel icon prefix, type to narrow visible shares/requests by name
-    const filterBox = document.createElement('div');
-    filterBox.className = 'jp-ShareFilesPanel-filterBox';
-    const filterIconNode = document.createElement('span');
-    filterIconNode.className = 'jp-ShareFilesPanel-filterIcon';
-    filterIcon.element({ container: filterIconNode });
-    filterBox.appendChild(filterIconNode);
+    // collapsible filter input - hidden by default, toggled by the toolbar
+    // filter button. matches the file browser's "Toggle File Filter" behaviour.
+    this._filterBox = document.createElement('div');
+    this._filterBox.className = 'jp-ShareFilesPanel-filterBox';
+    this._filterBox.style.display = 'none';
     this._filterInput = document.createElement('input');
     this._filterInput.type = 'search';
     this._filterInput.className = 'jp-ShareFilesPanel-filterInput';
@@ -375,8 +382,8 @@ export class ShareFilesPanel extends Widget {
       this._filterText = this._filterInput!.value.trim().toLowerCase();
       this._render();
     });
-    filterBox.appendChild(this._filterInput);
-    root.appendChild(filterBox);
+    this._filterBox.appendChild(this._filterInput);
+    root.appendChild(this._filterBox);
 
     // body
     this._body = document.createElement('div');
@@ -653,6 +660,26 @@ export class ShareFilesPanel extends Widget {
       list.appendChild(this._renderEntryRow(entry, undefined, 0, drillIn));
     }
     return list;
+  }
+
+  private _toggleFilter(): void {
+    this._filterVisible = !this._filterVisible;
+    if (this._filterBox) {
+      this._filterBox.style.display = this._filterVisible ? '' : 'none';
+    }
+    if (this._filterBtn) {
+      this._filterBtn.classList.toggle('jp-mod-active', this._filterVisible);
+    }
+    if (this._filterVisible) {
+      this._filterInput?.focus();
+    } else if (this._filterText) {
+      // Hiding clears the filter so rows are not silently hidden.
+      this._filterText = '';
+      if (this._filterInput) {
+        this._filterInput.value = '';
+      }
+      this._render();
+    }
   }
 
   private _applyNameFilter<T extends { name: string }>(items: T[]): T[] {
@@ -1918,7 +1945,10 @@ export class ShareFilesPanel extends Widget {
   private _body: HTMLElement | null = null;
   private _dropZone: HTMLElement | null = null;
   private _refreshBtn: HTMLElement | null = null;
+  private _filterBtn: HTMLElement | null = null;
+  private _filterBox: HTMLElement | null = null;
   private _filterInput: HTMLInputElement | null = null;
   private _filterText = '';
+  private _filterVisible = false;
   private _pollHandle: number | null = null;
 }

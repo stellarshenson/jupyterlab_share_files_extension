@@ -40,24 +40,10 @@
 .jp-ShareFilesPanel-filterBox {
   display: flex;
   align-items: center;
-  gap: 4px;
   padding: 4px 8px;
   background: var(--jp-layout-color1);
   border-bottom: 1px solid var(--jp-border-color3);
   flex: 0 0 auto;
-}
-
-.jp-ShareFilesPanel-filterIcon {
-  display: inline-flex;
-  width: 16px;
-  height: 16px;
-  color: var(--jp-ui-font-color2);
-  flex: 0 0 auto;
-}
-
-.jp-ShareFilesPanel-filterIcon svg {
-  width: 16px;
-  height: 16px;
 }
 
 .jp-ShareFilesPanel-filterInput {
@@ -113,6 +99,11 @@
 
 .jp-ShareFilesPanel-iconButton.jp-mod-spinning svg {
   animation: jp-share-files-panel-spin 0.9s linear infinite;
+}
+
+.jp-ShareFilesPanel-iconButton.jp-mod-active {
+  background: var(--jp-layout-color3);
+  color: var(--jp-brand-color1);
 }
 
 /* Body / scrolling area */
