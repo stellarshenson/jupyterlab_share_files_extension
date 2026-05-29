@@ -6,6 +6,7 @@
  */
 
 import { Dialog, Notification, showDialog } from '@jupyterlab/apputils';
+import { IDocumentManager } from '@jupyterlab/docmanager';
 import { Contents, ServerConnection } from '@jupyterlab/services';
 import { filterIcon } from '@jupyterlab/ui-components';
 import { CommandRegistry } from '@lumino/commands';
@@ -53,6 +54,10 @@ import {
 
 const POLL_INTERVAL_MS = 15_000;
 const CONTENTS_MIME = 'application/x-jupyter-icontents';
+// Lumino dock-panel drop MIME: data is a thunk returning the Widget to dock.
+// Setting this lets share entries be dropped onto the tab bar / dock area to
+// open the file - the same mechanism the file browser uses for its own drags.
+const FACTORY_MIME = 'application/vnd.lumino.widget-factory';
 
 interface IPanelState {
   shares: IShare[];
@@ -83,6 +88,8 @@ export interface IShareFilesPanelOptions {
   settings: IShareFilesSettings;
   /** JupyterLab contents service for copy-to-file-browser */
   contents: Contents.IManager;
+  /** Document manager - opens a share entry in a tab when dropped on the dock */
+  docManager: IDocumentManager;
   /** Returns the file browser's current relative directory */
   getCurrentDir: () => string;
   /** Navigate the file browser to a given relative directory and select a name */
@@ -101,6 +108,7 @@ export class ShareFilesPanel extends Widget {
     this._commands = options.commands;
     this._settings = { ...options.settings };
     this._contents = options.contents;
+    this._docManager = options.docManager;
     this._getCurrentDir = options.getCurrentDir;
     this._revealInFileBrowser = options.revealInFileBrowser;
     this._state = {
@@ -1110,8 +1118,8 @@ export class ShareFilesPanel extends Widget {
     if (entry.path) {
       row.title =
         entry.type === 'directory'
-          ? 'Double-click to open folder; drag to copy to a folder; right-click for actions'
-          : 'Double-click to open file; drag to copy to a folder; right-click for actions';
+          ? 'Double-click to open folder; drag into the file browser to copy; right-click for actions'
+          : 'Double-click to open file; drag into the file browser to copy or onto a tab to open; right-click for actions';
       row.classList.add('jp-mod-clickable');
       row.addEventListener('contextmenu', evt => {
         evt.preventDefault();
@@ -1133,10 +1141,12 @@ export class ShareFilesPanel extends Widget {
   }
 
   /**
-   * Attach mousedown-based drag source so entries can be dragged to the
-   * file browser (or any drop target accepting `application/x-jupyter-icontents`).
-   * Drops on the file browser trigger a Contents copy of the source path -
-   * the file browser's native drop handler does the work.
+   * Attach mousedown-based drag source so entries can be dragged out of the
+   * panel. Files and folders both carry `application/x-jupyter-icontents`;
+   * dropping into the file browser copies the source path (handled by our
+   * capture-phase patch in the plugin, see `installFileBrowserCopyDrop`).
+   * Files additionally carry the dock-panel factory MIME so dropping onto a
+   * tab opens the file.
    */
   private _attachEntryDragSource(row: HTMLElement, entry: IShareEntry): void {
     const DRAG_THRESHOLD = 5;
@@ -1197,12 +1207,27 @@ export class ShareFilesPanel extends Widget {
     // (`paths.map(p => manager.services.contents.localPath(p))`) - sending
     // objects breaks `localPath(obj)` silently. Match that contract.
     mimeData.setData(CONTENTS_MIME, [entry.path]);
+    // For files, also advertise the dock-panel factory MIME so the entry can
+    // be dropped onto the tab bar / dock area to open it (same thunk pattern
+    // the file browser uses). Directories don't open in a doc widget, so they
+    // carry only CONTENTS_MIME and remain copy-to-folder drags.
+    if (entry.type !== 'directory') {
+      const path = entry.path;
+      mimeData.setData(FACTORY_MIME, () => {
+        const existing = this._docManager.findWidget(path);
+        return existing || this._docManager.open(path);
+      });
+    }
     const dragImage = this._createEntryDragImage(row);
+    // proposedAction 'move' matches the file browser's own drag so the cursor
+    // is identical (move glyph, no copy badge). The action is cosmetic for our
+    // case: the file-browser drop is intercepted in capture phase and always
+    // performs a Contents copy, so the shared source is never moved/deleted.
     const drag = new Drag({
       mimeData,
       dragImage,
-      proposedAction: 'copy',
-      supportedActions: 'copy-link',
+      proposedAction: 'move',
+      supportedActions: 'move',
       source: this
     });
     void drag.start(x, y);
@@ -1954,6 +1979,7 @@ export class ShareFilesPanel extends Widget {
   private _commands: CommandRegistry;
   private _settings: IShareFilesSettings;
   private _contents: Contents.IManager;
+  private _docManager: IDocumentManager;
   private _getCurrentDir: () => string;
   private _revealInFileBrowser: (
     dirPath: string,
