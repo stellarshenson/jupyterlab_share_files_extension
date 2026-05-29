@@ -390,8 +390,12 @@ class ConnectionsHandler(_Base):
             host=parsed["host"],
             name=parsed.get("name", ""),
             owner=parsed.get("owner", ""),
+            link=link,
         )
-        entry["link"] = link
+        # Ensure the response carries the link even if the entry already existed
+        # without one (older persisted connections); the store backfills on disk.
+        if not entry.get("link"):
+            entry["link"] = link
         self.write_json(entry)
 
 

@@ -426,6 +426,28 @@ class TestConnectionStore:
         store2 = ConnectionStore(str(tmp_path))
         assert len(store2.list()) == 1
 
+    def test_link_is_persisted(self, tmp_path):
+        # The full pasted link must survive across instances - the client
+        # cannot reconstruct the owner's `/user/<name>/` prefix on JupyterHub,
+        # so a missing link makes a working share look offline (manifest 404).
+        link = "https://hub.test/user/alice/jupyterlab-share-files-extension/public/share/ABCDEFGH"
+        store1 = ConnectionStore(str(tmp_path))
+        store1.add("share", "ABCDEFGH", "https://hub.test", link=link)
+        store2 = ConnectionStore(str(tmp_path))
+        assert store2.list()[0]["link"] == link
+
+    def test_link_backfilled_on_readd(self, tmp_path):
+        # A connection persisted before links were stored (no "link" key) is
+        # repaired when the user reconnects with the same link.
+        store = ConnectionStore(str(tmp_path))
+        store.add("share", "ABCDEFGH", "https://hub.test")  # legacy: no link
+        assert store.list()[0].get("link", "") == ""
+        link = "https://hub.test/user/alice/jupyterlab-share-files-extension/public/share/ABCDEFGH"
+        store.add("share", "ABCDEFGH", "https://hub.test", link=link)
+        items = store.list()
+        assert len(items) == 1
+        assert items[0]["link"] == link
+
 
 # --------------------------------------------------------------------------- #
 # Configurable shares dir

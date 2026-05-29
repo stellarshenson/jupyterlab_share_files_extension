@@ -978,6 +978,17 @@ export class ShareFilesPanel extends Widget {
     }
     header.appendChild(meta);
 
+    const disconnectBtn = this._makeRowIconButton(
+      trashIcon.svgstr,
+      'Disconnect',
+      evt => {
+        evt.stopPropagation();
+        void this._disconnect(conn);
+      }
+    );
+    disconnectBtn.classList.add('jp-mod-danger');
+    header.appendChild(disconnectBtn);
+
     header.addEventListener('click', () => {
       const k = `conn:${conn.key}`;
       if (this._state.expandedItems.has(k)) {
@@ -1068,11 +1079,46 @@ export class ShareFilesPanel extends Widget {
           ? 'Click to download as ZIP'
           : 'Click to download';
       row.addEventListener('click', () => {
-        window.open(url, '_blank');
+        const filename =
+          entry.name + (entry.type === 'directory' ? '.zip' : '');
+        void this._downloadRemote(url, filename);
       });
       list.appendChild(row);
     }
     return list;
+  }
+
+  /**
+   * Download a file from a connected peer's public endpoint WITHOUT credentials.
+   *
+   * Uses `fetch(..., { credentials: 'omit' })` then a Blob download instead of
+   * navigating the top window. On JupyterHub this is critical: a credentialed
+   * navigation (e.g. `window.open`) to a peer's `/user/<owner>/...` link whose
+   * server is offline makes the Hub offer to spawn/access the owner's server as
+   * the current (admin) user. Omitting credentials means the request can never
+   * trigger that flow - it just fails cleanly when the owner is offline.
+   */
+  private async _downloadRemote(url: string, filename: string): Promise<void> {
+    try {
+      const r = await fetch(url, { credentials: 'omit' });
+      if (!r.ok) {
+        throw new Error(`status ${r.status}`);
+      }
+      const blob = await r.blob();
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(href);
+    } catch (err: any) {
+      Notification.error(
+        `Could not download "${filename}" - the owner's server may be offline`
+      );
+    }
   }
 
   private _renderEntryRow(
@@ -1618,16 +1664,14 @@ export class ShareFilesPanel extends Widget {
   }
 
   private _linkFor(conn: IConnection): string {
-    // Reconstruct from key parts if conn.link not stored
-    const base = conn.host.replace(/\/$/, '');
-    // we don't know base_url here; rely on conn.link from server
-    return (
-      base +
-      '/jupyterlab-share-files-extension/public/' +
-      conn.kind +
-      '/' +
-      conn.id
-    );
+    // The connection's full link is persisted server-side (see
+    // ConnectionStore.add). We must NOT reconstruct it from host + id here:
+    // on JupyterHub the owner lives under `/user/<name>/`, which the client
+    // cannot know, so a reconstructed URL drops that prefix and JupyterHub
+    // bounces it to `/hub/...` (404), wrongly marking an online share offline.
+    // Return the stored link only; legacy entries without one are repaired by
+    // reconnecting (the store backfills the link on re-add).
+    return conn.link || '';
   }
 
   // ------------------------------------------------------------------ //

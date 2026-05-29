@@ -191,3 +191,99 @@ describe('drag MIME payload shape', () => {
     expect(round).toEqual(payload);
   });
 });
+
+describe('connection link resolution', () => {
+  // Mirrors widget._linkFor after the offline-while-available fix. The full
+  // link is persisted server-side and returned verbatim; the client must NEVER
+  // reconstruct it from host + id, because on JupyterHub that drops the owner's
+  // `/user/<name>/` prefix and the request gets bounced to `/hub/...` (404),
+  // wrongly marking an online share offline (the reported console error
+  // `/hub/jupyterlab-share-files-extension/public/share/<id>/manifest 404`).
+  interface IConnLike {
+    host: string;
+    kind: 'share' | 'request';
+    id: string;
+    link?: string;
+  }
+  function linkFor(conn: IConnLike): string {
+    return conn.link || '';
+  }
+
+  const link =
+    'https://hub.example.com/user/alice/jupyterlab-share-files-extension/public/share/ABCDEFGH';
+
+  it('returns the persisted full link verbatim', () => {
+    expect(
+      linkFor({
+        host: 'https://hub.example.com',
+        kind: 'share',
+        id: 'ABCDEFGH',
+        link
+      })
+    ).toBe(link);
+  });
+
+  it('preserves the JupyterHub /user/<name>/ prefix', () => {
+    expect(
+      linkFor({
+        host: 'https://hub.example.com',
+        kind: 'share',
+        id: 'ABCDEFGH',
+        link
+      })
+    ).toContain('/user/alice/');
+  });
+
+  it('returns empty string when no link is stored, never a reconstructed URL', () => {
+    const out = linkFor({
+      host: 'https://hub.example.com',
+      kind: 'share',
+      id: 'ABCDEFGH'
+    });
+    expect(out).toBe('');
+    // regression lock: must not produce the base-path-less URL that JupyterHub
+    // bounces to /hub/ and 404s
+    expect(out).not.toContain('jupyterlab-share-files-extension');
+  });
+});
+
+describe('connected-share entry download', () => {
+  // Locks the URL + filename the panel builds for a connected (peer) share
+  // entry. The download itself runs with `credentials: 'omit'` + a Blob (see
+  // widget._downloadRemote) so a credentialed navigation can never trigger
+  // JupyterHub's spawn-as-owner screen when the owner's server is offline.
+  function downloadUrl(baseLink: string, name: string): string {
+    return (
+      baseLink.replace(/\/$/, '') + '/download/' + encodeURIComponent(name)
+    );
+  }
+  function downloadName(entry: {
+    name: string;
+    type: 'file' | 'directory';
+  }): string {
+    return entry.name + (entry.type === 'directory' ? '.zip' : '');
+  }
+
+  const baseLink =
+    'https://hub.example.com/user/alice/jupyterlab-share-files-extension/public/share/ABCDEFGH';
+
+  it('builds a download URL under the owner /user/<name>/ prefix', () => {
+    const url = downloadUrl(baseLink, 'train.csv');
+    expect(url).toBe(baseLink + '/download/train.csv');
+    expect(url).toContain('/user/alice/');
+  });
+
+  it('URL-encodes entry names', () => {
+    expect(downloadUrl(baseLink, 'my file.csv')).toBe(
+      baseLink + '/download/my%20file.csv'
+    );
+  });
+
+  it('names a file download as-is', () => {
+    expect(downloadName({ name: 'data.csv', type: 'file' })).toBe('data.csv');
+  });
+
+  it('names a directory download with a .zip suffix', () => {
+    expect(downloadName({ name: 'logs', type: 'directory' })).toBe('logs.zip');
+  });
+});

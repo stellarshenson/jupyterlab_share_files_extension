@@ -629,13 +629,27 @@ class ConnectionStore:
     def list(self) -> list[dict[str, Any]]:
         return self._load()
 
-    def add(self, kind: str, id_: str, host: str, name: str = "", owner: str = "") -> dict[str, Any]:
+    def add(
+        self,
+        kind: str,
+        id_: str,
+        host: str,
+        name: str = "",
+        owner: str = "",
+        link: str = "",
+    ) -> dict[str, Any]:
         if kind not in ("share", "request"):
             raise StorageError(f"Invalid kind: {kind}")
         key = self._make_key(kind, id_, host)
         items = self._load()
         for existing in items:
             if existing.get("key") == key:
+                # Backfill the full link on re-add - older entries persisted
+                # before links were stored reconstructed a base_path-less URL
+                # that JupyterHub bounces to /hub/ (404). Reconnecting repairs.
+                if link and not existing.get("link"):
+                    existing["link"] = link
+                    self._save(items)
                 return existing
         entry = {
             "key": key,
@@ -644,6 +658,11 @@ class ConnectionStore:
             "host": host,
             "name": name,
             "owner": owner,
+            # Persist the exact pasted link so refresh/download keep the
+            # owner's full `/user/<name>/` prefix on JupyterHub. Reconstructing
+            # it on the client is impossible - the client cannot know the
+            # owner's base_url.
+            "link": link,
             "added_at": _now(),
         }
         items.append(entry)

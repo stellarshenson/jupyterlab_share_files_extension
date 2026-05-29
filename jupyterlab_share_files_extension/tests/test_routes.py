@@ -331,16 +331,22 @@ async def test_connection_lifecycle(jp_fetch, jp_root_dir, jp_base_url):
     assert resp.code == 200
     conn = _decode(resp)
     assert conn["kind"] == "share"
+    # The full link must be returned and persisted - the client cannot
+    # reconstruct the owner's base_url, so a dropped link makes an online
+    # share look offline (manifest fetched at the wrong, /hub/-bounced URL).
+    assert conn["link"] == link
     key = conn["key"]
 
-    # list
+    # list - the persisted link survives the round-trip
     resp = await jp_fetch(
         "jupyterlab-share-files-extension",
         "api",
         "connections",
     )
     assert resp.code == 200
-    assert any(c["key"] == key for c in _decode(resp)["connections"])
+    listed = _decode(resp)["connections"]
+    match = [c for c in listed if c["key"] == key]
+    assert match and match[0]["link"] == link
 
     # remove
     resp = await jp_fetch(
