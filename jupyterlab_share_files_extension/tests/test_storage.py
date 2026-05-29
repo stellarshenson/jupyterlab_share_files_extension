@@ -567,3 +567,203 @@ class TestUseTrash:
         """Stores called without use_trash keep current behaviour."""
         store = ShareStore(str(tmp_path))
         assert store.use_trash is False
+
+
+# --------------------------------------------------------------------------- #
+# Minimal manifest format
+# --------------------------------------------------------------------------- #
+
+
+class TestMinimalManifest:
+    """Stored manifests carry only irreducible state. Everything else
+    (slug, kind, created_at, upload_count, last_upload_at) is derived
+    from disk on read so the manifest + content folder are portable."""
+
+    def test_share_manifest_on_disk_has_only_id_and_name(self, tmp_path):
+        (tmp_path / "x.txt").write_text("x")
+        store = ShareStore(str(tmp_path))
+        share = store.create("My Share", ["x.txt"])
+        sidecar = next(
+            c
+            for c in (tmp_path / SHARES_DIR_NAME / "shares").iterdir()
+            if c.is_file() and c.name.endswith(".json")
+        )
+        on_disk = json.loads(sidecar.read_text())
+        assert set(on_disk.keys()) == {"id", "name"}
+        assert on_disk["id"] == share["id"]
+        assert on_disk["name"] == "My Share"
+
+    def test_request_manifest_on_disk_only_tracks_seen_state(self, tmp_path):
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        sidecar = next(
+            c
+            for c in (tmp_path / SHARES_DIR_NAME / "requests").iterdir()
+            if c.is_file() and c.name.endswith(".json")
+        )
+        on_disk = json.loads(sidecar.read_text())
+        # Only fields that cannot be derived from disk: id, name, and the
+        # user-side "seen" cursor.
+        assert set(on_disk.keys()) == {"id", "name", "last_seen_upload_at"}
+        assert on_disk["id"] == req["id"]
+        assert on_disk["last_seen_upload_at"] == 0
+
+    def test_share_api_response_derives_slug_kind_created_at(self, tmp_path):
+        (tmp_path / "x.txt").write_text("x")
+        store = ShareStore(str(tmp_path))
+        share = store.create("My Cool Share", ["x.txt"])
+        # API response carries the derived fields the frontend expects
+        assert share["slug"] == "My-Cool-Share"
+        assert share["kind"] == "share"
+        assert isinstance(share["created_at"], int) and share["created_at"] > 0
+
+    def test_request_api_response_derives_counts_and_last_upload_at(self, tmp_path):
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        assert req["upload_count"] == 0
+        assert req["last_upload_at"] == 0
+        store.add_upload(req["id"], "alice", "a.txt", b"x")
+        store.add_upload(req["id"], "alice", "b.txt", b"y")
+        fresh = store.get(req["id"])
+        assert fresh["upload_count"] == 2
+        assert fresh["last_upload_at"] > 0
+        assert fresh["kind"] == "request"
+        assert fresh["slug"] == "inbox"
+
+    def test_hand_rolled_minimal_share_manifest_loads(self, tmp_path):
+        """Drop a `{id, name}` JSON next to a content folder and the store
+        reads it back as a fully-shaped share with derived fields."""
+        store = ShareStore(str(tmp_path))
+        shares_dir = tmp_path / SHARES_DIR_NAME / "shares"
+        (shares_dir / "minimal-ABCDEF23").mkdir(parents=True)
+        (shares_dir / "minimal-ABCDEF23" / "f.txt").write_text("hand-rolled")
+        (shares_dir / "minimal-ABCDEF23.json").write_text(
+            json.dumps({"id": "ABCDEF23", "name": "minimal"})
+        )
+        share = store.get("ABCDEF23")
+        assert share["name"] == "minimal"
+        assert share["slug"] == "minimal"
+        assert share["kind"] == "share"
+        assert share["entries"][0]["name"] == "f.txt"
+
+    def test_hand_rolled_minimal_request_manifest_loads(self, tmp_path):
+        store = RequestStore(str(tmp_path))
+        requests_dir = tmp_path / SHARES_DIR_NAME / "requests"
+        (requests_dir / "inbox-ABCDEF24").mkdir(parents=True)
+        (requests_dir / "inbox-ABCDEF24" / "alice").mkdir()
+        (requests_dir / "inbox-ABCDEF24" / "alice" / "note.txt").write_text("hi")
+        (requests_dir / "inbox-ABCDEF24.json").write_text(
+            json.dumps({"id": "ABCDEF24", "name": "inbox", "last_seen_upload_at": 0})
+        )
+        req = store.get("ABCDEF24")
+        assert req["upload_count"] == 1
+        assert req["uploaders"][0]["name"] == "alice"
+        assert req["last_upload_at"] > 0
+        assert req["last_seen_upload_at"] == 0
+
+    def test_mark_seen_writes_last_upload_at_from_disk(self, tmp_path):
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        store.add_upload(req["id"], "alice", "f.txt", b"x")
+        store.mark_seen(req["id"])
+        # mark_seen wrote the current last_upload_at into the manifest;
+        # next get() reports the cursor caught up
+        fresh = store.get(req["id"])
+        assert fresh["last_seen_upload_at"] == fresh["last_upload_at"]
+
+
+# --------------------------------------------------------------------------- #
+# Concurrency / thread safety
+# --------------------------------------------------------------------------- #
+
+
+class TestConcurrentUploads:
+    """Multiple recipients can upload to the same request at the same
+    time. The storage layer must not lose data or corrupt the manifest
+    under concurrent calls."""
+
+    def test_same_filename_uploads_do_not_clobber(self, tmp_path):
+        """Two uploads with the same filename land at distinct paths
+        via O_EXCL - the loser gets the `-2` suffix."""
+        import threading
+
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        errors: list[Exception] = []
+        bodies = [b"alpha", b"beta", b"gamma", b"delta", b"epsilon"]
+
+        def upload(payload: bytes) -> None:
+            try:
+                store.add_upload(req["id"], "alice", "f.txt", payload)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=upload, args=(b,)) for b in bodies]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        # No payload was lost
+        alice_dir = next(
+            c
+            for c in (tmp_path / SHARES_DIR_NAME / "requests").iterdir()
+            if c.is_dir()
+        ) / "alice"
+        files = sorted(alice_dir.iterdir())
+        assert len(files) == len(bodies)
+        # Every payload is preserved on disk
+        on_disk = {f.read_bytes() for f in files}
+        assert on_disk == set(bodies)
+
+    def test_concurrent_uploads_different_filenames_all_persist(self, tmp_path):
+        import threading
+
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+
+        def upload(i: int) -> None:
+            store.add_upload(req["id"], "bob", f"file-{i}.txt", str(i).encode())
+
+        threads = [threading.Thread(target=upload, args=(i,)) for i in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        bob_dir = next(
+            c
+            for c in (tmp_path / SHARES_DIR_NAME / "requests").iterdir()
+            if c.is_dir()
+        ) / "bob"
+        names = sorted(p.name for p in bob_dir.iterdir())
+        assert names == sorted(f"file-{i}.txt" for i in range(20))
+
+    def test_manifest_write_is_atomic(self, tmp_path, monkeypatch):
+        """If the JSON encode step blows up halfway through a write,
+        the existing manifest must remain readable (write-temp +
+        rename gives us that)."""
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        original_text = (
+            tmp_path / SHARES_DIR_NAME / "requests" / f"{req['slug']}-{req['id']}.json"
+        ).read_text()
+        original = json.loads(original_text)
+
+        # Force json.dump to fail mid-write
+        real_dump = json.dump
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated crash")
+
+        monkeypatch.setattr(json, "dump", boom)
+        with pytest.raises(RuntimeError):
+            store.mark_seen(req["id"])
+        monkeypatch.setattr(json, "dump", real_dump)
+
+        # Manifest still loads cleanly - the partial temp file did not
+        # replace the canonical path
+        fresh = store.get(req["id"])
+        assert fresh["id"] == original["id"]
+        assert fresh["name"] == original["name"]

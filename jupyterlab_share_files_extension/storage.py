@@ -129,7 +129,13 @@ def _dir_size(directory: Path) -> int:
 
 
 def _resolve_unique_target(target_dir: Path, name: str) -> Path:
-    """Return a non-colliding target path - appends -2, -3 if needed."""
+    """Return a non-colliding target path - appends -2, -3 if needed.
+
+    Note - this is racy by design; the caller picks a name, then we open
+    it. Two concurrent callers can land on the same path. Use
+    `_open_exclusive_for_write` for atomic reserve+open instead - it is
+    the only race-free way to reserve a filename on POSIX.
+    """
     candidate = target_dir / name
     if not candidate.exists():
         return candidate
@@ -144,6 +150,49 @@ def _resolve_unique_target(target_dir: Path, name: str) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+def _open_exclusive_for_write(target_dir: Path, name: str) -> tuple[Path, int]:
+    """Atomically reserve a non-colliding target path and return (path, fd).
+
+    Uses `O_CREAT | O_EXCL` so two concurrent uploads picking the same
+    filename cannot end up writing to the same path - one wins, the
+    other gets `FileExistsError` and tries the next `-2`, `-3` suffix.
+    The caller owns the returned fd and must close it (or wrap it in
+    `os.fdopen()` which closes on context exit).
+    """
+    stem, dot, ext = name.rpartition(".")
+    if dot and stem:
+        base, suffix = stem, f".{ext}"
+    else:
+        base, suffix = name, ""
+    counter = 0
+    while True:
+        candidate_name = name if counter == 0 else f"{base}-{counter + 1}{suffix}"
+        candidate = target_dir / candidate_name
+        try:
+            fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            return candidate, fd
+        except FileExistsError:
+            counter += 1
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """Write JSON via write-temp + atomic rename so readers never see a
+    half-written manifest, and a crash mid-write does not corrupt it.
+
+    `os.replace` is atomic on POSIX and Windows (Python 3.3+).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp, path)
 
 
 def _copy_into(source: Path, target_dir: Path) -> Path:
@@ -249,16 +298,17 @@ class BaseStore:
 
     def _write_manifest(self, id_: str, data: dict[str, Any]) -> None:
         """Write the manifest. Uses the existing path if found, otherwise
-        builds one from the manifest's slug + id."""
+        builds one from the manifest's slug + id. Atomic via temp-file +
+        rename so concurrent reads never see a torn write and a crash
+        mid-write cannot corrupt the manifest.
+        """
         existing = self._manifest_path_for(id_)
         if existing.exists():
             path = existing
         else:
             slug = data.get("slug") or _safe_name(data.get("name", ""))
             path = self.root / f"{slug}-{id_}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        _atomic_write_json(path, data)
 
     def exists(self, id_: str) -> bool:
         try:
@@ -292,17 +342,51 @@ class BaseStore:
         if manifest_path.exists():
             _remove(manifest_path, self.use_trash)
 
+    def _enrich(self, manifest: dict[str, Any], content_dir: Path) -> dict[str, Any]:
+        """Decorate a stored manifest with fields derived from disk.
+
+        Stored manifests carry only the irreducible state (id, name, and -
+        for requests - last_seen_upload_at). Everything else - `kind`,
+        `slug`, `created_at`, the workspace-relative `path` - is computed
+        here at read time so the on-disk manifest stays portable: rename
+        the slug folder, move the upload root, copy it elsewhere, and the
+        store still picks up the right values.
+        """
+        id_ = manifest.get("id")
+        manifest.setdefault("kind", "share" if self.subdir == "shares" else "request")
+        # slug from the folder name (`<slug>-<id>`); fall back to the id
+        # itself if for some reason the folder is missing or the user has
+        # hand-rolled a manifest without writing a content dir yet.
+        if content_dir.is_dir() and id_ and content_dir.name.endswith(f"-{id_}"):
+            manifest.setdefault("slug", content_dir.name[: -(len(id_) + 1)])
+        else:
+            manifest.setdefault("slug", _safe_name(manifest.get("name", "")))
+        # created_at from the manifest file mtime - same point in time as
+        # `_now()` would have stamped at create
+        if "created_at" not in manifest:
+            manifest_file = self._manifest_path_for(id_) if id_ else None
+            try:
+                manifest["created_at"] = int(manifest_file.stat().st_mtime) if manifest_file and manifest_file.exists() else 0
+            except OSError:
+                manifest["created_at"] = 0
+        try:
+            manifest["path"] = str(content_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
+        except ValueError:
+            pass
+        return manifest
+
 
 class ShareStore(BaseStore):
     subdir = "shares"
 
     def list(self) -> list[dict[str, Any]]:
-        """Override base list to refresh `entries` from disk each time.
+        """List shares as API-ready dicts.
 
-        The sidecar manifest stores a snapshot of entries at create time,
-        but the share folder is the source of truth - files may have been
-        added or removed since. Re-scan on every list so the panel stays
-        in sync.
+        Reads each `<slug>-<id>.json` sidecar, enriches with derived
+        fields (`kind`, `slug`, `created_at`, `path`), and freshly scans
+        the content directory for `entries`. The folder is the source of
+        truth - files may have been added or removed since the manifest
+        was written.
         """
         result = []
         if not self.root.exists():
@@ -319,16 +403,17 @@ class ShareStore(BaseStore):
             if not id_:
                 continue
             content_dir = self._path_for(id_)
+            manifest = self._enrich(manifest, content_dir)
             manifest["entries"] = _list_entries(content_dir, self.workspace_root)
-            try:
-                manifest["path"] = str(content_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
-            except ValueError:
-                pass
             result.append(manifest)
         return result
 
     def create(self, name: str, source_paths: list[str]) -> dict[str, Any]:
-        """Create a share, copying source_paths (relative to workspace) into it."""
+        """Create a share, copying source_paths (relative to workspace) into it.
+
+        Persists the minimal `{id, name}` manifest; everything else is
+        derived on read.
+        """
         id_ = generate_token()
         share_dir = self._new_path(name, id_)
         share_dir.mkdir(parents=True, exist_ok=True)
@@ -341,25 +426,14 @@ class ShareStore(BaseStore):
                 raise NotFoundError(f"Source not found: {rel}")
             _copy_into(source, share_dir)
 
-        manifest = {
-            "id": id_,
-            "name": name,
-            "slug": _safe_name(name),
-            "kind": "share",
-            "created_at": _now(),
-        }
-        manifest["entries"] = _list_entries(share_dir, self.workspace_root)
-        self._write_manifest(id_, manifest)
-        return manifest
+        self._write_manifest(id_, {"id": id_, "name": name})
+        return self.get(id_)
 
     def get(self, id_: str) -> dict[str, Any]:
         manifest = self._read_manifest(id_)
         content_dir = self._path_for(id_)
+        manifest = self._enrich(manifest, content_dir)
         manifest["entries"] = _list_entries(content_dir, self.workspace_root)
-        try:
-            manifest["path"] = str(content_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
-        except ValueError:
-            pass
         return manifest
 
     def add_items(self, id_: str, source_paths: list[str]) -> dict[str, Any]:
@@ -408,40 +482,42 @@ class RequestStore(BaseStore):
         id_ = generate_token()
         request_dir = self._new_path(name, id_)
         request_dir.mkdir(parents=True, exist_ok=True)
-        manifest = {
-            "id": id_,
-            "name": name,
-            "slug": _safe_name(name),
-            "kind": "request",
-            "created_at": _now(),
-            "upload_count": 0,
-            "last_upload_at": 0,
-            "last_seen_upload_at": 0,
-        }
-        self._write_manifest(id_, manifest)
-        return manifest
+        # Stored manifest is minimal - only the irreducible state. Everything
+        # else (slug, kind, created_at, upload counts, last_upload_at) is
+        # derived from disk in `get()`.
+        self._write_manifest(id_, {"id": id_, "name": name, "last_seen_upload_at": 0})
+        return self.get(id_)
 
     def get(self, id_: str) -> dict[str, Any]:
         manifest = self._read_manifest(id_)
         content_dir = self._path_for(id_)
+        manifest = self._enrich(manifest, content_dir)
+        manifest.setdefault("last_seen_upload_at", 0)
         uploaders = []
         upload_count = 0
+        last_upload_at = 0
         if content_dir.exists():
             for child in sorted(content_dir.iterdir()):
                 if not child.is_dir():
                     continue
                 entries = _list_entries(child, self.workspace_root)
                 upload_count += len(entries)
+                # derive last_upload_at from the most recent file mtime so
+                # the manifest does not have to be touched on every upload
+                for entry in entries:
+                    try:
+                        mtime = int((child / entry["name"]).stat().st_mtime)
+                        if mtime > last_upload_at:
+                            last_upload_at = mtime
+                    except OSError:
+                        pass
                 uploaders.append({
                     "name": child.name,
                     "entries": entries,
                 })
         manifest["uploaders"] = uploaders
         manifest["upload_count"] = upload_count
-        try:
-            manifest["path"] = str(content_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
-        except ValueError:
-            pass
+        manifest["last_upload_at"] = last_upload_at
         return manifest
 
     def add_upload(self, id_: str, uploader: str, filename: str, data: bytes) -> dict[str, Any]:
@@ -457,18 +533,18 @@ class RequestStore(BaseStore):
             raise StorageError("Invalid filename")
         safe_parts = [_safe_name(p) for p in parts]
         target_dir = self._path_for(id_) / uploader_slug
+        # mkdir(parents=True, exist_ok=True) is safe under concurrent calls
         target_dir.mkdir(parents=True, exist_ok=True)
         # nested folders for path-bearing filenames
         nested_dir = target_dir.joinpath(*safe_parts[:-1]) if len(safe_parts) > 1 else target_dir
         nested_dir.mkdir(parents=True, exist_ok=True)
-        target = nested_dir / safe_parts[-1]
-        if target.exists():
-            target = _resolve_unique_target(nested_dir, safe_parts[-1])
-        with open(target, "wb") as f:
+        # Atomic reserve+open via O_EXCL - two concurrent uploads with the
+        # same filename will not stomp on each other, the loser gets the
+        # next `-2`, `-3` suffix.
+        target, fd = _open_exclusive_for_write(nested_dir, safe_parts[-1])
+        with os.fdopen(fd, "wb") as f:
             f.write(data)
-        manifest = self._read_manifest(id_)
-        manifest["last_upload_at"] = _now()
-        self._write_manifest(id_, manifest)
+        # last_upload_at is derived from file mtimes - no manifest touch needed
         return self.get(id_)
 
     def remove_upload(self, id_: str, uploader: str, item_name: str) -> dict[str, Any]:
@@ -490,8 +566,17 @@ class RequestStore(BaseStore):
         return self.get(id_)
 
     def mark_seen(self, id_: str) -> None:
+        """Mark all current uploads as seen.
+
+        Reads the live last_upload_at (derived from file mtimes in get())
+        and stores it in the manifest. A new upload arriving between read
+        and write is benign: the next get() will report a fresh
+        last_upload_at > last_seen_upload_at and the panel will flag a
+        new arrival.
+        """
+        current = self.get(id_).get("last_upload_at", 0)
         manifest = self._read_manifest(id_)
-        manifest["last_seen_upload_at"] = manifest.get("last_upload_at", 0)
+        manifest["last_seen_upload_at"] = current
         self._write_manifest(id_, manifest)
 
     def resolve_upload_path(self, id_: str, sub_path: str = "") -> Path:
