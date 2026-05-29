@@ -368,12 +368,18 @@ class ConnectionsHandler(_Base):
         except ValueError as exc:
             return self.write_error_json(400, str(exc))
         # Refuse to connect to ourselves - that would create a loop where
-        # any save/upload routes back through the same server.
-        own_host = (
-            self.request.protocol + "://" + self.request.host
-        ).rstrip("/")
-        link_host = parsed["host"].rstrip("/")
-        if link_host == own_host:
+        # any save/upload routes back through the same server. On
+        # JupyterHub two users share a host but live at different
+        # `/user/<name>/` prefixes, so compare the full prefix (host +
+        # base_url) not just the host.
+        own_base_url = self.settings.get("base_url", "/")
+        if not own_base_url.endswith("/"):
+            own_base_url += "/"
+        own_prefix = (
+            self.request.protocol + "://" + self.request.host + own_base_url
+        )
+        link_prefix = parsed["host"] + parsed.get("base_path", "/")
+        if link_prefix == own_prefix:
             return self.write_error_json(
                 400,
                 "That link points to your own server - it's already in your panel.",
@@ -595,7 +601,13 @@ async def _post_file(client, url: str, filename: str, data: bytes) -> None:
 
 
 def _parse_share_link(link: str) -> dict[str, str]:
-    """Extract kind/id/host from a public link URL."""
+    """Extract kind/id/host/base_path from a public link URL.
+
+    `base_path` is everything between the host and the extension namespace -
+    on JupyterHub that is `/user/<name>/`, on a standalone Jupyter server
+    it is `/`. Without it, two users on the same hub look identical when
+    we compare hosts for self-connect detection.
+    """
     parsed = urlparse(link)
     if not parsed.scheme or not parsed.netloc:
         raise ValueError("Link must be an absolute URL")
@@ -611,10 +623,19 @@ def _parse_share_link(link: str) -> dict[str, str]:
     id_ = parts[idx + 2]
     if kind not in ("share", "request"):
         raise ValueError(f"Unknown kind: {kind}")
+    # The path part before EXTENSION_NAMESPACE is the JupyterLab base_url.
+    try:
+        ns_idx = parts.index(EXTENSION_NAMESPACE)
+    except ValueError:
+        ns_idx = idx  # legacy/malformed - fall back to before 'public'
+    base_path = "/" + "/".join(parts[:ns_idx])
+    if not base_path.endswith("/"):
+        base_path += "/"
     return {
         "kind": kind,
         "id": id_,
         "host": parsed.scheme + "://" + parsed.netloc,
+        "base_path": base_path,
     }
 
 

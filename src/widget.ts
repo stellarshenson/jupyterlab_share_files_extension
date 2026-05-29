@@ -278,11 +278,21 @@ export class ShareFilesPanel extends Widget {
     if (!link) {
       return;
     }
-    // refuse to connect to ourselves - that produces a loop and is never useful
+    // Refuse to connect to ourselves - that produces a loop and is never
+    // useful. On JupyterHub, two users share the same host but live at
+    // different `/user/<name>/` prefixes, so a plain host compare would
+    // wrongly flag every link from another user on the same hub as our
+    // own. Compare the full extension URL prefix instead: our own
+    // share-files-extension lives under `serverSettings.baseUrl +
+    // jupyterlab-share-files-extension/`; any link with that exact prefix
+    // is ours, links with a different `/user/<name>/` prefix belong to
+    // someone else and must go through to the backend.
     try {
-      const linkHost = new URL(link).host;
-      const ownHost = window.location.host;
-      if (linkHost === ownHost) {
+      const ownPrefix = new URL(
+        'jupyterlab-share-files-extension/',
+        new URL(this._serverSettings.baseUrl, window.location.origin)
+      ).href;
+      if (link.startsWith(ownPrefix)) {
         await showDialog({
           title: 'Cannot connect to your own link',
           body:
