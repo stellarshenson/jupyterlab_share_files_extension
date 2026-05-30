@@ -31,11 +31,13 @@ import {
   removeConnection,
   removeRequestUpload,
   removeShareItems,
+  saveFromConnection,
   uploadToConnection
 } from './api';
 import {
   addIcon,
   closeIcon,
+  disconnectIcon,
   fileIcon,
   folderIcon,
   linkIcon,
@@ -52,8 +54,13 @@ import {
   IShareEntry
 } from './types';
 
-const POLL_INTERVAL_MS = 15_000;
+const DEFAULT_POLL_INTERVAL_SECONDS = 15;
+const MIN_POLL_INTERVAL_SECONDS = 2;
 const CONTENTS_MIME = 'application/x-jupyter-icontents';
+// Our own MIME for dragging a connected (remote) share entry out of the panel.
+// Carries `[{ key, name, type }]`; the file browser drop patch resolves it to a
+// server-side `saveFromConnection` (the bytes live on a peer, not locally).
+const REMOTE_MIME = 'application/x-share-files-remote';
 // Lumino dock-panel drop MIME: data is a thunk returning the Widget to dock.
 // Setting this lets share entries be dropped onto the tab bar / dock area to
 // open the file - the same mechanism the file browser uses for its own drags.
@@ -80,6 +87,8 @@ export interface IShareFilesSettings {
   enableShares: boolean;
   enableRequests: boolean;
   showHiddenFiles: boolean;
+  /** Panel poll interval in seconds (one tick refreshes all shares/requests). */
+  pollIntervalSeconds: number;
 }
 
 export interface IShareFilesPanelOptions {
@@ -142,8 +151,13 @@ export class ShareFilesPanel extends Widget {
 
   /** Apply new settings from the SettingRegistry. */
   updateSettings(next: IShareFilesSettings): void {
+    const prevInterval = this._settings.pollIntervalSeconds;
     this._settings = { ...next };
     this._render();
+    // Restart the poll loop if the interval changed and we are attached.
+    if (next.pollIntervalSeconds !== prevInterval && this._pollHandle) {
+      this._restartPolling();
+    }
   }
 
   /**
@@ -328,18 +342,37 @@ export class ShareFilesPanel extends Widget {
   // ------------------------------------------------------------------ //
 
   protected onAfterAttach(): void {
-    if (!this._pollHandle) {
-      this._pollHandle = window.setInterval(() => {
-        void this.refresh();
-      }, POLL_INTERVAL_MS);
-    }
+    this._startPolling();
   }
 
   protected onBeforeDetach(): void {
+    this._stopPolling();
+  }
+
+  /** (Re)start the single poll loop. One tick refreshes all shares/requests. */
+  private _startPolling(): void {
+    if (this._pollHandle) {
+      return;
+    }
+    const seconds = Math.max(
+      MIN_POLL_INTERVAL_SECONDS,
+      this._settings.pollIntervalSeconds || DEFAULT_POLL_INTERVAL_SECONDS
+    );
+    this._pollHandle = window.setInterval(() => {
+      void this.refresh();
+    }, seconds * 1000);
+  }
+
+  private _stopPolling(): void {
     if (this._pollHandle) {
       window.clearInterval(this._pollHandle);
       this._pollHandle = null;
     }
+  }
+
+  private _restartPolling(): void {
+    this._stopPolling();
+    this._startPolling();
   }
 
   // ------------------------------------------------------------------ //
@@ -979,14 +1012,13 @@ export class ShareFilesPanel extends Widget {
     header.appendChild(meta);
 
     const disconnectBtn = this._makeRowIconButton(
-      trashIcon.svgstr,
+      disconnectIcon.svgstr,
       'Disconnect',
       evt => {
         evt.stopPropagation();
         void this._disconnect(conn);
       }
     );
-    disconnectBtn.classList.add('jp-mod-danger');
     header.appendChild(disconnectBtn);
 
     header.addEventListener('click', () => {
@@ -1009,27 +1041,11 @@ export class ShareFilesPanel extends Widget {
       if (conn.kind === 'share' && data) {
         const shareData = data as IRemoteShare;
         item.appendChild(this._renderConnectedShareEntries(conn, shareData));
-        const actions = document.createElement('div');
-        actions.className = 'jp-ShareFilesPanel-itemActions';
-        actions.appendChild(
-          this._makeActionButton('Disconnect', false, () =>
-            this._disconnect(conn)
-          )
-        );
-        item.appendChild(actions);
       } else if (conn.kind === 'request') {
         const hint = document.createElement('div');
         hint.className = 'jp-ShareFilesPanel-empty';
         hint.textContent = 'Drag files here to upload to this request';
         item.appendChild(hint);
-        const actions = document.createElement('div');
-        actions.className = 'jp-ShareFilesPanel-itemActions';
-        actions.appendChild(
-          this._makeActionButton('Disconnect', false, () =>
-            this._disconnect(conn)
-          )
-        );
-        item.appendChild(actions);
       } else if (!data) {
         const hint = document.createElement('div');
         hint.className = 'jp-ShareFilesPanel-empty';
@@ -1076,16 +1092,119 @@ export class ShareFilesPanel extends Widget {
       const url = baseLink + '/download/' + encodeURIComponent(entry.name);
       row.title =
         entry.type === 'directory'
-          ? 'Click to download as ZIP'
-          : 'Click to download';
+          ? 'Click to download as ZIP; drag into the file browser to save'
+          : 'Click to download; drag into the file browser to save';
+      row.classList.add('jp-mod-clickable');
       row.addEventListener('click', () => {
         const filename =
           entry.name + (entry.type === 'directory' ? '.zip' : '');
         void this._downloadRemote(url, filename);
       });
+      this._attachRemoteEntryDragSource(row, conn, entry);
       list.appendChild(row);
     }
     return list;
+  }
+
+  /**
+   * Attach a drag source to a connected (remote) share entry. Unlike own-share
+   * entries (which carry a local CONTENTS_MIME path), a connected entry's bytes
+   * live on a peer's server, so we tag the drag with REMOTE_MIME and let the
+   * file browser drop patch (see `installCopyDrop` in the plugin) resolve it to
+   * a server-side `saveFromConnection`. Mirrors `_attachEntryDragSource`: a
+   * plain click still downloads; a drag past the threshold starts the Drag.
+   */
+  private _attachRemoteEntryDragSource(
+    row: HTMLElement,
+    conn: IConnection,
+    entry: IShareEntry
+  ): void {
+    const DRAG_THRESHOLD = 5;
+    const onDown = (down: MouseEvent) => {
+      if (down.button !== 0) {
+        return;
+      }
+      down.preventDefault();
+      const startX = down.clientX;
+      const startY = down.clientY;
+      let dragStarted = false;
+      const onMove = (move: MouseEvent) => {
+        if (dragStarted) {
+          return;
+        }
+        const dx = Math.abs(move.clientX - startX);
+        const dy = Math.abs(move.clientY - startY);
+        if (dx < DRAG_THRESHOLD && dy < DRAG_THRESHOLD) {
+          return;
+        }
+        dragStarted = true;
+        document.removeEventListener('mousemove', onMove, true);
+        document.removeEventListener('mouseup', onUp, true);
+        this._startRemoteEntryDrag(
+          conn,
+          entry,
+          row,
+          move.clientX,
+          move.clientY
+        );
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove, true);
+        document.removeEventListener('mouseup', onUp, true);
+      };
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('mouseup', onUp, true);
+    };
+    row.addEventListener('mousedown', onDown);
+    row.setAttribute('draggable', 'false');
+    row.addEventListener('dragstart', e => e.preventDefault());
+  }
+
+  private _startRemoteEntryDrag(
+    conn: IConnection,
+    entry: IShareEntry,
+    row: HTMLElement,
+    x: number,
+    y: number
+  ): void {
+    const mimeData = new MimeData();
+    mimeData.setData(REMOTE_MIME, [
+      { key: conn.key, name: entry.name, type: entry.type }
+    ]);
+    const dragImage = this._createEntryDragImage(row);
+    const drag = new Drag({
+      mimeData,
+      dragImage,
+      proposedAction: 'copy',
+      supportedActions: 'copy',
+      source: this
+    });
+    void drag.start(x, y);
+  }
+
+  /**
+   * Save a single entry from a connected share into `destDir` (workspace
+   * relative). Invoked by the file browser drop patch when a REMOTE_MIME drag
+   * lands. The download + (folder) zip extraction happens server-side in
+   * `ConnectionSaveHandler`, so no peer credentials touch the browser.
+   */
+  async saveRemoteEntryTo(
+    connKey: string,
+    name: string,
+    destDir: string
+  ): Promise<void> {
+    this._state.busyKeys.add(connKey);
+    this._render();
+    try {
+      await saveFromConnection(this._serverSettings, connKey, destDir, [name]);
+      Notification.success(`Saved "${name}"`);
+      await this._revealInFileBrowser(destDir);
+    } catch (err: any) {
+      Notification.error(`Could not save "${name}": ${err.message || err}`);
+    } finally {
+      this._state.busyKeys.delete(connKey);
+      this._render();
+    }
   }
 
   /**
@@ -1974,28 +2093,6 @@ export class ShareFilesPanel extends Widget {
     btn.className = 'jp-ShareFilesPanel-rowIconButton';
     btn.title = title;
     btn.appendChild(this._svgNode(svg));
-    btn.addEventListener('click', onClick);
-    return btn;
-  }
-
-  private _makeActionButton(
-    label: string,
-    primary: boolean,
-    onClick: () => void,
-    busy = false
-  ): HTMLElement {
-    const btn = document.createElement('button');
-    btn.className =
-      'jp-ShareFilesPanel-itemAction' + (primary ? ' jp-mod-primary' : '');
-    if (busy) {
-      btn.appendChild(this._spinnerNode());
-      const label2 = document.createElement('span');
-      label2.textContent = ' ' + label;
-      btn.appendChild(label2);
-      btn.disabled = true;
-    } else {
-      btn.textContent = label;
-    }
     btn.addEventListener('click', onClick);
     return btn;
   }

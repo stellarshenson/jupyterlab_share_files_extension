@@ -477,8 +477,16 @@ class ConnectionSaveHandler(_Base):
 
         host = conn["host"]
         share_id = conn["id"]
-        base_url = self.settings.get("base_url", "/")
-        api_base = host + url_path_join(base_url, EXTENSION_NAMESPACE, "public", "share", share_id)
+        # Prefer the persisted full link - it carries the owner's
+        # `/user/<name>/` prefix on JupyterHub. Reconstructing from our own
+        # base_url points at OUR server (404). Fall back to reconstruction only
+        # for legacy link-less connections.
+        link = (conn.get("link") or "").rstrip("/")
+        if link:
+            api_base = link
+        else:
+            base_url = self.settings.get("base_url", "/")
+            api_base = host + url_path_join(base_url, EXTENSION_NAMESPACE, "public", "share", share_id)
 
         client = tornado.httpclient.AsyncHTTPClient()
 

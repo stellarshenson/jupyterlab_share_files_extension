@@ -65,6 +65,37 @@ A relative `shares_dir` is resolved against the **notebook root** (the same fold
 
 `shares_dir` must resolve to a location **inside the notebook root**. The extension refuses to start with a `StorageError` if it does not, because shares outside the root are unreachable via JupyterLab's file browser and Contents API - the panel's drag-out, "Copy to Current Folder", and "Show in File Browser" actions would all break silently.
 
+The panel's refresh interval is set in JupyterLab's Settings Editor under **Share Files** (`pollIntervalSeconds`, default 15, minimum 2). One tick refreshes all of your shares and requests and all connections.
+
+## MCP server (agent access)
+
+The package ships an MCP (Model Context Protocol) server, `jupyterlab-share-files-mcp`, that lets an AI agent operate the extension - create shares and requests, connect to peers, pick up and send files, and close them. It is a thin stdio client over the same authenticated HTTP API the panel uses, acting as a single user via that user's Jupyter/JupyterHub token.
+
+It is configured with two environment variables:
+
+- `SHARE_FILES_BASE_URL` - the base URL of your Jupyter server running the extension. On JupyterHub this **must be the public user URL** (e.g. `https://hub.example.com/user/<name>/`) so that generated share links carry the public host and `/user/<name>/` prefix. Falls back to `JUPYTER_SERVER_URL` (which on JupyterHub is the internal address - links would then be internal and not shareable).
+- `SHARE_FILES_TOKEN` - a Jupyter or JupyterHub API token. Falls back to `JUPYTERHUB_API_TOKEN` / `JUPYTER_TOKEN`.
+- `SHARE_FILES_INSECURE` - set to `1` to skip TLS certificate verification (for hubs behind a self-signed certificate). Off by default.
+
+Register it with an MCP client (Claude Code `.mcp.json`, Claude Desktop `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "share-files": {
+      "command": "jupyterlab-share-files-mcp",
+      "env": {
+        "SHARE_FILES_BASE_URL": "https://hub.example.com/user/<name>/",
+        "SHARE_FILES_TOKEN": "<your-jupyter-or-hub-token>",
+        "SHARE_FILES_INSECURE": "0"
+      }
+    }
+  }
+}
+```
+
+Tools: `list_items`, `create_share`, `create_request`, `connect`, `disconnect`, `close_share`, `close_request`, `pick_up`, `send_to_request`, `list_request_uploads`.
+
 ## Security
 
 The link is the credential (40 bits of entropy). HTTPS is inherited from your JupyterHub/Jupyter proxy. Suitable for trusted-channel sharing (Slack, email). No expiry, no PIN.

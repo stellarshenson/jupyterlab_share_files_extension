@@ -20,6 +20,13 @@
       "default": true,
       "title": "Show hidden files",
       "description": "Show files and folders whose name starts with a dot (.env, .ssh, .ipynb_checkpoints, ...). Useful for sharing config files between team members."
+    },
+    "pollIntervalSeconds": {
+      "type": "number",
+      "default": 15,
+      "minimum": 2,
+      "title": "Refresh interval (seconds)",
+      "description": "How often the panel polls the server for changes - new uploads to your requests, updated connections, and all of your shares and requests. Lower values refresh faster but make more requests. Minimum 2 seconds."
     }
   },
   "additionalProperties": false

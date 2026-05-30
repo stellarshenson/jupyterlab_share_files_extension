@@ -44,6 +44,10 @@ const linkSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fil
 <path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/>
 </svg>`;
 
+const disconnectSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="jp-icon3">
+<path d="M17 7h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1 0 1.27-.77 2.37-1.87 2.84l1.4 1.4C21.05 15.36 22 13.79 22 12c0-2.76-2.24-5-5-5zm-1 4h-2.19l2 2H16zM2 4.27l3.11 3.11C3.29 8.12 2 9.91 2 12c0 2.76 2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1 0-1.59 1.21-2.9 2.76-3.07L8.73 11H8v2h2.73L13 15.27V17h1.73l4.01 4.01 1.41-1.41L3.41 2.86 2 4.27z"/>
+</svg>`;
+
 export const shareIcon = new LabIcon({
   name: 'share-files:share',
   svgstr: shareSvg
@@ -84,4 +88,8 @@ export const downloadIcon = new LabIcon({
 export const linkIcon = new LabIcon({
   name: 'share-files:link',
   svgstr: linkSvg
+});
+export const disconnectIcon = new LabIcon({
+  name: 'share-files:disconnect',
+  svgstr: disconnectSvg
 });

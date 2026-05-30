@@ -20,6 +20,7 @@ const PLUGIN_ID = 'jupyterlab_share_files_extension:plugin';
 const COMMAND_CREATE_SHARE = 'share-files:create-share';
 const FILEBROWSER_SELECTOR = '.jp-DirListing-item';
 const CONTENTS_MIME = 'application/x-jupyter-icontents';
+const REMOTE_MIME = 'application/x-share-files-remote';
 const DROP_TARGET_CLASS = 'jp-mod-dropTarget';
 const DIR_ROW_SELECTOR = '.jp-DirListing-item[data-isdir="true"]';
 
@@ -27,12 +28,14 @@ interface IPluginSettings {
   enableShares: boolean;
   enableRequests: boolean;
   showHiddenFiles: boolean;
+  pollIntervalSeconds: number;
 }
 
 const DEFAULT_SETTINGS: IPluginSettings = {
   enableShares: true,
   enableRequests: true,
-  showHiddenFiles: true
+  showHiddenFiles: true,
+  pollIntervalSeconds: 15
 };
 
 /**
@@ -123,8 +126,14 @@ const plugin: JupyterFrontEndPlugin<void> = {
     // and only for drags that originate from our panel (`event.source`), so
     // the file browser's own internal move-drags are untouched.
     const installCopyDrop = (browserNode: HTMLElement): void => {
+      // Local own-share entries carry a workspace path (copied locally).
       const isOwnDrag = (event: any): boolean =>
         event.source === panel && !!event.mimeData?.hasData(CONTENTS_MIME);
+      // Connected (remote) entries carry REMOTE_MIME; saved server-side.
+      const isRemoteDrag = (event: any): boolean =>
+        event.source === panel && !!event.mimeData?.hasData(REMOTE_MIME);
+      const isPanelDrag = (event: any): boolean =>
+        isOwnDrag(event) || isRemoteDrag(event);
       const clearHighlight = (): void => {
         browserNode
           .querySelectorAll('.' + DROP_TARGET_CLASS)
@@ -136,7 +145,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
       browserNode.addEventListener(
         'lm-dragenter',
         (event: any) => {
-          if (!isOwnDrag(event)) {
+          if (!isPanelDrag(event)) {
             return;
           }
           event.preventDefault();
@@ -147,14 +156,15 @@ const plugin: JupyterFrontEndPlugin<void> = {
       browserNode.addEventListener(
         'lm-dragover',
         (event: any) => {
-          if (!isOwnDrag(event)) {
+          if (!isPanelDrag(event)) {
             return;
           }
           event.preventDefault();
           event.stopPropagation();
-          // 'move' so the cursor matches the file browser's own drag glyph.
-          // The drop below always copies, so nothing is actually moved.
-          event.dropAction = 'move';
+          // Local own-share drags use 'move' so the cursor matches the file
+          // browser's own glyph (the drop still copies). Remote drags are a
+          // genuine download, so they read as 'copy'.
+          event.dropAction = isRemoteDrag(event) ? 'copy' : 'move';
           clearHighlight();
           const folder = folderRowUnder(event.target);
           if (folder) {
@@ -166,7 +176,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
       browserNode.addEventListener(
         'lm-dragleave',
         (event: any) => {
-          if (!isOwnDrag(event)) {
+          if (!isPanelDrag(event)) {
             return;
           }
           clearHighlight();
@@ -176,13 +186,12 @@ const plugin: JupyterFrontEndPlugin<void> = {
       browserNode.addEventListener(
         'lm-drop',
         (event: any) => {
-          if (!isOwnDrag(event)) {
+          if (!isPanelDrag(event)) {
             return;
           }
           event.preventDefault();
           event.stopPropagation();
           clearHighlight();
-          const paths: string[] = event.mimeData.getData(CONTENTS_MIME) || [];
           // Destination: a folder row under the cursor, else the current dir.
           let destDir = getCurrentDir();
           const folder = folderRowUnder(event.target);
@@ -194,6 +203,17 @@ const plugin: JupyterFrontEndPlugin<void> = {
               destDir = PathExt.join(destDir, name);
             }
           }
+          if (isRemoteDrag(event)) {
+            // Remote (connected) entries: save server-side via the panel.
+            const items: Array<{ key: string; name: string; type: string }> =
+              event.mimeData.getData(REMOTE_MIME) || [];
+            items.forEach(
+              it => void panel.saveRemoteEntryTo(it.key, it.name, destDir || '')
+            );
+            return;
+          }
+          // Local own-share entries: copy the workspace path directly.
+          const paths: string[] = event.mimeData.getData(CONTENTS_MIME) || [];
           const contents: Contents.IManager = serviceManager.contents;
           Promise.all(paths.map(p => contents.copy(p, destDir || ''))).catch(
             err => {
@@ -245,7 +265,9 @@ const plugin: JupyterFrontEndPlugin<void> = {
         const next: IPluginSettings = {
           enableShares: settings.get('enableShares').composite as boolean,
           enableRequests: settings.get('enableRequests').composite as boolean,
-          showHiddenFiles: settings.get('showHiddenFiles').composite as boolean
+          showHiddenFiles: settings.get('showHiddenFiles').composite as boolean,
+          pollIntervalSeconds:
+            (settings.get('pollIntervalSeconds').composite as number) || 15
         };
         panel.updateSettings(next);
       };
