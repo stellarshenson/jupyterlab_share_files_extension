@@ -28,6 +28,10 @@ class TestShareFilesConfigDefaults:
         cfg = ShareFilesConfig()
         assert cfg.use_trash is True
 
+    def test_verify_peer_tls_default_is_true(self):
+        cfg = ShareFilesConfig()
+        assert cfg.verify_peer_tls is True
+
 
 class TestShareFilesConfigOverrides:
     def test_shares_dir_accepts_relative_path(self):
@@ -41,6 +45,11 @@ class TestShareFilesConfigOverrides:
     def test_use_trash_can_be_disabled(self):
         cfg = ShareFilesConfig(use_trash=False)
         assert cfg.use_trash is False
+
+    def test_verify_peer_tls_can_be_disabled(self):
+        # Self-signed peers (e.g. a JupyterHub) need this off.
+        cfg = ShareFilesConfig(verify_peer_tls=False)
+        assert cfg.verify_peer_tls is False
 
     def test_config_object_applies_overrides(self):
         """Mirrors how `jupyter_server_config.py` writes settings - via a

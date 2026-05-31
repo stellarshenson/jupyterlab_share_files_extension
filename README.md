@@ -59,7 +59,10 @@ Optional, set in `jupyter_server_config.py`:
 c.ShareFilesConfig.shares_dir = "uploads"        # default - relative to the notebook root
 c.ShareFilesConfig.shares_dir = "data/uploads"   # any path inside the notebook root
 c.ShareFilesConfig.use_trash = True              # default: True
+c.ShareFilesConfig.verify_peer_tls = True        # default: True
 ```
+
+Set `verify_peer_tls = False` when peers (for example a JupyterHub) use a self-signed certificate. Saving from a connected share and uploading to a connected request are server-side fetches to the peer; with verification on and a self-signed peer they fail and the panel reports a 502. With it off, those fetches succeed.
 
 A relative `shares_dir` is resolved against the **notebook root** (the same folder the file browser starts in - the Jupyter server's `root_dir`). The directory is created on demand and does not have to exist beforehand.
 

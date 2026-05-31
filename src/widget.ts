@@ -1092,13 +1092,18 @@ export class ShareFilesPanel extends Widget {
       const url = baseLink + '/download/' + encodeURIComponent(entry.name);
       row.title =
         entry.type === 'directory'
-          ? 'Click to download as ZIP; drag into the file browser to save'
-          : 'Click to download; drag into the file browser to save';
+          ? 'Double-click to save folder here; drag into the file browser to save; right-click to download'
+          : 'Double-click to open; drag into the file browser to save; right-click to download';
       row.classList.add('jp-mod-clickable');
-      row.addEventListener('click', () => {
-        const filename =
-          entry.name + (entry.type === 'directory' ? '.zip' : '');
-        void this._downloadRemote(url, filename);
+      row.addEventListener('dblclick', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        void this._openConnectedEntry(conn, entry);
+      });
+      row.addEventListener('contextmenu', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this._openConnectedEntryContextMenu(evt, conn, entry, url);
       });
       this._attachRemoteEntryDragSource(row, conn, entry);
       list.appendChild(row);
@@ -1205,6 +1210,64 @@ export class ShareFilesPanel extends Widget {
       this._state.busyKeys.delete(connKey);
       this._render();
     }
+  }
+
+  /**
+   * Open a connected (remote) entry. The bytes live on a peer, so there is no
+   * local path to open: save the entry into the file browser's current folder
+   * (server-side, via saveFromConnection), then open the saved copy in a tab.
+   * Folders cannot open in a tab - they are just saved (picked up).
+   */
+  private async _openConnectedEntry(
+    conn: IConnection,
+    entry: IShareEntry
+  ): Promise<void> {
+    const destDir = this._getCurrentDir();
+    this._state.busyKeys.add(conn.key);
+    this._render();
+    try {
+      const res = await saveFromConnection(
+        this._serverSettings,
+        conn.key,
+        destDir,
+        [entry.name]
+      );
+      const saved = res.saved && res.saved[0];
+      if (entry.type === 'directory') {
+        Notification.success(`Saved "${entry.name}"`);
+        await this._revealInFileBrowser(destDir);
+      } else if (saved) {
+        await this._commands.execute('docmanager:open', { path: saved });
+      }
+    } catch (err: any) {
+      Notification.error(
+        `Could not open "${entry.name}": ${err.message || err}`
+      );
+    } finally {
+      this._state.busyKeys.delete(conn.key);
+      this._render();
+    }
+  }
+
+  private _openConnectedEntryContextMenu(
+    evt: MouseEvent,
+    conn: IConnection,
+    entry: IShareEntry,
+    downloadUrl: string
+  ): void {
+    const menu = new Menu({ commands: this._commands });
+    menu.addItem({
+      command: 'share-files-panel:download-remote-entry',
+      args: {
+        url: downloadUrl,
+        filename: entry.name + (entry.type === 'directory' ? '.zip' : '')
+      }
+    });
+    menu.addItem({
+      command: 'share-files-panel:save-remote-entry',
+      args: { key: conn.key, name: entry.name }
+    });
+    menu.open(evt.clientX, evt.clientY);
   }
 
   /**
@@ -1513,6 +1576,26 @@ export class ShareFilesPanel extends Widget {
           const link = String(args.link || '');
           if (link) {
             window.open(link, '_blank');
+          }
+        }
+      });
+      c.addCommand('share-files-panel:download-remote-entry', {
+        label: 'Download',
+        execute: args => {
+          const url = String(args.url || '');
+          const filename = String(args.filename || 'download');
+          if (url) {
+            void this._downloadRemote(url, filename);
+          }
+        }
+      });
+      c.addCommand('share-files-panel:save-remote-entry', {
+        label: 'Save to Current Folder',
+        execute: args => {
+          const key = String(args.key || '');
+          const name = String(args.name || '');
+          if (key && name) {
+            void this.saveRemoteEntryTo(key, name, this._getCurrentDir());
           }
         }
       });

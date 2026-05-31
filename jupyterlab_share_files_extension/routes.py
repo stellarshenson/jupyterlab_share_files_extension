@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import ssl
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,18 @@ def _use_trash_setting(handler) -> bool:
     return bool(cfg.use_trash)
 
 
+def _verify_peer_tls_setting(handler) -> bool:
+    """Return whether peer (cross-server) TLS certs should be verified."""
+    cfg: ShareFilesConfig = handler.settings.get("share_files_config")
+    if cfg is None:
+        return True  # match default
+    return bool(cfg.verify_peer_tls)
+
+
+class PeerUnavailable(Exception):
+    """A server-side fetch to a connected peer could not be completed."""
+
+
 # --------------------------------------------------------------------------- #
 # Base classes
 # --------------------------------------------------------------------------- #
@@ -78,6 +91,35 @@ class _Base(APIHandler):
     @property
     def use_trash(self) -> bool:
         return _use_trash_setting(self)
+
+    @property
+    def verify_peer_tls(self) -> bool:
+        return _verify_peer_tls_setting(self)
+
+    async def _peer_fetch(self, url: str, **kwargs):
+        """Fetch a connected peer's public endpoint server-side.
+
+        Honours the `verify_peer_tls` config (self-signed peers need it off)
+        and converts TLS / connection errors - which `raise_error=False` does
+        NOT suppress - into a `PeerUnavailable` the handler maps to a 502.
+        """
+        client = tornado.httpclient.AsyncHTTPClient()
+        try:
+            return await client.fetch(
+                url,
+                raise_error=False,
+                validate_cert=self.verify_peer_tls,
+                **kwargs,
+            )
+        except ssl.SSLError as exc:
+            raise PeerUnavailable(
+                "TLS verification failed for the peer "
+                f"({exc}). If the peer uses a self-signed certificate, set "
+                "c.ShareFilesConfig.verify_peer_tls = False in "
+                "jupyter_server_config.py."
+            ) from None
+        except (OSError, ConnectionError) as exc:
+            raise PeerUnavailable(f"Could not reach the peer: {exc}") from None
 
     @property
     def share_store(self) -> ShareStore:
@@ -488,51 +530,52 @@ class ConnectionSaveHandler(_Base):
             base_url = self.settings.get("base_url", "/")
             api_base = host + url_path_join(base_url, EXTENSION_NAMESPACE, "public", "share", share_id)
 
-        client = tornado.httpclient.AsyncHTTPClient()
-
-        # Resolve share name for the wrapping folder when saving all
-        manifest_url = api_base + "/manifest"
-        manifest_resp = await client.fetch(manifest_url, raise_error=False)
-        if manifest_resp.code != 200:
-            return self.write_error_json(502, f"Remote unavailable ({manifest_resp.code})")
-        manifest = json.loads(manifest_resp.body)
-        share_slug = manifest.get("slug") or share_id
-
         saved: list[str] = []
+        # Peer fetches can fail on TLS (self-signed) or connection - map those
+        # to a clean 502 rather than an unhandled 500.
+        try:
+            # Resolve share name for the wrapping folder when saving all
+            manifest_resp = await self._peer_fetch(api_base + "/manifest")
+            if manifest_resp.code != 200:
+                return self.write_error_json(502, f"Remote unavailable ({manifest_resp.code})")
+            manifest = json.loads(manifest_resp.body)
+            share_slug = manifest.get("slug") or share_id
 
-        if names is None:
-            # Save All - download zip, extract into <dest_root>/<share-slug>/
-            zip_resp = await client.fetch(api_base + "/download-all", raise_error=False)
-            if zip_resp.code != 200:
-                return self.write_error_json(502, f"Could not download share ({zip_resp.code})")
-            wrap_dir = _resolve_unique_target(dest_root, share_slug)
-            _extract_zip_into(zip_resp.body, wrap_dir)
-            saved.append(str(wrap_dir.relative_to(Path(self.workspace_root).resolve())))
-        else:
-            if not isinstance(names, list) or not names:
-                return self.write_error_json(400, "'names' must be a non-empty list")
-            # determine which entries are directories vs files
-            entry_map = {e["name"]: e for e in manifest.get("entries", [])}
-            for name in names:
-                if not name or "/" in name or "\\" in name or name in (".", ".."):
-                    return self.write_error_json(400, f"Invalid name: {name}")
-                entry = entry_map.get(name)
-                if entry is None:
-                    return self.write_error_json(404, f"Not in share: {name}")
-                url = api_base + "/download/" + tornado.escape.url_escape(name)
-                resp = await client.fetch(url, raise_error=False)
-                if resp.code != 200:
-                    return self.write_error_json(502, f"Could not download {name} ({resp.code})")
-                if entry.get("type") == "directory":
-                    wrap_dir = _resolve_unique_target(dest_root, name)
-                    _extract_zip_into(resp.body, wrap_dir)
-                    saved.append(str(wrap_dir.relative_to(Path(self.workspace_root).resolve())))
-                else:
-                    target = _resolve_unique_target(dest_root, name)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with open(target, "wb") as f:
-                        f.write(resp.body)
-                    saved.append(str(target.relative_to(Path(self.workspace_root).resolve())))
+            if names is None:
+                # Save All - download zip, extract into <dest_root>/<share-slug>/
+                zip_resp = await self._peer_fetch(api_base + "/download-all")
+                if zip_resp.code != 200:
+                    return self.write_error_json(502, f"Could not download share ({zip_resp.code})")
+                wrap_dir = _resolve_unique_target(dest_root, share_slug)
+                _extract_zip_into(zip_resp.body, wrap_dir)
+                saved.append(str(wrap_dir.relative_to(Path(self.workspace_root).resolve())))
+            else:
+                if not isinstance(names, list) or not names:
+                    return self.write_error_json(400, "'names' must be a non-empty list")
+                # determine which entries are directories vs files
+                entry_map = {e["name"]: e for e in manifest.get("entries", [])}
+                for name in names:
+                    if not name or "/" in name or "\\" in name or name in (".", ".."):
+                        return self.write_error_json(400, f"Invalid name: {name}")
+                    entry = entry_map.get(name)
+                    if entry is None:
+                        return self.write_error_json(404, f"Not in share: {name}")
+                    url = api_base + "/download/" + tornado.escape.url_escape(name)
+                    resp = await self._peer_fetch(url)
+                    if resp.code != 200:
+                        return self.write_error_json(502, f"Could not download {name} ({resp.code})")
+                    if entry.get("type") == "directory":
+                        wrap_dir = _resolve_unique_target(dest_root, name)
+                        _extract_zip_into(resp.body, wrap_dir)
+                        saved.append(str(wrap_dir.relative_to(Path(self.workspace_root).resolve())))
+                    else:
+                        target = _resolve_unique_target(dest_root, name)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with open(target, "wb") as f:
+                            f.write(resp.body)
+                        saved.append(str(target.relative_to(Path(self.workspace_root).resolve())))
+        except PeerUnavailable as exc:
+            return self.write_error_json(502, str(exc))
 
         self.write_json({"ok": True, "saved": saved})
 
@@ -556,41 +599,61 @@ class ConnectionUploadHandler(_Base):
 
         host = conn["host"]
         request_id = conn["id"]
-        base_url = self.settings.get("base_url", "/")
-        upload_url = host + url_path_join(
-            base_url, EXTENSION_NAMESPACE, "public", "request", request_id, "upload"
-        ) + "?uploader=" + tornado.escape.url_escape(uploader)
+        # Prefer the persisted full link (carries the owner's /user/<name>/
+        # prefix on JupyterHub); reconstruction points at our own server.
+        link = (conn.get("link") or "").rstrip("/")
+        if link:
+            upload_url = link + "/upload"
+        else:
+            base_url = self.settings.get("base_url", "/")
+            upload_url = host + url_path_join(
+                base_url, EXTENSION_NAMESPACE, "public", "request", request_id, "upload"
+            )
+        upload_url += "?uploader=" + tornado.escape.url_escape(uploader)
 
         client = tornado.httpclient.AsyncHTTPClient()
         ws_root = Path(self.workspace_root).resolve()
         sent: list[str] = []
 
-        for rel in paths:
-            if not _is_safe_relative(rel):
-                return self.write_error_json(400, f"Unsafe path: {rel}")
-            src = ws_root / rel
-            if not src.exists():
-                return self.write_error_json(404, f"Not found: {rel}")
-            if src.is_dir():
-                # walk and upload each file with the folder structure preserved in filename
-                for root, _dirs, files in os.walk(src):
-                    for fname in files:
-                        abs_path = os.path.join(root, fname)
-                        rel_name = os.path.join(src.name, os.path.relpath(abs_path, src))
-                        with open(abs_path, "rb") as f:
-                            data = f.read()
-                        await _post_file(client, upload_url, rel_name.replace(os.sep, "/"), data)
-                        sent.append(rel_name)
-            else:
-                with open(src, "rb") as f:
-                    data = f.read()
-                await _post_file(client, upload_url, src.name, data)
-                sent.append(src.name)
+        try:
+            for rel in paths:
+                if not _is_safe_relative(rel):
+                    return self.write_error_json(400, f"Unsafe path: {rel}")
+                src = ws_root / rel
+                if not src.exists():
+                    return self.write_error_json(404, f"Not found: {rel}")
+                if src.is_dir():
+                    # walk and upload each file with the folder structure preserved in filename
+                    for root, _dirs, files in os.walk(src):
+                        for fname in files:
+                            abs_path = os.path.join(root, fname)
+                            rel_name = os.path.join(src.name, os.path.relpath(abs_path, src))
+                            with open(abs_path, "rb") as f:
+                                data = f.read()
+                            await _post_file(
+                                client,
+                                upload_url,
+                                rel_name.replace(os.sep, "/"),
+                                data,
+                                validate_cert=self.verify_peer_tls,
+                            )
+                            sent.append(rel_name)
+                else:
+                    with open(src, "rb") as f:
+                        data = f.read()
+                    await _post_file(
+                        client, upload_url, src.name, data, validate_cert=self.verify_peer_tls
+                    )
+                    sent.append(src.name)
+        except PeerUnavailable as exc:
+            return self.write_error_json(502, str(exc))
 
         self.write_json({"ok": True, "uploaded": sent})
 
 
-async def _post_file(client, url: str, filename: str, data: bytes) -> None:
+async def _post_file(
+    client, url: str, filename: str, data: bytes, validate_cert: bool = True
+) -> None:
     """Send a single file as multipart/form-data POST."""
     boundary = "----shareFilesBoundary" + os.urandom(8).hex()
     body_parts = [
@@ -601,15 +664,25 @@ async def _post_file(client, url: str, filename: str, data: bytes) -> None:
         f"\r\n--{boundary}--\r\n".encode(),
     ]
     body = b"".join(body_parts)
-    resp = await client.fetch(
-        url,
-        method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        body=body,
-        raise_error=False,
-    )
+    try:
+        resp = await client.fetch(
+            url,
+            method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            body=body,
+            raise_error=False,
+            validate_cert=validate_cert,
+        )
+    except ssl.SSLError as exc:
+        raise PeerUnavailable(
+            f"TLS verification failed for the peer ({exc}). If the peer uses a "
+            "self-signed certificate, set c.ShareFilesConfig.verify_peer_tls = "
+            "False in jupyter_server_config.py."
+        ) from None
+    except (OSError, ConnectionError) as exc:
+        raise PeerUnavailable(f"Could not reach the peer: {exc}") from None
     if resp.code >= 400:
-        raise StorageError(f"Upload failed: {resp.code}")
+        raise PeerUnavailable(f"Upload failed: {resp.code}")
 
 
 def _parse_share_link(link: str) -> dict[str, str]:

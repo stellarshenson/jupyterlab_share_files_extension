@@ -54,3 +54,15 @@ class ShareFilesConfig(Configurable):
             "they are deleted permanently."
         ),
     )
+
+    verify_peer_tls = Bool(
+        True,
+        config=True,
+        help=(
+            "When True (default), the server verifies the peer's TLS "
+            "certificate when saving from a connected share or uploading to a "
+            "connected request. Set to False when peers (e.g. a JupyterHub) "
+            "use a self-signed certificate - otherwise those server-side "
+            "fetches fail with a certificate verification error."
+        ),
+    )
