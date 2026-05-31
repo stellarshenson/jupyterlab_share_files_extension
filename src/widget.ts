@@ -13,6 +13,7 @@ import { CommandRegistry } from '@lumino/commands';
 import { MimeData } from '@lumino/coreutils';
 import { Drag } from '@lumino/dragdrop';
 import { Menu, Widget } from '@lumino/widgets';
+import qrcode from 'qrcode-generator';
 
 import {
   addConnection,
@@ -2108,6 +2109,22 @@ export class ShareFilesPanel extends Widget {
       ' box-sizing: border-box;';
     input.addEventListener('focus', () => input.select());
     wrap.appendChild(input);
+
+    const qr = qrcode(0, 'M');
+    qr.addData(link);
+    qr.make();
+    const qrImg = document.createElement('img');
+    qrImg.src = qr.createDataURL(4, 8);
+    qrImg.alt = 'QR code for the link';
+    qrImg.style.cssText =
+      'align-self: center;' +
+      ' width: 180px;' +
+      ' height: 180px;' +
+      ' image-rendering: pixelated;' +
+      ' background: #fff;' +
+      ' padding: 8px;' +
+      ' border-radius: 2px;';
+    wrap.appendChild(qrImg);
 
     const widget = new Widget({ node: wrap });
     // auto-select the URL when the dialog opens so user can Ctrl-C if needed
