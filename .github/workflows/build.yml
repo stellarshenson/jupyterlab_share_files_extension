@@ -141,7 +141,13 @@ jobs:
 
     - name: Execute integration tests
       working-directory: ui-tests
+      env:
+        # Put the test root under the home-mounted workspace so the copy/paste
+        # "cut" tests delete via a writable trash (send2trash fails on the
+        # default /tmp root when its volume has no writable .Trash dir).
+        JUPYTERLAB_GALATA_ROOT_DIR: ${{ github.workspace }}/.galata-root
       run: |
+        mkdir -p "$JUPYTERLAB_GALATA_ROOT_DIR"
         jlpm playwright test
 
     - name: Upload Playwright Test report

@@ -35,6 +35,7 @@ import {
   saveFromConnection,
   uploadToConnection
 } from './api';
+import { clearClip, getClip, setClip } from './clipboard';
 import {
   addIcon,
   closeIcon,
@@ -1268,6 +1269,11 @@ export class ShareFilesPanel extends Widget {
       command: 'share-files-panel:save-remote-entry',
       args: { key: conn.key, name: entry.name }
     });
+    menu.addItem({ type: 'separator' });
+    menu.addItem({
+      command: 'share-files-panel:copy-remote-entry',
+      args: { key: conn.key, name: entry.name, type: entry.type }
+    });
     menu.open(evt.clientX, evt.clientY);
   }
 
@@ -1519,6 +1525,11 @@ export class ShareFilesPanel extends Widget {
       command: 'share-files-panel:show-entry-in-browser',
       args: { path: entry.path, type: entry.type }
     });
+    menu.addItem({ type: 'separator' });
+    menu.addItem({
+      command: 'share-files-panel:copy-local-entry',
+      args: { path: entry.path }
+    });
     menu.open(evt.clientX, evt.clientY);
   }
 
@@ -1601,7 +1612,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:new-share', {
-        label: 'New Share (empty)',
+        label: 'New Share',
         execute: () => {
           void this.createShareFlow([]);
         }
@@ -1634,6 +1645,116 @@ export class ShareFilesPanel extends Widget {
           void this._showEntryInFileBrowser(path, type);
         }
       });
+      // Copy a connected (remote) share entry onto the extension clipboard.
+      // Pasting in the file browser saves it server-side (see the
+      // `filebrowser:paste` hook in the plugin). Remote entries are copy-only -
+      // their bytes live on a peer, so there is no cut.
+      c.addCommand('share-files-panel:copy-remote-entry', {
+        label: 'Copy',
+        execute: args => {
+          const key = String(args.key || '');
+          const name = String(args.name || '');
+          const type = String(args.type || 'file');
+          if (key && name) {
+            setClip({
+              kind: 'remote',
+              origin: 'panel',
+              items: [{ connKey: key, name, type }]
+            });
+          }
+        }
+      });
+      // Copy a local panel entry (own-share file / request upload) onto the
+      // clipboard so it can be pasted into the file browser's current folder.
+      c.addCommand('share-files-panel:copy-local-entry', {
+        label: 'Copy',
+        execute: args => {
+          const path = String(args.path || '');
+          if (path) {
+            setClip({
+              kind: 'local',
+              origin: 'panel',
+              mode: 'copy',
+              paths: [path]
+            });
+          }
+        }
+      });
+      c.addCommand('share-files-panel:paste-into-share', {
+        label: 'Paste',
+        execute: args => {
+          const id = String(args.id || '');
+          if (id) {
+            void this._pasteIntoShare(id);
+          }
+        }
+      });
+      c.addCommand('share-files-panel:paste-into-request', {
+        label: 'Paste',
+        execute: args => {
+          const key = String(args.key || '');
+          if (key) {
+            void this._pasteIntoConnectedRequest(key);
+          }
+        }
+      });
+    }
+  }
+
+  /**
+   * Paste the clipboard's local items into one of my shares. Mirrors the
+   * drag-to-share flow (`addToShareFlow`): the server copies each source into
+   * the share's own data dir, so a cut can safely delete the originals after
+   * the add resolves.
+   */
+  private async _pasteIntoShare(shareId: string): Promise<void> {
+    const clip = getClip();
+    if (!clip || clip.kind !== 'local') {
+      return;
+    }
+    const { paths, mode } = clip;
+    this._state.busyKeys.add(shareId);
+    this._render();
+    try {
+      await addShareItems(this._serverSettings, shareId, paths);
+      if (mode === 'cut') {
+        await Promise.all(paths.map(p => this._contents.delete(p)));
+        clearClip();
+      }
+      Notification.success(`${paths.length} item(s) added`);
+    } catch (err: any) {
+      Notification.error(`Could not paste: ${err.message || err}`);
+    } finally {
+      this._state.busyKeys.delete(shareId);
+      await this.refresh();
+    }
+  }
+
+  /**
+   * Paste the clipboard's local items into a connected request (upload). The
+   * bytes are sent to the peer, so a cut can safely delete the local originals
+   * after the upload resolves.
+   */
+  private async _pasteIntoConnectedRequest(connKey: string): Promise<void> {
+    const clip = getClip();
+    if (!clip || clip.kind !== 'local') {
+      return;
+    }
+    const { paths, mode } = clip;
+    this._state.busyKeys.add(connKey);
+    this._render();
+    try {
+      await uploadToConnection(this._serverSettings, connKey, paths, '');
+      if (mode === 'cut') {
+        await Promise.all(paths.map(p => this._contents.delete(p)));
+        clearClip();
+      }
+      Notification.success(`${paths.length} item(s) uploaded`);
+    } catch (err: any) {
+      Notification.error(`Could not paste: ${err.message || err}`);
+    } finally {
+      this._state.busyKeys.delete(connKey);
+      await this.refresh();
     }
   }
 
@@ -1688,6 +1809,14 @@ export class ShareFilesPanel extends Widget {
         args: { path: share.path, type: 'directory' }
       });
     }
+    const clip = getClip();
+    if (clip && clip.kind === 'local') {
+      menu.addItem({ type: 'separator' });
+      menu.addItem({
+        command: 'share-files-panel:paste-into-share',
+        args: { id: share.id }
+      });
+    }
     menu.addItem({ type: 'separator' });
     menu.addItem({
       command: 'share-files-panel:delete-share',
@@ -1728,6 +1857,14 @@ export class ShareFilesPanel extends Widget {
       command: 'share-files-panel:open-link',
       args: { link }
     });
+    const clip = getClip();
+    if (conn.kind === 'request' && clip && clip.kind === 'local') {
+      menu.addItem({ type: 'separator' });
+      menu.addItem({
+        command: 'share-files-panel:paste-into-request',
+        args: { key: conn.key }
+      });
+    }
     menu.addItem({ type: 'separator' });
     menu.addItem({
       command: 'share-files-panel:disconnect',

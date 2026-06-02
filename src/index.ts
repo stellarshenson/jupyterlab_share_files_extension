@@ -14,6 +14,7 @@ import { IFileBrowserFactory } from '@jupyterlab/filebrowser';
 import { Contents } from '@jupyterlab/services';
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
 
+import { clearClip, getClip, setClip } from './clipboard';
 import { ShareFilesPanel } from './widget';
 
 const PLUGIN_ID = 'jupyterlab_share_files_extension:plugin';
@@ -228,6 +229,55 @@ const plugin: JupyterFrontEndPlugin<void> = {
     // Install on every file browser (existing and future).
     factory.tracker.forEach(b => installCopyDrop(b.node));
     factory.tracker.widgetAdded.connect((_, b) => installCopyDrop(b.node));
+
+    // Bridge the native file-browser clipboard, which is private and cannot be
+    // read or written from another extension, via the public `commandExecuted`
+    // signal. Native copy/cut are mirrored into our own clipboard so the panel
+    // can paste them into a share / request; a native paste of a panel-copied
+    // entry is performed here (the native paste itself is a no-op because our
+    // entries are never in the file browser's own clipboard).
+    commands.commandExecuted.connect((_, { id }) => {
+      if (id === 'filebrowser:copy' || id === 'filebrowser:cut') {
+        const paths = getSelectedPaths();
+        if (paths.length) {
+          setClip({
+            kind: 'local',
+            origin: 'fb',
+            mode: id === 'filebrowser:cut' ? 'cut' : 'copy',
+            paths
+          });
+        }
+        return;
+      }
+      if (id !== 'filebrowser:paste') {
+        return;
+      }
+      const clip = getClip();
+      if (clip?.origin === 'panel') {
+        const destDir = getCurrentDir();
+        if (clip.kind === 'remote') {
+          clip.items.forEach(
+            it =>
+              void panel.saveRemoteEntryTo(it.connKey, it.name, destDir || '')
+          );
+        } else {
+          void Promise.all(
+            clip.paths.map(p => serviceManager.contents.copy(p, destDir || ''))
+          ).catch(err => {
+            console.error('share-files: paste into file browser failed', err);
+          });
+        }
+        // A panel copy persists for repeat pastes (copy semantics).
+      } else if (
+        clip?.kind === 'local' &&
+        clip.origin === 'fb' &&
+        clip.mode === 'cut'
+      ) {
+        // Native paste just moved the originals - drop the stale mirror so a
+        // later panel paste does not try to re-delete already-moved files.
+        clearClip();
+      }
+    });
 
     labShell.add(panel, 'right', { rank: 600 });
     if (restorer) {

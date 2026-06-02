@@ -47,6 +47,19 @@ Browser-side downloads use `fetch(..., {credentials:'omit'})`; server-side saves
 use the server's own outbound request. No top-window navigation to a peer URL
 occurs, so an offline owner can never trigger JupyterHub's spawn-as-owner screen.
 
+**AC7 - Copy a connected entry, paste into the file browser.**
+Given a connected share or request is expanded, when the user right-clicks a file
+or folder entry and chooses Copy, then chooses Paste in the file browser, then the
+entry is saved (a file as a file, a folder extracted recursively) into the file
+browser's current folder. The source entry on the peer is unchanged - remote
+entries support Copy only, never Cut.
+
+**AC8 - Copy or cut a file-browser item, paste into a share or request.**
+Given a local item is selected in the file browser, when the user chooses Copy or
+Cut and then chooses Paste on an expanded share or request entry, then the item is
+added to that share (or uploaded to that request). Copy leaves the original in the
+file browser; Cut removes it after the paste succeeds.
+
 ## Verification log
 
 Verified against the live peer
@@ -68,6 +81,26 @@ Verified against the live peer
   config defaults/override covered in `tests/test_config.py`; the panel logic
   (dblclick -> save+open, context menu, REMOTE_MIME drag) builds clean. Live UI
   confirmation requires the new labextension installed and the page reloaded.
+- **AC7-AC8 (build + unit):** copy/paste runs on an extension-owned clipboard
+  (`src/clipboard.ts`) bridged to the file browser via `commands.commandExecuted`
+  (`src/index.ts`) - native copy/cut are mirrored, native paste of a panel-copied
+  entry is performed by the hook. Panel Copy/Paste menu items added in
+  `src/widget.ts` (`_pasteIntoShare` reuses `addShareItems`, which copies into
+  the share dir, so a cut safely deletes the original; `_pasteIntoConnectedRequest`
+  reuses `uploadToConnection`). `tsc` clean, `lint:check` green, clipboard
+  set/get/clear unit tests pass.
+- **AC7-AC8 (Galata integration, `ui-tests/tests/copy-paste.spec.ts`):** run
+  against a real lab (command registry + extension HTTP API), all green -
+  (1) New Share label has no "(empty)"; (2) AC8 native Copy -> paste into a share
+  adds the file, original kept; (3) AC8 native Cut -> paste into a share adds the
+  file and removes the original; (4) AC7 panel-copied local entry -> native
+  `filebrowser:paste` lands it in the current folder. The cut delete uses the
+  server's trash, so the galata root is placed under `$HOME` (writable trash) in
+  CI - on the live server delete returns HTTP 204 and removes the file.
+- **Live build (Playwright MCP):** the new bundle is served by the running
+  JupyterHub server (federated manifest references the new `remoteEntry` hash, no
+  restart needed) and the panel renders with the new commands; the live server
+  does not expose the app object, so the AC assertions run under Galata above.
 
 ## Notes / limitations
 
@@ -76,3 +109,8 @@ Verified against the live peer
 - Live in-panel confirmation of AC1-AC4 is pending a deploy of this version
   (new frontend assets + server restart); the server-side save path (AC5) is
   verified against the live peer above.
+- AC7/AC8 use our own clipboard because JupyterLab's native file-browser
+  clipboard (`DirListing._clipboard` / `_isCut`) is private - unreadable and not
+  injectable. One inherent edge: a native Copy, then a panel Copy, then a native
+  Paste can also paste the earlier native copy, since the stale native clipboard
+  is not clearable from outside. Rare sequence.

@@ -11,6 +11,7 @@ import {
   remoteDownloadAllUrl,
   type IExtensionInfo
 } from '../api';
+import { clearClip, getClip, setClip } from '../clipboard';
 
 describe('api URL helpers', () => {
   const link =
@@ -285,5 +286,45 @@ describe('connected-share entry download', () => {
 
   it('names a directory download with a .zip suffix', () => {
     expect(downloadName({ name: 'logs', type: 'directory' })).toBe('logs.zip');
+  });
+});
+
+describe('share clipboard', () => {
+  // The extension-owned clipboard that bridges file-browser <-> panel copy and
+  // paste, since JupyterLab's native file-browser clipboard is private. The
+  // `origin` flag decides who performs a paste: `fb` means native paste handled
+  // it; `panel` means our hook must do the transfer.
+  beforeEach(() => clearClip());
+
+  it('starts empty', () => {
+    expect(getClip()).toBeNull();
+  });
+
+  it('stores a native-mirrored local cut', () => {
+    setClip({ kind: 'local', origin: 'fb', mode: 'cut', paths: ['a/b.txt'] });
+    const clip = getClip();
+    expect(clip).toEqual({
+      kind: 'local',
+      origin: 'fb',
+      mode: 'cut',
+      paths: ['a/b.txt']
+    });
+  });
+
+  it('stores a panel-copied remote entry', () => {
+    setClip({
+      kind: 'remote',
+      origin: 'panel',
+      items: [{ connKey: 'k1', name: 'data.csv', type: 'file' }]
+    });
+    const clip = getClip();
+    expect(clip?.kind).toBe('remote');
+    expect(clip?.origin).toBe('panel');
+  });
+
+  it('clears back to empty', () => {
+    setClip({ kind: 'local', origin: 'panel', mode: 'copy', paths: ['x'] });
+    clearClip();
+    expect(getClip()).toBeNull();
   });
 });
