@@ -2,6 +2,12 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.3] - 2026-06-10
+
+Re-release of 1.2.2 - no functional changes.
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.2] - 2026-06-10
 
 Cloudflare CLI restructured into four orthogonal subcommands; the extension now owns the connector daemon.
@@ -23,8 +29,6 @@ Cloudflare CLI restructured into four orthogonal subcommands; the extension now 
 ### Removed
 
 - `--run`, `--verify`, `--setup`, `--info`, `--reset` mode flags (replaced by the subcommands); `docs/CLOUDFLARE_SHARING.md` and `docs/UX_DESIGN.md`
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.1] - 2026-06-09
 
