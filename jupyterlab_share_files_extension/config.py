@@ -55,6 +55,20 @@ class ShareFilesConfig(Configurable):
         ),
     )
 
+    public_base_url = Unicode(
+        "",
+        config=True,
+        help=(
+            "External base URL share/request links are rewritten to, e.g. "
+            "'https://share.example.com'. Only the scheme and host are used; "
+            "the path is auto-detected from the server's base_url. If empty "
+            "(default), the value is read from the CLI config file "
+            "(~/.config/jupyterlab-share-files/config.json, written by "
+            "`jupyterlab_share_files cloudflare --setup`); if that is also "
+            "empty, links use the host the browser is on (old behaviour)."
+        ),
+    )
+
     verify_peer_tls = Bool(
         True,
         config=True,

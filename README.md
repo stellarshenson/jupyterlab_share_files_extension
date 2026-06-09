@@ -30,6 +30,7 @@ Create a **share** (file drop) or **request** (inbox) from a side panel, copy th
 - **Symlink-friendly** - sharing `@shared/...` and similar works
 - **Delete to trash** - panel deletes move files to the OS trash by default (toggle with `c.ShareFilesConfig.use_trash`)
 - **HTTPS-aware links** - share URLs follow the scheme the browser is on (HTTPS behind a proxy, HTTP for direct peer-to-peer)
+- **Cloudflare tunnel sharing** - optional: links carry a public Cloudflare hostname so recipients outside your network can use them; a cloud icon in the panel header shows when it is active (see [docs/cloudflare_setup.md](docs/cloudflare_setup.md))
 - **Settings toggles** - turn shares, requests, or hidden-file visibility on/off independently
 
 ## Requirements
@@ -70,38 +71,48 @@ A relative `shares_dir` is resolved against the **notebook root** (the same fold
 
 The panel's refresh interval is set in JupyterLab's Settings Editor under **Share Files** (`pollIntervalSeconds`, default 15, minimum 2). One tick refreshes all of your shares and requests and all connections.
 
-## MCP server (agent access)
+## CLI
 
-The package ships an MCP (Model Context Protocol) server, `jupyterlab-share-files-mcp`, that lets an AI agent operate the extension - create shares and requests, connect to peers, pick up and send files, and close them. It is a thin stdio client over the same authenticated HTTP API the panel uses, acting as a single user via that user's Jupyter/JupyterHub token.
+The package ships a command-line tool, `jupyterlab_share_files`, that operates the extension - create shares and requests, connect to peers, pick up and send files, and close them. It is a thin client over the same authenticated HTTP API the panel uses, acting as a single user via that user's Jupyter/JupyterHub token, so an AI agent can drive the extension by running it. Each subcommand prints JSON.
 
-It is configured with two environment variables:
+It is configured with environment variables:
 
 - `SHARE_FILES_BASE_URL` - the base URL of your Jupyter server running the extension. On JupyterHub this **must be the public user URL** (e.g. `https://hub.example.com/user/<name>/`) so that generated share links carry the public host and `/user/<name>/` prefix. Falls back to `JUPYTER_SERVER_URL` (which on JupyterHub is the internal address - links would then be internal and not shareable).
 - `SHARE_FILES_TOKEN` - a Jupyter or JupyterHub API token. Falls back to `JUPYTERHUB_API_TOKEN` / `JUPYTER_TOKEN`.
 - `SHARE_FILES_INSECURE` - set to `1` to skip TLS certificate verification (for hubs behind a self-signed certificate). Off by default.
 
-Register it with an MCP client (Claude Code `.mcp.json`, Claude Desktop `claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "share-files": {
-      "command": "jupyterlab-share-files-mcp",
-      "env": {
-        "SHARE_FILES_BASE_URL": "https://hub.example.com/user/<name>/",
-        "SHARE_FILES_TOKEN": "<your-jupyter-or-hub-token>",
-        "SHARE_FILES_INSECURE": "0"
-      }
-    }
-  }
-}
+```bash
+jupyterlab_share_files list-items
+jupyterlab_share_files create-share <name> [paths...]
+jupyterlab_share_files create-request <name>
+jupyterlab_share_files connect <link>
+jupyterlab_share_files disconnect <key>
+jupyterlab_share_files close-share <id>
+jupyterlab_share_files close-request <id>
+jupyterlab_share_files pick-up <key> [names...] [--target-dir DIR]
+jupyterlab_share_files send-to-request <key> <paths...> [--uploader NAME]
+jupyterlab_share_files list-request-uploads <id>
 ```
 
-Tools: `list_items`, `create_share`, `create_request`, `connect`, `disconnect`, `close_share`, `close_request`, `pick_up`, `send_to_request`, `list_request_uploads`.
+The `cloudflare` subcommand exposes share links beyond the hub via a [Cloudflare tunnel](docs/CLOUDFLARE_SHARING.md): `--token` and `--account_id` save the Cloudflare API token and account id to `~/.config/jupyterlab-share-files/config.json` (chmod 600), and `--verify` reports what the token can do with tunnels - whether it is valid (user-owned and account-owned `cfat_` tokens both supported), can bind to (list) existing tunnels, and can set up (create) a new one, the latter proven by creating a throwaway tunnel and deleting it immediately.
+
+```bash
+jupyterlab_share_files cloudflare --token <cloudflare-api-token> --account_id <account-id> --verify
+```
+
+`--setup` provisions the tunnel end to end: it creates (or reuses) a tunnel named `share-files`, routes `--hostname` to the server address given by the **mandatory** `--local-base-url` (the URL the `cloudflared` connector reaches the server at - given explicitly, never inferred; it must be `https`, otherwise the command errors with guidance, and `localhost` is fine as long as it is https), adds a proxied CNAME in the hostname's zone, switches on the zone's **Always Use HTTPS** (plain `http` to the share hostname is 301-redirected at the Cloudflare edge), and saves `public_base_url` so generated share/request links carry the Cloudflare host - the path part stays auto-detected from the server's own base URL. Only the extension's unauthenticated `/public/...` endpoints are exposed through the tunnel; everything else (hub login, authenticated API, the rest of the private network) answers 404 at the Cloudflare edge. `--run` additionally launches the `cloudflared` connector in the background. `--reset` resets the saved token to none (clearing account id, tunnel state and `public_base_url`); links then revert to the local/hub address on the next request. Cloudflare-side resources are not touched by `--reset`. The token needs `Account → Cloudflare Tunnel → Edit` and zone-scoped `DNS → Edit` for the hostname's domain - see [docs/cloudflare_setup.md](docs/cloudflare_setup.md) for the full policy and configuration guide.
+
+```bash
+jupyterlab_share_files cloudflare --setup --hostname share.example.com \
+  --local-base-url "https://hub.example.com/user/<name>/" --run
+jupyterlab_share_files cloudflare --reset
+```
 
 ## Security
 
 The link is the credential (40 bits of entropy). HTTPS is inherited from your JupyterHub/Jupyter proxy. Suitable for trusted-channel sharing (Slack, email). No expiry, no PIN.
+
+With Cloudflare sharing enabled, links are reachable from the whole internet - only over HTTPS (plain `http` is redirected at the Cloudflare edge), and only the unauthenticated `/public/...` capability endpoints pass through the tunnel; the hub login, authenticated API, and the rest of your private network stay unreachable.
 
 ## Uninstall
 

@@ -1,0 +1,665 @@
+[
+  {
+    "method": "GET",
+    "endpoint": "accounts",
+    "request_body": null,
+    "response": {
+      "result": [
+        {
+          "id": "d3786894d5db55e6074c57ab92e09888",
+          "name": "stellars",
+          "type": "standard",
+          "settings": {
+            "enforce_twofactor": false,
+            "api_access_enabled": null,
+            "access_approval_expiry": "2999-12-31T23:00:00.000Z",
+            "abuse_contact_email": null,
+            "oauth_app_access_enabled": true
+          },
+          "legacy_flags": {
+            "enterprise_zone_quota": {
+              "maximum": 0,
+              "current": 0,
+              "available": 0
+            }
+          },
+          "created_on": "2024-05-23T22:51:46.074996Z"
+        }
+      ],
+      "result_info": {
+        "page": 1,
+        "per_page": 20,
+        "total_pages": 1,
+        "count": 1,
+        "total_count": 1
+      },
+      "success": true,
+      "errors": [],
+      "messages": []
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "user/tokens/verify",
+    "request_body": null,
+    "response": {
+      "success": false,
+      "errors": [
+        {
+          "code": 1000,
+          "message": "Invalid API Token"
+        }
+      ],
+      "messages": [],
+      "result": null
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "accounts/d3786894d5db55e6074c57ab92e09888/tokens/verify",
+    "request_body": null,
+    "response": {
+      "result": {
+        "id": "5f6d5762b65c110803274d254f8e0452",
+        "status": "active"
+      },
+      "success": true,
+      "errors": [],
+      "messages": [
+        {
+          "code": 10000,
+          "message": "This API Token is valid and active",
+          "type": null
+        }
+      ]
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "accounts/d3786894d5db55e6074c57ab92e09888/cfd_tunnel?is_deleted=false",
+    "request_body": null,
+    "response": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": [
+        {
+          "id": "5ac0f754-53b0-43db-a0ca-ec038c432960",
+          "account_tag": "d3786894d5db55e6074c57ab92e09888",
+          "created_at": "2026-06-09T21:19:44.097054Z",
+          "deleted_at": null,
+          "name": "share-files",
+          "connections": [
+            {
+              "colo_name": "waw06",
+              "uuid": "3e0d19fd-a5d8-4e73-b927-faf1862ac6d0",
+              "id": "3e0d19fd-a5d8-4e73-b927-faf1862ac6d0",
+              "is_pending_reconnect": false,
+              "origin_ip": "109.243.64.40",
+              "opened_at": "2026-06-09T21:33:09.707984Z",
+              "client_id": "e8ac6b96-df73-42a8-8857-d22cd3722165",
+              "client_version": "2026.6.0"
+            },
+            {
+              "colo_name": "waw03",
+              "uuid": "b95a8a08-22da-40e4-8ee3-82b2c11ccc21",
+              "id": "b95a8a08-22da-40e4-8ee3-82b2c11ccc21",
+              "is_pending_reconnect": false,
+              "origin_ip": "109.243.64.40",
+              "opened_at": "2026-06-09T21:33:09.968453Z",
+              "client_id": "e8ac6b96-df73-42a8-8857-d22cd3722165",
+              "client_version": "2026.6.0"
+            },
+            {
+              "colo_name": "waw03",
+              "uuid": "e0b7f591-cbc9-4977-9cbe-54780d76bb15",
+              "id": "e0b7f591-cbc9-4977-9cbe-54780d76bb15",
+              "is_pending_reconnect": false,
+              "origin_ip": "109.243.64.40",
+              "opened_at": "2026-06-09T21:33:10.972312Z",
+              "client_id": "e8ac6b96-df73-42a8-8857-d22cd3722165",
+              "client_version": "2026.6.0"
+            },
+            {
+              "colo_name": "waw02",
+              "uuid": "3266145a-609b-4d02-bd23-370181c37271",
+              "id": "3266145a-609b-4d02-bd23-370181c37271",
+              "is_pending_reconnect": false,
+              "origin_ip": "109.243.64.40",
+              "opened_at": "2026-06-09T21:33:11.994488Z",
+              "client_id": "e8ac6b96-df73-42a8-8857-d22cd3722165",
+              "client_version": "2026.6.0"
+            }
+          ],
+          "conns_active_at": "2026-06-09T21:33:09.707984Z",
+          "conns_inactive_at": null,
+          "tun_type": "cfd_tunnel",
+          "metadata": {},
+          "status": "healthy",
+          "remote_config": true,
+          "config_src": "cloudflare"
+        }
+      ],
+      "result_info": {
+        "page": 1,
+        "per_page": 1000,
+        "count": 1,
+        "total_count": 1
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "endpoint": "accounts/d3786894d5db55e6074c57ab92e09888/cfd_tunnel",
+    "request_body": {
+      "name": "share-files-verify-28308c81",
+      "config_src": "cloudflare"
+    },
+    "response": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {
+        "id": "6160e662-c41c-4951-88bc-b7692bf2cccf",
+        "account_tag": "d3786894d5db55e6074c57ab92e09888",
+        "created_at": "2026-06-09T21:43:13.384447Z",
+        "deleted_at": null,
+        "name": "share-files-verify-28308c81",
+        "connections": [],
+        "conns_active_at": null,
+        "conns_inactive_at": "2026-06-09T21:43:13.384447Z",
+        "tun_type": "cfd_tunnel",
+        "metadata": {},
+        "status": "inactive",
+        "remote_config": true,
+        "config_src": "cloudflare",
+        "credentials_file": {
+          "AccountTag": "d3786894d5db55e6074c57ab92e09888",
+          "TunnelID": "6160e662-c41c-4951-88bc-b7692bf2cccf",
+          "TunnelName": "share-files-verify-28308c81",
+          "TunnelSecret": "REDACTED_TUNNEL_SECRET"
+        },
+        "token": "REDACTED_TUNNEL_TOKEN"
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "endpoint": "accounts/d3786894d5db55e6074c57ab92e09888/cfd_tunnel/6160e662-c41c-4951-88bc-b7692bf2cccf",
+    "request_body": null,
+    "response": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {
+        "id": "6160e662-c41c-4951-88bc-b7692bf2cccf",
+        "account_tag": "d3786894d5db55e6074c57ab92e09888",
+        "created_at": "2026-06-09T21:43:13.384447Z",
+        "deleted_at": "2026-06-09T21:43:14.600519Z",
+        "name": "share-files-verify-28308c81",
+        "connections": [],
+        "conns_active_at": null,
+        "conns_inactive_at": "2026-06-09T21:43:13.384447Z",
+        "tun_type": "cfd_tunnel",
+        "metadata": {},
+        "status": "inactive",
+        "remote_config": false
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "accounts",
+    "request_body": null,
+    "response": {
+      "result": [
+        {
+          "id": "d3786894d5db55e6074c57ab92e09888",
+          "name": "stellars",
+          "type": "standard",
+          "settings": {
+            "enforce_twofactor": false,
+            "api_access_enabled": null,
+            "access_approval_expiry": "2999-12-31T23:00:00.000Z",
+            "abuse_contact_email": null,
+            "oauth_app_access_enabled": true
+          },
+          "legacy_flags": {
+            "enterprise_zone_quota": {
+              "maximum": 0,
+              "current": 0,
+              "available": 0
+            }
+          },
+          "created_on": "2024-05-23T22:51:46.074996Z"
+        }
+      ],
+      "result_info": {
+        "page": 1,
+        "per_page": 20,
+        "total_pages": 1,
+        "count": 1,
+        "total_count": 1
+      },
+      "success": true,
+      "errors": [],
+      "messages": []
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "user/tokens/verify",
+    "request_body": null,
+    "response": {
+      "success": false,
+      "errors": [
+        {
+          "code": 1000,
+          "message": "Invalid API Token"
+        }
+      ],
+      "messages": [],
+      "result": null
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "accounts/d3786894d5db55e6074c57ab92e09888/tokens/verify",
+    "request_body": null,
+    "response": {
+      "result": {
+        "id": "5f6d5762b65c110803274d254f8e0452",
+        "status": "active"
+      },
+      "success": true,
+      "errors": [],
+      "messages": [
+        {
+          "code": 10000,
+          "message": "This API Token is valid and active",
+          "type": null
+        }
+      ]
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "accounts/d3786894d5db55e6074c57ab92e09888/cfd_tunnel?is_deleted=false",
+    "request_body": null,
+    "response": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": [
+        {
+          "id": "5ac0f754-53b0-43db-a0ca-ec038c432960",
+          "account_tag": "d3786894d5db55e6074c57ab92e09888",
+          "created_at": "2026-06-09T21:19:44.097054Z",
+          "deleted_at": null,
+          "name": "share-files",
+          "connections": [
+            {
+              "colo_name": "waw06",
+              "uuid": "3e0d19fd-a5d8-4e73-b927-faf1862ac6d0",
+              "id": "3e0d19fd-a5d8-4e73-b927-faf1862ac6d0",
+              "is_pending_reconnect": false,
+              "origin_ip": "109.243.64.40",
+              "opened_at": "2026-06-09T21:33:09.707984Z",
+              "client_id": "e8ac6b96-df73-42a8-8857-d22cd3722165",
+              "client_version": "2026.6.0"
+            },
+            {
+              "colo_name": "waw03",
+              "uuid": "b95a8a08-22da-40e4-8ee3-82b2c11ccc21",
+              "id": "b95a8a08-22da-40e4-8ee3-82b2c11ccc21",
+              "is_pending_reconnect": false,
+              "origin_ip": "109.243.64.40",
+              "opened_at": "2026-06-09T21:33:09.968453Z",
+              "client_id": "e8ac6b96-df73-42a8-8857-d22cd3722165",
+              "client_version": "2026.6.0"
+            },
+            {
+              "colo_name": "waw03",
+              "uuid": "e0b7f591-cbc9-4977-9cbe-54780d76bb15",
+              "id": "e0b7f591-cbc9-4977-9cbe-54780d76bb15",
+              "is_pending_reconnect": false,
+              "origin_ip": "109.243.64.40",
+              "opened_at": "2026-06-09T21:33:10.972312Z",
+              "client_id": "e8ac6b96-df73-42a8-8857-d22cd3722165",
+              "client_version": "2026.6.0"
+            },
+            {
+              "colo_name": "waw02",
+              "uuid": "3266145a-609b-4d02-bd23-370181c37271",
+              "id": "3266145a-609b-4d02-bd23-370181c37271",
+              "is_pending_reconnect": false,
+              "origin_ip": "109.243.64.40",
+              "opened_at": "2026-06-09T21:33:11.994488Z",
+              "client_id": "e8ac6b96-df73-42a8-8857-d22cd3722165",
+              "client_version": "2026.6.0"
+            }
+          ],
+          "conns_active_at": "2026-06-09T21:33:09.707984Z",
+          "conns_inactive_at": null,
+          "tun_type": "cfd_tunnel",
+          "metadata": {},
+          "status": "healthy",
+          "remote_config": true,
+          "config_src": "cloudflare"
+        }
+      ],
+      "result_info": {
+        "page": 1,
+        "per_page": 1000,
+        "count": 1,
+        "total_count": 1
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "endpoint": "accounts/d3786894d5db55e6074c57ab92e09888/cfd_tunnel",
+    "request_body": {
+      "name": "share-files-verify-80712c50",
+      "config_src": "cloudflare"
+    },
+    "response": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {
+        "id": "2439914a-3c9c-42b2-aa83-25bf6b5b1f94",
+        "account_tag": "d3786894d5db55e6074c57ab92e09888",
+        "created_at": "2026-06-09T21:43:17.506684Z",
+        "deleted_at": null,
+        "name": "share-files-verify-80712c50",
+        "connections": [],
+        "conns_active_at": null,
+        "conns_inactive_at": "2026-06-09T21:43:17.506684Z",
+        "tun_type": "cfd_tunnel",
+        "metadata": {},
+        "status": "inactive",
+        "remote_config": true,
+        "config_src": "cloudflare",
+        "credentials_file": {
+          "AccountTag": "d3786894d5db55e6074c57ab92e09888",
+          "TunnelID": "2439914a-3c9c-42b2-aa83-25bf6b5b1f94",
+          "TunnelName": "share-files-verify-80712c50",
+          "TunnelSecret": "REDACTED_TUNNEL_SECRET"
+        },
+        "token": "REDACTED_TUNNEL_TOKEN"
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "endpoint": "accounts/d3786894d5db55e6074c57ab92e09888/cfd_tunnel/2439914a-3c9c-42b2-aa83-25bf6b5b1f94",
+    "request_body": null,
+    "response": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {
+        "id": "2439914a-3c9c-42b2-aa83-25bf6b5b1f94",
+        "account_tag": "d3786894d5db55e6074c57ab92e09888",
+        "created_at": "2026-06-09T21:43:17.506684Z",
+        "deleted_at": "2026-06-09T21:43:18.668610Z",
+        "name": "share-files-verify-80712c50",
+        "connections": [],
+        "conns_active_at": null,
+        "conns_inactive_at": "2026-06-09T21:43:17.506684Z",
+        "tun_type": "cfd_tunnel",
+        "metadata": {},
+        "status": "inactive",
+        "remote_config": false
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "endpoint": "accounts/d3786894d5db55e6074c57ab92e09888/cfd_tunnel/5ac0f754-53b0-43db-a0ca-ec038c432960/configurations",
+    "request_body": {
+      "config": {
+        "ingress": [
+          {
+            "hostname": "share.duoptimum.com",
+            "path": "^(/user/[^/]+)?/jupyterlab-share-files-extension/public/.*",
+            "service": "https://jupyterhub.lab.stellars-tech.eu",
+            "originRequest": {
+              "httpHostHeader": "jupyterhub.lab.stellars-tech.eu",
+              "originServerName": "jupyterhub.lab.stellars-tech.eu",
+              "noTLSVerify": true
+            }
+          },
+          {
+            "service": "http_status:404"
+          }
+        ]
+      }
+    },
+    "response": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {
+        "tunnel_id": "5ac0f754-53b0-43db-a0ca-ec038c432960",
+        "version": 4,
+        "config": {
+          "ingress": [
+            {
+              "path": "^(/user/[^/]+)?/jupyterlab-share-files-extension/public/.*",
+              "service": "https://jupyterhub.lab.stellars-tech.eu",
+              "hostname": "share.duoptimum.com",
+              "originRequest": {
+                "noTLSVerify": true,
+                "httpHostHeader": "jupyterhub.lab.stellars-tech.eu",
+                "originServerName": "jupyterhub.lab.stellars-tech.eu"
+              }
+            },
+            {
+              "service": "http_status:404"
+            }
+          ],
+          "warp-routing": {
+            "enabled": false
+          }
+        },
+        "source": "cloudflare",
+        "created_at": "2026-06-09T21:35:06.516788Z"
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "zones?name=duoptimum.com",
+    "request_body": null,
+    "response": {
+      "result": [
+        {
+          "id": "69235b408f1d4840fe8202843fbbb28a",
+          "name": "duoptimum.com",
+          "status": "active",
+          "paused": false,
+          "type": "full",
+          "development_mode": 0,
+          "name_servers": [
+            "anirban.ns.cloudflare.com",
+            "elaine.ns.cloudflare.com"
+          ],
+          "original_name_servers": [
+            "ns61.domaincontrol.com",
+            "ns62.domaincontrol.com"
+          ],
+          "original_registrar": "godaddy.com, llc (id: 146)",
+          "original_dnshost": null,
+          "modified_on": "2026-06-09T20:37:34.453170Z",
+          "created_on": "2026-06-09T20:29:05.826135Z",
+          "activated_on": "2026-06-09T20:37:34.453170Z",
+          "vanity_name_servers": [],
+          "vanity_name_servers_ips": null,
+          "meta": {
+            "step": 2,
+            "custom_certificate_quota": 0,
+            "page_rule_quota": 3,
+            "phishing_detected": false
+          },
+          "owner": {
+            "id": null,
+            "type": "user",
+            "email": null
+          },
+          "account": {
+            "id": "d3786894d5db55e6074c57ab92e09888",
+            "name": "stellars"
+          },
+          "tenant": {
+            "id": null,
+            "name": null
+          },
+          "tenant_unit": {
+            "id": null
+          },
+          "permissions": [
+            "#dns_records:edit",
+            "#dns_records:read",
+            "#zone_versioning:read",
+            "#zone_versioning:edit",
+            "#web3:read",
+            "#web3:edit",
+            "#healthchecks:edit",
+            "#healthchecks:read",
+            "#waitingroom:read",
+            "#waitingroom:edit",
+            "#zone_settings:read",
+            "#zone_settings:edit",
+            "#page_shield:read",
+            "#ssl:read",
+            "#page_shield:edit",
+            "#zone:edit",
+            "#zone:read",
+            "#lb:edit",
+            "#lb:read"
+          ],
+          "plan": {
+            "id": "0feeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "name": "Free Website",
+            "price": 0,
+            "currency": "USD",
+            "frequency": "",
+            "is_subscribed": false,
+            "can_subscribe": false,
+            "legacy_id": "free",
+            "legacy_discount": false,
+            "externally_managed": false
+          }
+        }
+      ],
+      "result_info": {
+        "page": 1,
+        "per_page": 20,
+        "total_pages": 1,
+        "count": 1,
+        "total_count": 1
+      },
+      "success": true,
+      "errors": [],
+      "messages": []
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "zones/69235b408f1d4840fe8202843fbbb28a/dns_records?type=CNAME&name=share.duoptimum.com",
+    "request_body": null,
+    "response": {
+      "result": [
+        {
+          "id": "c5ad410d840ad7bf777950c52e488d4f",
+          "name": "share.duoptimum.com",
+          "type": "CNAME",
+          "content": "5ac0f754-53b0-43db-a0ca-ec038c432960.cfargotunnel.com",
+          "proxiable": true,
+          "proxied": true,
+          "ttl": 1,
+          "settings": {
+            "flatten_cname": false
+          },
+          "meta": {},
+          "comment": null,
+          "tags": [],
+          "created_on": "2026-06-09T21:19:47.815283Z",
+          "modified_on": "2026-06-09T21:36:38.092825Z"
+        }
+      ],
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result_info": {
+        "page": 1,
+        "per_page": 100,
+        "count": 1,
+        "total_count": 1,
+        "total_pages": 1
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "endpoint": "zones/69235b408f1d4840fe8202843fbbb28a/dns_records/c5ad410d840ad7bf777950c52e488d4f",
+    "request_body": {
+      "type": "CNAME",
+      "name": "share.duoptimum.com",
+      "content": "5ac0f754-53b0-43db-a0ca-ec038c432960.cfargotunnel.com",
+      "proxied": true
+    },
+    "response": {
+      "result": {
+        "id": "c5ad410d840ad7bf777950c52e488d4f",
+        "name": "share.duoptimum.com",
+        "type": "CNAME",
+        "content": "5ac0f754-53b0-43db-a0ca-ec038c432960.cfargotunnel.com",
+        "proxiable": true,
+        "proxied": true,
+        "ttl": 1,
+        "settings": {
+          "flatten_cname": false
+        },
+        "meta": {},
+        "comment": null,
+        "tags": [],
+        "created_on": "2026-06-09T21:19:47.815283Z",
+        "modified_on": "2026-06-09T21:43:21.978339Z"
+      },
+      "success": true,
+      "errors": [],
+      "messages": []
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "zones/69235b408f1d4840fe8202843fbbb28a/settings/always_use_https",
+    "request_body": null,
+    "response": {
+      "result": {
+        "id": "always_use_https",
+        "value": "on",
+        "modified_on": "2026-06-09T21:42:23.453367Z",
+        "editable": true
+      },
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result_info": {}
+    }
+  },
+  {
+    "method": "GET",
+    "endpoint": "accounts/d3786894d5db55e6074c57ab92e09888/cfd_tunnel/5ac0f754-53b0-43db-a0ca-ec038c432960/token",
+    "request_body": null,
+    "response": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": "REDACTED_TUNNEL_TOKEN"
+    }
+  }
+]

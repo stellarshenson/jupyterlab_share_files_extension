@@ -182,15 +182,65 @@ class _PublicBase(tornado.web.RequestHandler):
         return RequestStore(self.workspace_root, self.shares_dir)
 
 
+# Cached value of public_base_url from the CLI config file, keyed by mtime so
+# `cloudflare --setup` / `--reset` take effect on the next request without a
+# server restart and without re-reading the file on every link built.
+_PUBLIC_BASE_CACHE: dict[str, Any] = {"path": None, "mtime": None, "value": ""}
+
+
+def _config_file_public_base_url() -> str:
+    """Read public_base_url from the CLI config file (mtime-cached)."""
+    from .cli import config_path
+
+    path = config_path()
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return ""
+    if _PUBLIC_BASE_CACHE["path"] == path and _PUBLIC_BASE_CACHE["mtime"] == mtime:
+        return _PUBLIC_BASE_CACHE["value"]
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")).get("public_base_url") or ""
+    except (OSError, ValueError):
+        value = ""
+    _PUBLIC_BASE_CACHE.update(path=path, mtime=mtime, value=value)
+    return value
+
+
+def _configured_public_origin(handler: tornado.web.RequestHandler) -> str:
+    """Configured external origin (scheme://host) for generated links, or ''.
+
+    Precedence: the ``public_base_url`` trait, else the value the CLI wrote to
+    ``~/.config/jupyterlab-share-files/config.json`` (e.g. by
+    ``cloudflare --setup``). Only scheme + host are kept - the base path stays
+    auto-detected from the server's own ``base_url``.
+    """
+    cfg: ShareFilesConfig = handler.settings.get("share_files_config")
+    raw = (cfg.public_base_url if cfg is not None else "") or ""
+    if not raw:
+        raw = _config_file_public_base_url()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else "https://" + raw)
+    if not parsed.netloc:
+        return ""
+    return (parsed.scheme or "https") + "://" + parsed.netloc
+
+
 def _public_origin(handler: tornado.web.RequestHandler) -> str:
     """Pick scheme + host the browser actually sees.
 
-    Behind a TLS-terminating proxy (JupyterHub, Traefik, nginx) Tornado's
+    A configured external origin (Cloudflare tunnel hostname set up via
+    ``cloudflare --setup``, or the ``public_base_url`` trait) wins. Otherwise,
+    behind a TLS-terminating proxy (JupyterHub, Traefik, nginx) Tornado's
     ``request.protocol`` reports ``http`` unless ``trust_xheaders`` is enabled
     on the server. Honour ``X-Forwarded-Proto`` / ``X-Forwarded-Host``
     explicitly so HTTPS-facing sessions emit HTTPS links, while plain p2p
     sessions stay on HTTP.
     """
+    configured = _configured_public_origin(handler)
+    if configured:
+        return configured
     proto = handler.request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
     if not proto:
         proto = handler.request.protocol
@@ -198,6 +248,25 @@ def _public_origin(handler: tornado.web.RequestHandler) -> str:
     if not host:
         host = handler.request.host
     return proto + "://" + host
+
+
+def _own_link_prefixes(handler: tornado.web.RequestHandler) -> set[str]:
+    """All `scheme://host/base_url/` prefixes that mean "this server".
+
+    Used by self-connect detection. The configured external origin (Cloudflare
+    tunnel) is also "us" - without it, pasting one's own Cloudflare link would
+    create a loop connection.
+    """
+    own_base_url = handler.settings.get("base_url", "/")
+    if not own_base_url.endswith("/"):
+        own_base_url += "/"
+    prefixes = {
+        handler.request.protocol + "://" + handler.request.host + own_base_url
+    }
+    configured = _configured_public_origin(handler)
+    if configured:
+        prefixes.add(configured + own_base_url)
+    return prefixes
 
 
 def _public_share_url(handler: tornado.web.RequestHandler, id_: str) -> str:
@@ -235,6 +304,7 @@ class InfoHandler(_Base):
             "storage_path": display_path,
             "shares_subdir": "shares",
             "requests_subdir": "requests",
+            "public_base_url": _configured_public_origin(self),
         })
 
 
@@ -414,14 +484,8 @@ class ConnectionsHandler(_Base):
         # JupyterHub two users share a host but live at different
         # `/user/<name>/` prefixes, so compare the full prefix (host +
         # base_url) not just the host.
-        own_base_url = self.settings.get("base_url", "/")
-        if not own_base_url.endswith("/"):
-            own_base_url += "/"
-        own_prefix = (
-            self.request.protocol + "://" + self.request.host + own_base_url
-        )
         link_prefix = parsed["host"] + parsed.get("base_path", "/")
-        if link_prefix == own_prefix:
+        if link_prefix in _own_link_prefixes(self):
             return self.write_error_json(
                 400,
                 "That link points to your own server - it's already in your panel.",

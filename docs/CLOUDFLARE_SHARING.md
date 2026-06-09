@@ -38,7 +38,7 @@ Tests would mirror the existing `tests/test_config.py` trait coverage plus a `ro
 
 - **Link protection.** External exposure reopens the question deferred earlier - the link is currently a 40-bit capability URL with no PIN or expiry. Cloudflare Access or signed URLs could add auth or TTL at the edge without changing the app. Decide whether reaching outside the hub raises that bar.
 - **Avoiding the hub spawn breach.** The earlier spawn-as-owner issue was specific to traffic routed through `/user/<owner>/`. A Cloudflare-fronted path that does not traverse the hub's per-user auth sidesteps that class of problem. Whether the tunnel targets the single-user server or a dedicated standalone service is part of this decision.
-- **MCP server.** No change needed. It hands out whatever link the server generates, so once `public_base_url` is set the agent's `create_share` / `create_request` outputs become externally shareable for free.
+- **CLI.** No change needed. It hands out whatever link the server generates, so once `public_base_url` is set the `create-share` / `create-request` outputs become externally shareable for free.
 
 ## Out of scope for the first step
 

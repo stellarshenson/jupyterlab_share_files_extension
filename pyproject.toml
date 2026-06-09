@@ -24,13 +24,12 @@ classifiers = [
 ]
 dependencies = [
     "jupyter_server>=2.4.0,<3",
-    "send2trash>=1.8",
-    "mcp>=1.2.0"
+    "send2trash>=1.8"
 ]
 dynamic = ["version", "description", "authors", "urls", "keywords"]
 
 [project.scripts]
-jupyterlab-share-files-mcp = "jupyterlab_share_files_extension.mcp_server:main"
+jupyterlab_share_files = "jupyterlab_share_files_extension.cli:main"
 
 [project.optional-dependencies]
 dev = [

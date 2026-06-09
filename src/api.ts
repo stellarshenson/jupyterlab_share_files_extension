@@ -63,6 +63,9 @@ export interface IExtensionInfo {
   storage_path: string;
   shares_subdir: string;
   requests_subdir: string;
+  /** Configured external origin (e.g. a Cloudflare tunnel host) links are
+   * rewritten to; empty when none is configured. */
+  public_base_url?: string;
 }
 
 export function getInfo(

@@ -39,6 +39,7 @@ import { clearClip, getClip, setClip } from './clipboard';
 import {
   addIcon,
   closeIcon,
+  cloudIcon,
   disconnectIcon,
   fileIcon,
   folderIcon,
@@ -181,12 +182,30 @@ export class ShareFilesPanel extends Widget {
     const tempKey = '__pending_share';
     this._state.busyKeys.add(tempKey);
     this._render();
+    // creating the link can take a moment - show a spinner toast meanwhile
+    const pending = Notification.emit(
+      `Creating share "${name}"...`,
+      'in-progress',
+      {
+        autoClose: false
+      }
+    );
     try {
       const share = await createShare(this._serverSettings, name, paths);
       await this._copyLinkToClipboard(share.link);
-      Notification.success(`Share "${share.name}" created - link copied`);
+      Notification.update({
+        id: pending,
+        message: `Share "${share.name}" created - link copied`,
+        type: 'success',
+        autoClose: 5000
+      });
     } catch (err: any) {
-      Notification.error(`Could not create share: ${err.message || err}`);
+      Notification.update({
+        id: pending,
+        message: `Could not create share: ${err.message || err}`,
+        type: 'error',
+        autoClose: 5000
+      });
     } finally {
       this._state.busyKeys.delete(tempKey);
       await this.refresh();
@@ -205,12 +224,27 @@ export class ShareFilesPanel extends Widget {
     if (!name) {
       return;
     }
+    const pending = Notification.emit(
+      `Creating request "${name}"...`,
+      'in-progress',
+      { autoClose: false }
+    );
     try {
       const req = await createRequest(this._serverSettings, name);
       await this._copyLinkToClipboard(req.link);
-      Notification.success(`Request "${req.name}" created - link copied`);
+      Notification.update({
+        id: pending,
+        message: `Request "${req.name}" created - link copied`,
+        type: 'success',
+        autoClose: 5000
+      });
     } catch (err: any) {
-      Notification.error(`Could not create request: ${err.message || err}`);
+      Notification.update({
+        id: pending,
+        message: `Could not create request: ${err.message || err}`,
+        type: 'error',
+        autoClose: 5000
+      });
     } finally {
       await this.refresh();
     }
@@ -274,14 +308,14 @@ export class ShareFilesPanel extends Widget {
         // stale after files are added/removed - drop the cache each refresh.
         this._state.subEntries.clear();
         this._detectNewUploads();
-        // fetch info once - storage path doesn't change at runtime
-        if (this._state.info === null) {
-          try {
-            this._state.info = await getInfo(this._serverSettings);
-          } catch {
-            // keep null - we just won't show the path hint
-          }
+        // refetch info each tick - public_base_url can change at runtime
+        // (cloudflare --setup / --reset apply without a server restart)
+        try {
+          this._state.info = await getInfo(this._serverSettings);
+        } catch {
+          // keep the previous value - we just won't update the hints
         }
+        this._updateCloudIndicator();
         // refresh connection data in parallel
         await Promise.all(
           this._state.connections.map(conn => this._refreshConnection(conn))
@@ -410,6 +444,14 @@ export class ShareFilesPanel extends Widget {
       }
     );
     header.appendChild(this._filterBtn);
+
+    // cloud indicator - shown only when a public base URL (Cloudflare
+    // tunnel) is configured, meaning links carry the external host
+    this._cloudIndicator = document.createElement('span');
+    this._cloudIndicator.className = 'jp-ShareFilesPanel-cloudIndicator';
+    this._cloudIndicator.style.display = 'none';
+    this._cloudIndicator.appendChild(this._svgNode(cloudIcon.svgstr));
+    header.appendChild(this._cloudIndicator);
 
     this._refreshBtn = this._makeIconButton(
       refreshIcon.svgstr,
@@ -2343,6 +2385,18 @@ export class ShareFilesPanel extends Widget {
     return wrap;
   }
 
+  /** Show/hide the header cloud icon from the server-reported public base. */
+  private _updateCloudIndicator(): void {
+    if (!this._cloudIndicator) {
+      return;
+    }
+    const base = this._state.info?.public_base_url || '';
+    this._cloudIndicator.style.display = base ? 'flex' : 'none';
+    this._cloudIndicator.title = base
+      ? `Cloud sharing active - links use ${base}`
+      : '';
+  }
+
   private _spinnerNode(): HTMLElement {
     const s = document.createElement('span');
     s.className = 'jp-ShareFilesPanel-spinner';
@@ -2368,6 +2422,7 @@ export class ShareFilesPanel extends Widget {
   private _dropZone: HTMLElement | null = null;
   private _refreshBtn: HTMLElement | null = null;
   private _filterBtn: HTMLElement | null = null;
+  private _cloudIndicator: HTMLElement | null = null;
   private _filterBox: HTMLElement | null = null;
   private _filterInput: HTMLInputElement | null = null;
   private _filterText = '';

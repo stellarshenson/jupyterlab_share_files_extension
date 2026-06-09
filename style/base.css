@@ -81,6 +81,21 @@
     background 80ms ease-out;
 }
 
+/* Cloud indicator - shown when a public base URL (tunnel) is active */
+.jp-ShareFilesPanel-cloudIndicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 2px;
+  padding: 0 3px;
+  color: var(--jp-brand-color1);
+}
+
+.jp-ShareFilesPanel-cloudIndicator svg {
+  width: 14px;
+  height: 14px;
+}
+
 .jp-ShareFilesPanel-iconButton:hover {
   background: var(--jp-layout-color3);
   color: var(--jp-ui-font-color1);

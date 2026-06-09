@@ -2,6 +2,130 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.1] - 2026-06-09
+
+Cloudflare tunnel sharing: share/request links can now carry a public Cloudflare hostname and work for recipients outside the hub or local network.
+
+### Added
+
+- `jupyterlab_share_files` CLI - the panel's ten operations (create/close shares and requests, connect, pick up, send, list) as subcommands printing JSON, so scripts and AI agents can drive the extension
+- `cloudflare` subcommand: `--token`/`--account_id` save credentials (chmod 600), `--verify` proves token rights (bind + create, account-owned `cfat_` tokens supported), `--setup` provisions the tunnel end to end, `--run` launches the connector, `--reset` returns to the unconfigured state
+- Tunnel provisioning routes the hostname to the server address given by the mandatory `--local-base-url` (https required, never inferred), restricts the ingress to the extension's unauthenticated `/public/...` endpoints (everything else 404s at the Cloudflare edge), upserts a proxied CNAME, and enforces HTTPS via the zone's Always Use HTTPS
+- `public_base_url` - written by `--setup`, read by the server per request (mtime-cached, no restart) to rewrite the scheme+host of generated links; also available as a `ShareFilesConfig` trait override
+- Cloud icon in the panel header when a public base URL is active (`api/info` now reports `public_base_url`)
+- In-progress notification while a share/request link is being created
+- Own Cloudflare links are recognised by the self-connect guard
+- `docs/cloudflare_setup.md` - required token policies and configuration guide
+- Recorded-response test suite replaying real Cloudflare API envelopes (`tests/fixtures/cloudflare_responses.json`, secrets redacted)
+
+### Removed
+
+- MCP server (`jupyterlab-share-files-mcp`) and the `mcp` dependency - agents use the CLI instead; the HTTP client functions moved into `cli.py`
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
+## [1.1.4] - 2026-06-02
+
+### Added
+
+- Copy/paste between the panel and the file browser: native `filebrowser:copy`/`cut` mirror into an extension clipboard; panel entries (local and connected) gain Copy, shares and connected requests gain Paste
+
+## [1.1.3] - 2026-05-31
+
+### Added
+
+- QR code in the share-link dialog so a phone on the same network can scan a link directly
+
+## [1.1.2] - 2026-05-31
+
+### Added
+
+- `c.ShareFilesConfig.verify_peer_tls` - saves/uploads to peers behind a self-signed certificate fail with a clean 502 and guidance instead of an unhandled error
+
+### Fixed
+
+- Double-clicking a connected (remote) file now opens it in JupyterLab instead of downloading; right-click offers Download and Save
+
+## [1.1.1] - 2026-05-30
+
+### Added
+
+- MCP server `jupyterlab-share-files-mcp` for agent access (removed again in 1.2.0 in favour of the CLI)
+- Drag files out of a connected (remote) share into the file browser
+- `pollIntervalSeconds` setting for the panel refresh tick
+
+## [1.0.37] - 2026-05-29
+
+### Fixed
+
+- Connection links are persisted verbatim and never reconstructed, fixing connections shown offline while available
+- Connected-share downloads no longer navigate with credentials (removes the cross-user spawn prompt); per-row disconnect icon added
+
+## [1.0.36] - 2026-05-29
+
+### Added
+
+- Drag share entries onto the file browser's current view (including empty area) and onto dock tabs to open them
+
+## [1.0.35] - 2026-05-29
+
+### Fixed
+
+- Drag-source hardened against the native HTML5 drag race; frontend test parity for self-connect detection
+
+## [1.0.34] - 2026-05-29
+
+### Fixed
+
+- Self-connect detection on JupyterHub compares the full `/user/<name>/` prefix, so other users' links on the same host connect correctly
+
+## [1.0.33] - 2026-05-29
+
+### Changed
+
+- Minimal on-disk manifest (`{id, name}` + derived fields at read time); atomic manifest writes; thread-safe concurrent uploads
+
+## [1.0.32] - 2026-05-29
+
+### Changed
+
+- `shares_dir` must resolve inside the notebook root; the extension refuses to start otherwise
+
+## [1.0.29] - [1.0.31] - 2026-05-29
+
+### Added
+
+- Filter input for shares/requests, finalised as a funnel-icon toolbar toggle (1.0.29-1.0.31)
+
+## [1.0.21] - [1.0.26] - 2026-05-29
+
+### Added
+
+- Drag panel entries to the file browser to copy (1.0.24), working drag-out with sidecar manifest layout (1.0.26)
+- Drill into shared folders, hidden-files visibility setting, gentler drop targets (1.0.21)
+
+### Fixed
+
+- No text-select on entry rows; drop-zone matches row treatment (1.0.22)
+
+## [1.0.16] - 2026-05-29
+
+### Added
+
+- Navigate into shares, double-click to open files, self-connect dialog
+
+## [1.0.5] - [1.0.12] - 2026-05-28
+
+### Added
+
+- Copy-to-current-folder and show-in-file-browser actions on panel entries (1.0.5)
+- Trash-aware deletes and HTTPS-aware links (1.0.7)
+- Visible refresh spin and tactile press feedback (1.0.12)
+
+### Fixed
+
+- Panel overflow, link-popup font size, section-header box-sizing (1.0.8, 1.0.10)
+
 ## 0.6.22
 
 CI hardening release - all GitHub Actions workflows now green on `main`.
@@ -11,8 +135,6 @@ CI hardening release - all GitHub Actions workflows now green on `main`.
 - **ci**: include `scripts/*.js` and `schema/*.json` in the npm tarball's `files` allow-list so `jupyter-releaser check-npm` can run the `postinstall` hook without `MODULE_NOT_FOUND`
 
 No runtime changes since 0.6.21.
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## 0.6.21
 
