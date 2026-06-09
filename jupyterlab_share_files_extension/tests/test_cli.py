@@ -34,7 +34,7 @@ def config_home(tmp_path, monkeypatch):
 
 def test_list_items_dispatches(monkeypatch, capsys):
     monkeypatch.setattr(cli, "list_items", lambda: {"shares": []})
-    assert cli.main(["list-items"]) == 0
+    assert cli.main(["--json", "list-items"]) == 0
     assert json.loads(capsys.readouterr().out) == {"shares": []}
 
 
@@ -76,8 +76,16 @@ def test_runtime_error_prints_to_stderr_and_exits_1(monkeypatch, capsys):
 # --------------------------------------------------------------------------- #
 
 
-def test_cloudflare_token_and_account_saved_with_0600(config_home, capsys):
-    assert cli.main(["cloudflare", "--token", "tok123", "--account_id", "acc9"]) == 0
+def test_cloudflare_token_and_account_saved_with_0600(config_home, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "cloudflare_setup", lambda *a: {"tunnel_id": "t"})
+    monkeypatch.setattr(cli, "ensure_connector", lambda *a, **kw: True)
+    assert (
+        cli.main(
+            ["cloudflare", "setup", "--token", "tok123", "--account-id", "acc9",
+             "--local-base-url", "https://hub.example.com/user/a/"]
+        )
+        == 0
+    )
     path = cli.config_path()
     cfg = json.loads(path.read_text())
     assert cfg["cloudflare_token"] == "tok123"
@@ -85,8 +93,8 @@ def test_cloudflare_token_and_account_saved_with_0600(config_home, capsys):
     assert (path.stat().st_mode & 0o777) == 0o600
 
 
-def test_cloudflare_verify_without_token_fails(config_home, capsys):
-    assert cli.main(["cloudflare", "--verify"]) == 1
+def test_cloudflare_validate_without_token_fails(config_home, capsys):
+    assert cli.main(["cloudflare", "validate"]) == 1
     assert "no token" in capsys.readouterr().err
 
 
@@ -278,12 +286,133 @@ def test_cloudflare_setup_refuses_without_create_rights(monkeypatch):
 
 
 def test_cloudflare_setup_requires_local_base_url(config_home, capsys):
-    """--setup must fail without --local-base-url - the public base is given
-    explicitly, never inferred from the environment or defaulted to
-    localhost/internal addresses."""
+    """Setup runs only when --local-base-url is given - the public base is
+    explicit, never inferred from the environment or defaulted to
+    localhost/internal addresses. --run without it is refused."""
     cli._save_config({"cloudflare_token": "tok"})
-    assert cli.main(["cloudflare", "--setup"]) == 1
+    with pytest.raises(SystemExit):
+        cli.main(["cloudflare", "setup"])
     assert "--local-base-url" in capsys.readouterr().err
+
+
+def test_cloudflare_one_command_saves_and_sets_up(config_home, monkeypatch, capsys):
+    """One `cloudflare` invocation: --token/--account_id are saved and
+    --local-base-url triggers the tunnel setup - no separate mode flag."""
+    captured = {}
+
+    def fake_setup(token, account_id, hostname, local_base_url):
+        captured["args"] = (token, account_id, hostname, local_base_url)
+        return {"tunnel_id": "tun-1"}
+
+    monkeypatch.setattr(cli, "cloudflare_setup", fake_setup)
+    monkeypatch.setattr(cli, "ensure_connector", lambda *a, **kw: True)
+    assert (
+        cli.main(
+            [
+                "--json",
+                "cloudflare",
+                "setup",
+                "--token", "tok",
+                "--account-id", "acc1",
+                "--hostname", "share.example.com",
+                "--local-base-url", "https://hub.example.com/user/alice/",
+            ]
+        )
+        == 0
+    )
+    assert captured["args"] == (
+        "tok", "acc1", "share.example.com", "https://hub.example.com/user/alice/"
+    )
+    cfg = json.loads(cli.config_path().read_text())
+    assert cfg["cloudflare_token"] == "tok"
+    out = json.loads(capsys.readouterr().out)
+    assert out["setup"]["tunnel_id"] == "tun-1"
+    # the extension guarantees the connector after setup
+    assert out["setup"]["daemon_running"] is True
+
+
+def test_cloudflare_info_masks_tokens(config_home, monkeypatch, capsys):
+    """--info shows the current config with secrets masked to the last 4
+    characters; the account id is shown in full."""
+    cli._save_config(
+        {
+            "cloudflare_token": "cfat_secretsecretb676",
+            "cloudflare_account_id": "acc-full-id",
+            "cloudflare_tunnel_id": "tun-1",
+            "cloudflare_hostname": "share.example.com",
+            "cloudflare_tunnel_token": "eyJsecretsecret9zzz",
+            "public_base_url": "https://share.example.com",
+        }
+    )
+    monkeypatch.setattr(cli, "_connector_running", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "_cf_request",
+        lambda *a, **kw: {"success": True, "result": {"status": "healthy"}},
+    )
+    assert cli.main(["--json", "cloudflare", "info"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["cloudflare_token"] == "...b676"
+    assert out["cloudflare_tunnel_token"] == "...9zzz"
+    assert out["cloudflare_account_id"] == "acc-full-id"
+    assert out["public_base_url"] == "https://share.example.com"
+    assert out["daemon_running"] is True
+    assert out["tunnel_status"] == "healthy"
+
+
+def test_human_output_is_default_json_optional(monkeypatch, capsys):
+    """Without --json the result renders as key: value lines; with --json it
+    is machine-readable JSON."""
+    monkeypatch.setattr(cli, "list_items", lambda: {"shares": [], "requests": []})
+    assert cli.main(["list-items"]) == 0
+    human = capsys.readouterr().out
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(human)
+    assert "shares" in human
+
+
+def test_ensure_connector_retries_and_fails(config_home, monkeypatch, caplog):
+    """ensure_connector tries the configured number of times and logs the
+    failure when the connector never stays up."""
+    cli._save_config({"cloudflare_tunnel_token": "tt"})
+    monkeypatch.setattr(cli, "_connector_running", lambda: False)
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    attempts = []
+
+    class _DeadProc:
+        pid = 123
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+    def fake_popen(*a, **kw):
+        attempts.append(a)
+        return _DeadProc()
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+    import logging as _logging
+
+    log = _logging.getLogger("test-connector")
+    with caplog.at_level("ERROR", logger="test-connector"):
+        assert cli.ensure_connector(retries=3, logger=log) is False
+    assert len(attempts) == 3
+    assert any("failed after 3 attempts" in r.message for r in caplog.records)
+
+
+def test_ensure_connector_succeeds_when_process_stays_up(config_home, monkeypatch):
+    cli._save_config({"cloudflare_tunnel_token": "tt"})
+    monkeypatch.setattr(cli, "_connector_running", lambda: False)
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+
+    class _LiveProc:
+        pid = 123
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *a, **kw: _LiveProc())
+    assert cli.ensure_connector(retries=3) is True
 
 
 def test_cloudflare_setup_rejects_relative_base_url():
@@ -316,18 +445,19 @@ def test_cloudflare_reset_clears_token_and_setup_state(config_home, capsys):
             "unrelated": "kept",
         }
     )
-    assert cli.main(["cloudflare", "--reset"]) == 0
+    assert cli.main(["--json", "cloudflare", "reset"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert set(out["reset"]) == set(cli._RESET_KEYS)
     cfg = json.loads(cli.config_path().read_text())
     assert cfg == {"unrelated": "kept"}
-    # back to the unconfigured state: verify now demands a token
-    assert cli.main(["cloudflare", "--verify"]) == 1
+    # back to the unconfigured state: validate now demands a token
+    assert cli.main(["cloudflare", "validate"]) == 1
 
 
 def test_cloudflare_reset_rejects_other_flags(config_home, capsys):
-    assert cli.main(["cloudflare", "--reset", "--token", "tok"]) == 1
-    assert "cannot be combined" in capsys.readouterr().err
+    """The subcommands are orthogonal - reset takes no flags at all."""
+    with pytest.raises(SystemExit):
+        cli.main(["cloudflare", "reset", "--token", "tok"])
 
 
 def test_cloudflare_verify_create_denied(monkeypatch):

@@ -68,7 +68,7 @@ c.ShareFilesConfig.verify_peer_tls = True        # default: True
 
 ## CLI
 
-`jupyterlab_share_files` - the panel's operations as subcommands printing JSON. A thin client over the same authenticated HTTP API the panel uses, acting as one user via that user's Jupyter/JupyterHub token; scripts and AI agents drive the extension with it.
+`jupyterlab_share_files` - the panel's operations as subcommands. A thin client over the same authenticated HTTP API the panel uses, acting as one user via that user's Jupyter/JupyterHub token; scripts and AI agents drive the extension with it. Output is human-readable by default; `--json` switches to machine-readable JSON.
 
 Environment variables:
 
@@ -92,14 +92,15 @@ jupyterlab_share_files list-request-uploads <id>
 
 ## Cloudflare tunnel sharing
 
-The `cloudflare` subcommand exposes share/request links beyond the hub or local network through a Cloudflare tunnel. Full policy and configuration guide: [docs/cloudflare_setup.md](docs/cloudflare_setup.md); design notes: [docs/CLOUDFLARE_SHARING.md](docs/CLOUDFLARE_SHARING.md).
+The `cloudflare` command exposes share/request links beyond the hub or local network through a Cloudflare tunnel. Four orthogonal subcommands cover the lifecycle; `cloudflare --help` carries the full reference with examples. Policy and configuration guide: [docs/cloudflare_setup.md](docs/cloudflare_setup.md).
 
-- **`--token <T> --account_id <A>`** - save credentials to `~/.config/jupyterlab-share-files/config.json` (chmod 600)
-- **`--verify`** - report token validity (user-owned and account-owned `cfat_` tokens), bind capability (list tunnels), create capability (proven by creating and deleting a throwaway tunnel)
-- **`--setup`** - provision end to end: create/reuse the `share-files` tunnel, route `--hostname` to the server, add a proxied CNAME, enforce HTTPS, save `public_base_url`
-- **`--local-base-url <URL>`** - **mandatory with `--setup`**: the URL the `cloudflared` connector reaches the server at; explicit, never inferred; must be `https` (error with guidance otherwise; `localhost` is fine if served over https)
-- **`--run`** - launch the `cloudflared` connector in the background after setup
-- **`--reset`** - reset the saved token to none (clears account id, tunnel state, `public_base_url`); links revert to the local/hub address on the next request; Cloudflare-side resources untouched
+- **`setup --token <T> --account-id <A> --hostname <H> --local-base-url <URL>`** - save credentials (chmod-600 config file) and provision end to end: create/reuse the `share-files` tunnel, route the hostname to the server URL, add a proxied CNAME, enforce HTTPS, save `public_base_url`, start the connector daemon<br>
+  `--local-base-url` is required - the URL the `cloudflared` connector reaches the server at; explicit, never inferred; must be `https` (error with guidance otherwise; `localhost` is fine if served over https)
+- **`validate`** - end-to-end check of the saved config: token validity (user-owned and account-owned `cfat_` tokens), bind capability (list tunnels), create capability - proven by creating a test tunnel and removing it
+- **`info`** - current configuration; tokens masked to their last 4 characters, account id in full, `daemon_running` (cloudflared process) and `tunnel_status` (Cloudflare-side)
+- **`reset`** - reset the saved token to none (clears account id, tunnel state, `public_base_url`); links revert to the local/hub address on the next request; Cloudflare-side resources untouched
+
+The connector daemon is guaranteed by the extension: at server startup (and after setup) it makes sure `cloudflared tunnel run` is running, retrying up to `c.ShareFilesConfig.cloudflared_retries` times (default 3); all attempts failing is logged as an error, success as info.
 
 How links change: the server reads `public_base_url` per request (no restart needed) and rewrites only the scheme+host of generated links - the path stays auto-detected from the server's own base URL. Without Cloudflare config, links keep the old behaviour (the host the browser is on).
 
@@ -108,10 +109,11 @@ What is exposed: only the extension's unauthenticated `/public/...` endpoints pa
 Token policies required: `Account → Cloudflare Tunnel → Edit` and zone-scoped `DNS → Edit` for the hostname's domain.
 
 ```bash
-jupyterlab_share_files cloudflare --token <cloudflare-api-token> --account_id <account-id> --verify
-jupyterlab_share_files cloudflare --setup --hostname share.example.com \
-  --local-base-url "https://hub.example.com/user/<name>/" --run
-jupyterlab_share_files cloudflare --reset
+jupyterlab_share_files cloudflare setup --token <api-token> --account-id <account-id> \
+  --hostname share.example.com --local-base-url "https://hub.example.com/user/<name>/"
+jupyterlab_share_files cloudflare validate
+jupyterlab_share_files cloudflare info
+jupyterlab_share_files cloudflare reset
 ```
 
 ## Security

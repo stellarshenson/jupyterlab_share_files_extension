@@ -3,8 +3,9 @@
 How to configure a Cloudflare account and API token so the extension can
 expose share/request links beyond your hub or local network through a
 Cloudflare tunnel. Once configured, `jupyterlab_share_files cloudflare
---setup` provisions everything and generated links carry the public
-Cloudflare hostname.
+setup` provisions everything and generated links carry the public Cloudflare
+hostname. Four orthogonal subcommands cover the whole lifecycle: `setup`,
+`validate`, `info`, `reset`.
 
 ## Prerequisites
 
@@ -42,43 +43,59 @@ Caveats learned the hard way:
 
 ## Required configuration
 
-- `--local-base-url` (mandatory with `--setup`) - the base URL of the Jupyter
+- `--local-base-url` (mandatory for `setup`) - the base URL of the Jupyter
   server as the `cloudflared` connector reaches it (on JupyterHub:
   `https://hub.example.com/user/<name>/`). It is given explicitly, never
   inferred from the environment, so an internal address cannot sneak in by
   accident. It **must be `https`** - an `http` URL is refused with guidance.
   `localhost` is acceptable when the server (and connector) genuinely run
   there, as long as it is served over https
-- The Cloudflare token and account id, saved once via the CLI (stored in
-  `~/.config/jupyterlab-share-files/config.json`, file mode `600`)
+- The Cloudflare token and account id, given to `setup` once and stored in
+  `~/.config/jupyterlab-share-files/config.json` (file mode `600`)
 
 ## Commands
 
-```bash
-# 1. save credentials and check what the token can do
-jupyterlab_share_files cloudflare --token <api-token> --account_id <account-id> --verify
+Output is human-readable; add the global `--json` flag for machine-readable
+JSON (`jupyterlab_share_files --json cloudflare info`).
 
-# 2. provision: tunnel + DNS + HTTPS enforcement + link rewriting (and start the connector)
-jupyterlab_share_files cloudflare --setup --hostname share.example.com \
-  --local-base-url "https://hub.example.com/user/<name>/" --run
+```bash
+# provision: save credentials, tunnel + DNS + HTTPS enforcement + link rewriting + daemon
+jupyterlab_share_files cloudflare setup --token <api-token> --account-id <account-id> \
+  --hostname share.example.com --local-base-url "https://hub.example.com/user/<name>/"
+
+# end-to-end check of the saved config (creates a test tunnel and removes it)
+jupyterlab_share_files cloudflare validate
+
+# current configuration - tokens masked to their last 4 characters,
+# daemon_running (cloudflared process) and tunnel_status (Cloudflare-side)
+jupyterlab_share_files cloudflare info
 
 # back to the unconfigured state (links revert to the local/hub address)
-jupyterlab_share_files cloudflare --reset
+jupyterlab_share_files cloudflare reset
 ```
 
-`--verify` reports `token_valid`, `can_bind_existing` (can list tunnels) and
-`can_create_tunnel` - the last proven by creating a throwaway tunnel and
-deleting it, so a policy gap shows up here and not halfway through setup.
+`validate` reports `token_valid`, `can_bind_existing` (can list tunnels) and
+`can_create_tunnel` - the last proven by creating a test tunnel and removing
+it, so a policy gap shows up here and not halfway through setup.
 
-`--setup` creates or reuses a tunnel named `share-files`, routes the hostname
+`setup` creates or reuses a tunnel named `share-files`, routes the hostname
 to the origin, upserts a proxied CNAME `<hostname> → <tunnel>.cfargotunnel.com`,
 switches the zone's **Always Use HTTPS** on (plain `http` requests are
 301-redirected at the Cloudflare edge - only secure connections reach a
-share), fetches the connector token, and saves
-`public_base_url = https://<hostname>`.
-The running server picks the value up on the next request - no restart. Without
-`--run` it prints the `cloudflared tunnel run --token <...>` command to start
-the connector yourself (production should run it as a managed service).
+share), fetches the connector token, saves
+`public_base_url = https://<hostname>`, and starts the connector daemon. The
+running server picks the value up on the next request - no restart.
+
+## Connector daemon lifecycle
+
+The extension guarantees the `cloudflared` daemon runs: at server startup
+(when Cloudflare sharing is configured) and right after `setup` it checks for
+a running connector and otherwise launches `cloudflared tunnel run`, retrying
+up to `c.ShareFilesConfig.cloudflared_retries` times (default 3, set in
+`jupyter_server_config.py`). All attempts failing is logged as an error -
+Cloudflare links will not work until the daemon runs; success is logged as
+info. Daemon output goes to `/tmp/cloudflared-share-files.log`; `cloudflare
+info` shows both `daemon_running` and the Cloudflare-side `tunnel_status`.
 
 ## What is exposed
 

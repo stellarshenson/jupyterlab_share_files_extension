@@ -42,3 +42,9 @@ def _load_jupyter_server_extension(server_app):
     workspace_root = server_app.web_app.settings.get("server_root_dir", "")
     resolved = resolve_shares_dir(workspace_root, config.shares_dir)
     server_app.log.info(f"Registered {name} server extension (shares_dir={resolved})")
+    # Cloudflare sharing configured -> the extension guarantees the connector
+    # runs (cloudflare --local-base-url wrote the tunnel token). Failure after
+    # the configured retries is logged as an error; success as info.
+    from .cli import _load_config, ensure_connector
+    if _load_config().get("cloudflare_tunnel_token"):
+        ensure_connector(config.cloudflared_retries, server_app.log)

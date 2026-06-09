@@ -11,7 +11,7 @@ created lazily on first use.
 
 from __future__ import annotations
 
-from traitlets import Bool, Unicode
+from traitlets import Bool, Int, Unicode
 from traitlets.config import Configurable
 
 
@@ -66,6 +66,17 @@ class ShareFilesConfig(Configurable):
             "(~/.config/jupyterlab-share-files/config.json, written by "
             "`jupyterlab_share_files cloudflare --setup`); if that is also "
             "empty, links use the host the browser is on (old behaviour)."
+        ),
+    )
+
+    cloudflared_retries = Int(
+        3,
+        config=True,
+        help=(
+            "How many times the server extension tries to start the "
+            "cloudflared connector at startup when Cloudflare sharing is "
+            "configured. All attempts failing is logged as an error "
+            "(Cloudflare links will not work until the connector runs)."
         ),
     )
 

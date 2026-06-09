@@ -2,6 +2,30 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.2] - 2026-06-10
+
+Cloudflare CLI restructured into four orthogonal subcommands; the extension now owns the connector daemon.
+
+### Added
+
+- `cloudflare setup --token --account-id --hostname --local-base-url` - save credentials and provision everything in one command
+- `cloudflare validate` - end-to-end check of the saved config (token validity, bind, create rights proven by a test tunnel created and removed)
+- `cloudflare info` - current configuration with tokens masked to their last 4 characters (account id in full), `daemon_running` and Cloudflare-side `tunnel_status`
+- `cloudflare reset` - clear the saved token and setup state (Cloudflare-side resources kept)
+- Connector daemon guaranteed by the extension: ensured at server startup and after setup, retrying `c.ShareFilesConfig.cloudflared_retries` times (new trait, default 3); failure logged as error
+- Global `--json` flag - machine-readable JSON; human-readable `key: value` output by default
+- Comprehensive `cloudflare --help` with examples
+
+### Changed
+
+- README rewritten in terse technical-documentation style; `docs/cloudflare_setup.md` updated to the subcommand structure; `ACCEPTANCE_CONNECTED_ENTRIES.md` renamed `acc-crit-basic-sharing.md`
+
+### Removed
+
+- `--run`, `--verify`, `--setup`, `--info`, `--reset` mode flags (replaced by the subcommands); `docs/CLOUDFLARE_SHARING.md` and `docs/UX_DESIGN.md`
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.1] - 2026-06-09
 
 Cloudflare tunnel sharing: share/request links can now carry a public Cloudflare hostname and work for recipients outside the hub or local network.
@@ -21,8 +45,6 @@ Cloudflare tunnel sharing: share/request links can now carry a public Cloudflare
 ### Removed
 
 - MCP server (`jupyterlab-share-files-mcp`) and the `mcp` dependency - agents use the CLI instead; the HTTP client functions moved into `cli.py`
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.1.4] - 2026-06-02
 

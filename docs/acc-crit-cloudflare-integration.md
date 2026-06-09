@@ -1,13 +1,16 @@
 # Acceptance Criteria - Cloudflare Integration
 
 Criteria for the Cloudflare tunnel integration that will expose share and
-request links beyond the hub (direction in
-[CLOUDFLARE_SHARING.md](CLOUDFLARE_SHARING.md)). AC-CF1-AC-CF7 cover the CLI
-foundation - credential handling and tunnel-rights verification. AC-CF8
+request links beyond the hub (setup guide in
+[cloudflare_setup.md](cloudflare_setup.md)). AC-CF1-AC-CF7 cover the CLI
+foundation - credential handling and tunnel-rights validation. AC-CF8
 (tunnel provisioning + `public_base_url` link rewriting), AC-CF11
-(self-connect over the Cloudflare host), AC-CF12 (reset) and AC-CF13
-(HTTPS only) are implemented; AC-CF9/AC-CF10 (panel connection behaviour
-over the Cloudflare origin) need a second peer to exercise end to end.
+(self-connect over the Cloudflare host), AC-CF12 (reset), AC-CF13 (HTTPS
+only) and AC-CF14-AC-CF17 (orthogonal `setup`/`validate`/`info`/`reset`
+subcommands, masked info with daemon + tunnel status, `--json` output, the
+extension guaranteeing the connector daemon) are implemented;
+AC-CF9/AC-CF10 (panel connection behaviour over the Cloudflare origin) need
+a second peer to exercise end to end.
 
 ## Preconditions
 
@@ -19,42 +22,42 @@ over the Cloudflare origin) need a second peer to exercise end to end.
 ## Criteria
 
 **AC-CF1 - Token is accepted and saved.**
-Given `cloudflare --token <T>`, the token is written to
+Given `cloudflare setup --token <T> ...`, the token is written to
 `~/.config/jupyterlab-share-files/config.json` with file mode `600`. A later
 run with a new `--token` replaces it.
 
 **AC-CF2 - Account id is accepted and saved.**
-Given `cloudflare --account_id <A>`, the account id is saved alongside the
-token in the same file. `--token` and `--account_id` may be passed together or
-separately; each save preserves the other value.
+Given `cloudflare setup --account-id <A> ...`, the account id is saved
+alongside the token in the same file; each save preserves the other value.
 
-**AC-CF3 - Verify reports token validity for both token types.**
-Given `cloudflare --verify`, the token is checked against
+**AC-CF3 - Validate reports token validity for both token types.**
+Given `cloudflare validate`, the token is checked against
 `/user/tokens/verify`; when that rejects it (account-owned `cfat_` tokens are
 not user tokens), against `/accounts/{id}/tokens/verify`. The result carries
 `token_valid: true` for an active token of either kind.
 
-**AC-CF4 - Verify resolves the account.**
-When `--account_id` is given (or saved), it is used directly. Otherwise the
-account is discovered via `GET /accounts` and the first account is used. With
-no account id and no listable account, verify fails with a message naming
-`--account_id` as the fix.
+**AC-CF4 - Validate resolves the account.**
+When the account id is saved, it is used directly. Otherwise the account is
+discovered via `GET /accounts` and the first account is used. With no account
+id and no listable account, validate fails with a message naming the account
+id as the fix.
 
-**AC-CF5 - Verify reports bind capability.**
+**AC-CF5 - Validate reports bind capability.**
 `can_bind_existing: true` when the token can list `cfd_tunnel` in the account
 (read access - enough to bind `cloudflared` to an existing tunnel), and the
 existing tunnels are returned with id, name and status.
 
-**AC-CF6 - Verify reports create capability truthfully.**
+**AC-CF6 - Validate reports create capability truthfully.**
 `can_create_tunnel` is proven, not inferred: a throwaway tunnel
 (`share-files-verify-<hex>`) is created and immediately deleted. Creation
 denied by Cloudflare yields `can_create_tunnel: false` with the API's own
 error under `create_error`; a probe that cannot be cleaned up is reported
 under `probe_cleanup_warning`.
 
-**AC-CF7 - Verify works from saved credentials.**
-`cloudflare --verify` with no flags uses the saved token and account id.
-Without a saved or passed token it exits 1 with guidance to pass `--token`.
+**AC-CF7 - Validate works from saved credentials only.**
+`cloudflare validate` takes no flags - it checks the SAVED configuration end
+to end (the test-tunnel create/delete probe included). Without a saved token
+it exits 1 with guidance to run `cloudflare setup --token` first.
 
 **AC-CF8 - A verified token yields a working Cloudflare URL to the service.**
 Given a saved token that verify confirms can set up a tunnel
@@ -64,7 +67,7 @@ extension's public share/request endpoints are reachable from outside the
 hub - opening `<cloudflare-url>/.../public/share/<id>` serves the share
 exactly as the hub-local link does. Generated links then carry the Cloudflare
 hostname so recipients without hub access can use them. Implemented as
-`cloudflare --setup --hostname H --local-base-url URL [--run]`: creates or
+`cloudflare setup --hostname H --local-base-url URL`: creates or
 reuses a tunnel named `share-files`, routes the hostname to the server
 address given by the MANDATORY `--local-base-url` (explicit, never inferred
 from the environment - so an internal address cannot sneak in; it must be
@@ -109,20 +112,48 @@ base as self and shows the existing "your own link" dialog. Implemented in
 self alongside the request host.
 
 **AC-CF12 - Reset returns the CLI to the unconfigured state.**
-Given `cloudflare --reset`, the saved token is reset to none: the token,
+Given `cloudflare reset`, the saved token is reset to none: the token,
 account id, tunnel state (`cloudflare_tunnel_id`, `cloudflare_hostname`,
 `cloudflare_tunnel_token`) and `public_base_url` are removed from the config
 file while unrelated keys are preserved. Generated links revert to the old
 behaviour (local/hub address) on the next request, without a restart.
 Local-only: Cloudflare-side resources (tunnel, DNS record) are kept.
-`--reset` cannot be combined with other flags.
+`reset` takes no flags.
 
 **AC-CF13 - Cloudflare allows only secure connections.**
-Plain `http://` to the share hostname is not served: `--setup` switches the
+Plain `http://` to the share hostname is not served: `setup` switches the
 zone's `always_use_https` setting on, so the Cloudflare edge 301-redirects
 http to https before anything reaches the tunnel. The `--local-base-url`
 the tunnel forwards to must itself be `https` (enforced at setup with an
 error otherwise).
+
+**AC-CF14 - Four orthogonal subcommands, no mode flags.**
+The `cloudflare` command has exactly four subcommands - `setup`, `validate`,
+`info`, `reset` - covering the whole lifecycle. `setup` carries the flags
+(`--token`, `--account-id`, `--hostname`, `--local-base-url`); the other
+three take none. `cloudflare --help` gives a comprehensive reference for the
+full command with examples.
+
+**AC-CF15 - Info shows the current configuration safely.**
+`cloudflare info` prints the config path, account id (in full), hostname,
+tunnel id and `public_base_url`, with the API token and tunnel token masked
+to their LAST 4 characters. It also reports `daemon_running` (whether the
+`cloudflared` process is up) and `tunnel_status` (the tunnel's state as
+Cloudflare reports it, e.g. `healthy`).
+
+**AC-CF16 - Machine-readable output on demand.**
+Output is human-readable `key: value` lines by default; the global `--json`
+flag (`jupyterlab_share_files --json cloudflare info`) switches every
+subcommand to machine-readable JSON.
+
+**AC-CF17 - The extension guarantees the connector daemon.**
+When Cloudflare sharing is configured, the server extension makes sure
+`cloudflared tunnel run` is running: at startup and right after `setup` it
+checks for the process and otherwise launches it, retrying up to
+`c.ShareFilesConfig.cloudflared_retries` times (default 3, configurable in
+`jupyter_server_config.py`). All attempts failing is logged as an error
+(Cloudflare links will not work); success is logged. No manual `--run` step
+exists.
 
 ## Verification log
 
@@ -184,6 +215,16 @@ error"` - the token has tunnel read but not create rights, reported
   redacted): verify all-green, the live `cfat_` user-endpoint rejection,
   setup provision + reuse, the recorded `always_use_https: on`, and the
   proxied CNAME pointing at the tunnel.
+
+- **AC-CF14-AC-CF17 (live):** `cloudflare info` on the live config showed
+  the masked tokens (`...d676`, `...fQ==`), the full account id,
+  `daemon_running: True` and `tunnel_status: healthy`; `cloudflare validate`
+  returned all-green from saved credentials alone; human-readable output by
+  default and JSON with the global `--json` flag; covered by
+  `test_cloudflare_info_masks_tokens`, `test_human_output_is_default_json_optional`,
+  `test_ensure_connector_retries_and_fails` /
+  `test_ensure_connector_succeeds_when_process_stays_up` (3-attempt retry,
+  failure logged) and the setup/validate/reset CLI tests.
 
 ## Notes / limitations
 
