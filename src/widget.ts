@@ -2321,29 +2321,26 @@ export class ShareFilesPanel extends Widget {
     input: HTMLInputElement;
   } {
     const row = document.createElement('div');
-    row.style.cssText = 'display: flex; gap: 6px;';
+    row.style.cssText = 'display: flex; gap: 6px; align-items: stretch;';
     const input = document.createElement('input');
     input.type = 'text';
     input.value = initial;
     input.placeholder = 'Password (optional)';
     input.autocomplete = 'off';
     input.spellcheck = false;
+    // Height matches the standard dialog button (32px) so the input and the
+    // Generate button line up evenly in the row.
     input.style.cssText =
-      'flex: 1; padding: 6px 8px; font-size: 14px;' +
-      ' font-family: var(--jp-code-font-family, monospace);';
+      'flex: 1; box-sizing: border-box; height: 32px; padding: 0 8px;' +
+      ' font-size: 14px; font-family: var(--jp-code-font-family, monospace);';
     const gen = document.createElement('button');
     gen.type = 'button';
     gen.textContent = 'Generate';
     gen.title = 'Generate a memorable passphrase';
-    // Small inline text button matching the link-dialog password Copy button -
-    // not stretched to the input height, just a compact control beside it.
-    gen.style.cssText =
-      'flex: 0 0 auto; align-self: center; padding: 1px 8px;' +
-      ' font-size: var(--jp-ui-font-size0);' +
-      ' color: var(--jp-ui-font-color1);' +
-      ' background: var(--jp-layout-color2);' +
-      ' border: 1px solid var(--jp-border-color1);' +
-      ' border-radius: 2px; cursor: pointer;';
+    // Small inline button, same height as the input (see .jp-ShareFiles-miniBtn
+    // in base.css - resets the inherited button line-height and keeps the focus
+    // ring inside so it is not clipped at the dialog edge).
+    gen.className = 'jp-ShareFiles-miniBtn';
     gen.addEventListener('click', evt => {
       evt.preventDefault();
       evt.stopPropagation();
@@ -2372,7 +2369,9 @@ export class ShareFilesPanel extends Widget {
     input.type = 'text';
     input.value = suggested;
     input.placeholder = 'Name';
-    input.style.cssText = 'width: 100%; padding: 6px 8px; font-size: 14px;';
+    input.style.cssText =
+      'width: 100%; box-sizing: border-box; height: 32px; padding: 0 8px;' +
+      ' font-size: 14px;';
     wrap.appendChild(input);
     const { row: pwRow, input: pwInput } = this._passwordRow();
     wrap.appendChild(pwRow);

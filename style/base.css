@@ -607,3 +607,26 @@
   margin-left: 6px;
   text-transform: uppercase;
 }
+
+/* Small inline button used beside inputs in dialogs (Generate). Kept compact
+ * and the same height as the adjacent input. JupyterLab's Dialog auto-adds
+ * jp-mod-styled to every button in its body (line-height 32px, min-width,
+ * padding) - the button.<class> selector outranks it so the resets below win.
+ * The line-height reset is what stops the button being taller than the input;
+ * outline-offset keeps the focus ring inside so it is never clipped at the
+ * dialog edge. */
+
+/* Generate button beside the password input. It keeps the standard JupyterLab
+ * dialog-button look and font (jp-mod-styled) - only the wide default min-width
+ * is dropped so the button sizes to its label and is not cropped, and the focus
+ * ring is pulled inside so the dialog edge cannot clip it. */
+.jp-Dialog-content button.jp-ShareFiles-miniBtn {
+  flex: 0 0 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.jp-Dialog-content button.jp-ShareFiles-miniBtn:focus-visible,
+.jp-Dialog-content button.jp-ShareFiles-miniBtn:focus {
+  outline-offset: -2px;
+}

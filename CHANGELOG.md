@@ -2,6 +2,17 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.28] - 2026-06-10
+
+Proper Generate button.
+
+### Changed
+
+- "Generate" button in the create-share and Set/Change-password dialogs is now a standard dialog button (same style and font as Cancel/Save), sized to its label so it is no longer cropped, with the focus ring kept inside the dialog edge
+- Name and password fields in those dialogs share one 32px height so they line up evenly with the button
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.27] - 2026-06-10
 
 Smaller Generate button.
@@ -9,8 +20,6 @@ Smaller Generate button.
 ### Changed
 
 - "Generate" button in the create-share and Set/Change-password dialogs shrunk to a small inline text button matching the share-link dialog's Copy button - centered beside the field instead of stretched to its height
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.26] - 2026-06-10
 
