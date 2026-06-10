@@ -2335,11 +2335,11 @@ export class ShareFilesPanel extends Widget {
     gen.type = 'button';
     gen.textContent = 'Generate';
     gen.title = 'Generate a memorable passphrase';
-    // Plain compact button - the jp-Dialog-button class carries large
-    // padding/min-width that crops it inside the flex row.
+    // Small inline text button matching the link-dialog password Copy button -
+    // not stretched to the input height, just a compact control beside it.
     gen.style.cssText =
-      'flex: 0 0 auto; align-self: stretch; padding: 0 10px;' +
-      ' font-size: var(--jp-ui-font-size1);' +
+      'flex: 0 0 auto; align-self: center; padding: 1px 8px;' +
+      ' font-size: var(--jp-ui-font-size0);' +
       ' color: var(--jp-ui-font-color1);' +
       ' background: var(--jp-layout-color2);' +
       ' border: 1px solid var(--jp-border-color1);' +

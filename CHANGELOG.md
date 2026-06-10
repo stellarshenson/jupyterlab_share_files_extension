@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.27] - 2026-06-10
+
+Smaller Generate button.
+
+### Changed
+
+- "Generate" button in the create-share and Set/Change-password dialogs shrunk to a small inline text button matching the share-link dialog's Copy button - centered beside the field instead of stretched to its height
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.26] - 2026-06-10
 
 Plain compact dialog buttons.
@@ -10,8 +20,6 @@ Plain compact dialog buttons.
 
 - "Generate" button in the create-share and Set/Change-password dialogs is now a plain compact button matching the input height, instead of a full-size JupyterLab dialog-action button that got cropped
 - Password "Copy" button on the share-link dialog reduced to a small inline text button
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.24] - 2026-06-10
 
