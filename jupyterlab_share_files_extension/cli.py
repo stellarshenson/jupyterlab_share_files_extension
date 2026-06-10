@@ -269,6 +269,27 @@ def close_request(request_id: str) -> dict:
     return _request("DELETE", f"api/requests/{request_id}")
 
 
+def add_files(share_id: str, paths: list[str]) -> dict:
+    """Add workspace-relative paths to one of your shares. The files are copied
+    into the share's isolated pool, so later edits to the source do not change
+    what recipients download."""
+    return _request("POST", f"api/shares/{share_id}/items", {"paths": paths})
+
+
+def remove_files(share_id: str, names: list[str]) -> dict:
+    """Remove top-level entries from one of your shares by name. Names are the
+    entries listed in the share manifest, not workspace paths."""
+    query = urllib.parse.urlencode([("name", n) for n in names])
+    return _request("DELETE", f"api/shares/{share_id}/items?{query}")
+
+
+def remove_upload(request_id: str, uploader: str, name: str) -> dict:
+    """Remove a single uploaded file from one of your requests, identified by
+    its uploader and file name (both shown by list-request-uploads)."""
+    query = urllib.parse.urlencode({"uploader": uploader, "name": name})
+    return _request("DELETE", f"api/requests/{request_id}/uploads?{query}")
+
+
 def pick_up(
     key: str, names: Optional[list[str]] = None, target_dir: str = ""
 ) -> dict:
@@ -360,6 +381,9 @@ _HANDLERS = {
     "disconnect": lambda a: disconnect(a.key),
     "close-share": lambda a: close_share(a.id),
     "close-request": lambda a: close_request(a.id),
+    "add-files": lambda a: add_files(a.id, a.paths),
+    "remove-files": lambda a: remove_files(a.id, a.names),
+    "remove-upload": lambda a: remove_upload(a.id, a.uploader, a.name),
     "pick-up": lambda a: pick_up(a.key, a.names or None, a.target_dir),
     "send-to-request": lambda a: send_to_request(a.key, a.paths, a.uploader),
     "list-request-uploads": lambda a: list_request_uploads(a.id),
@@ -425,6 +449,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("close-request", help="delete one of your requests by id")
     p.add_argument("id")
+
+    p = sub.add_parser("add-files", help="add workspace paths to one of your shares")
+    p.add_argument("id")
+    p.add_argument("paths", nargs="+")
+
+    p = sub.add_parser(
+        "remove-files", help="remove entries from one of your shares by name"
+    )
+    p.add_argument("id")
+    p.add_argument("names", nargs="+")
+
+    p = sub.add_parser(
+        "remove-upload", help="remove an uploaded file from one of your requests"
+    )
+    p.add_argument("id")
+    p.add_argument("uploader")
+    p.add_argument("name")
 
     p = sub.add_parser("pick-up", help="save files from a connected share")
     p.add_argument("key")

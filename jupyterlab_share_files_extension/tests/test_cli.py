@@ -62,6 +62,62 @@ def test_pick_up_names_default_to_all(monkeypatch, capsys):
     assert captured["args"] == ("K1", None, "inbox")
 
 
+def test_add_files_dispatches(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        cli, "add_files", lambda i, p: captured.setdefault("a", (i, p)) or {"id": i}
+    )
+    assert cli.main(["add-files", "AB23", "x.txt", "y/z.txt"]) == 0
+    assert captured["a"] == ("AB23", ["x.txt", "y/z.txt"])
+
+
+def test_remove_files_dispatches(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        cli, "remove_files", lambda i, n: captured.setdefault("a", (i, n)) or {"id": i}
+    )
+    assert cli.main(["remove-files", "AB23", "x.txt", "y"]) == 0
+    assert captured["a"] == ("AB23", ["x.txt", "y"])
+
+
+def test_remove_upload_dispatches(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        cli,
+        "remove_upload",
+        lambda i, u, n: captured.setdefault("a", (i, u, n)) or {"id": i},
+    )
+    assert cli.main(["remove-upload", "RQ77", "alice", "report.pdf"]) == 0
+    assert captured["a"] == ("RQ77", "alice", "report.pdf")
+
+
+def test_add_files_posts_paths_to_items_endpoint(monkeypatch):
+    captured = {}
+
+    def fake(method, endpoint, body=None):
+        captured["call"] = (method, endpoint, body)
+        return {"id": "AB23"}
+
+    monkeypatch.setattr(cli, "_request", fake)
+    cli.add_files("AB23", ["a.txt", "b.txt"])
+    assert captured["call"] == ("POST", "api/shares/AB23/items", {"paths": ["a.txt", "b.txt"]})
+
+
+def test_remove_files_encodes_names_as_query(monkeypatch):
+    captured = {}
+
+    def fake(method, endpoint, body=None):
+        captured["call"] = (method, endpoint, body)
+        return {"id": "AB23"}
+
+    monkeypatch.setattr(cli, "_request", fake)
+    cli.remove_files("AB23", ["a b.txt", "c.txt"])
+    method, endpoint, body = captured["call"]
+    assert method == "DELETE"
+    assert endpoint == "api/shares/AB23/items?name=a+b.txt&name=c.txt"
+    assert body is None
+
+
 def test_runtime_error_prints_to_stderr_and_exits_1(monkeypatch, capsys):
     def boom():
         raise RuntimeError("no server")

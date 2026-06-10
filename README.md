@@ -100,6 +100,9 @@ c.ShareFilesConfig.password_attempt_cooldown_seconds = 1   # default: 1
 jupyterlab_share_files list-items
 jupyterlab_share_files create-share <name> [paths...] [--password PW | --generate-password]
 jupyterlab_share_files create-request <name> [--password PW | --generate-password]
+jupyterlab_share_files add-files <share-id> <paths...>
+jupyterlab_share_files remove-files <share-id> <names...>
+jupyterlab_share_files remove-upload <request-id> <uploader> <name>
 jupyterlab_share_files set-password <share|request> <id> [PW] [--generate] [--clear]
 jupyterlab_share_files generate-password
 jupyterlab_share_files connect <link>

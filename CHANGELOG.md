@@ -2,6 +2,18 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.29] - 2026-06-10
+
+CLI file manipulation subcommands.
+
+### Added
+
+- `add-files <share-id> <paths...>` - copy workspace paths into an existing share (files are copied into the share's isolated pool, so later edits to the source do not change what recipients download)
+- `remove-files <share-id> <names...>` - remove entries from a share by name
+- `remove-upload <request-id> <uploader> <name>` - remove a single uploaded file from one of your requests
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.28] - 2026-06-10
 
 Proper Generate button.
@@ -10,8 +22,6 @@ Proper Generate button.
 
 - "Generate" button in the create-share and Set/Change-password dialogs is now a standard dialog button (same style and font as Cancel/Save), sized to its label so it is no longer cropped, with the focus ring kept inside the dialog edge
 - Name and password fields in those dialogs share one 32px height so they line up evenly with the button
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.27] - 2026-06-10
 
