@@ -18,6 +18,7 @@ import qrcode from 'qrcode-generator';
 import {
   addConnection,
   addShareItems,
+  checkLink,
   createRequest,
   createShare,
   deleteRequest,
@@ -33,6 +34,7 @@ import {
   removeRequestUpload,
   removeShareItems,
   saveFromConnection,
+  setTunnel,
   uploadToConnection
 } from './api';
 import { clearClip, getClip, setClip } from './clipboard';
@@ -40,6 +42,7 @@ import {
   addIcon,
   closeIcon,
   cloudIcon,
+  cloudOffIcon,
   disconnectIcon,
   fileIcon,
   folderIcon,
@@ -90,6 +93,8 @@ export interface IShareFilesSettings {
   enableShares: boolean;
   enableRequests: boolean;
   showHiddenFiles: boolean;
+  /** Bring the Cloudflare tunnel up at server startup (public links). */
+  tunnelAutostart: boolean;
   /** Panel poll interval in seconds (one tick refreshes all shares/requests). */
   pollIntervalSeconds: number;
 }
@@ -155,11 +160,21 @@ export class ShareFilesPanel extends Widget {
   /** Apply new settings from the SettingRegistry. */
   updateSettings(next: IShareFilesSettings): void {
     const prevInterval = this._settings.pollIntervalSeconds;
+    const prevAutostart = this._settings.tunnelAutostart;
     this._settings = { ...next };
     this._render();
     // Restart the poll loop if the interval changed and we are attached.
     if (next.pollIntervalSeconds !== prevInterval && this._pollHandle) {
       this._restartPolling();
+    }
+    // Persist the autostart preference server-side - the server reads it at
+    // startup to decide whether to bring the tunnel up.
+    if (next.tunnelAutostart !== prevAutostart) {
+      void setTunnel(this._serverSettings, {
+        autostart: next.tunnelAutostart
+      }).catch(() => {
+        /* not configured yet - nothing to persist */
+      });
     }
   }
 
@@ -283,16 +298,18 @@ export class ShareFilesPanel extends Widget {
     }
   }
 
-  /** Force-refresh from the server. */
-  async refresh(): Promise<void> {
-    if (this._refreshBtn) {
+  /** Force-refresh from the server. The icon animation is feedback for an
+   * explicit click only (spin=true) - background polls and programmatic
+   * refreshes run without it. */
+  async refresh(spin = false): Promise<void> {
+    if (spin && this._refreshBtn) {
       this._refreshBtn.classList.add('jp-mod-spinning');
     }
     // Local fetches return in <100 ms - without a floor the spinner runs for
     // a single frame and reads as "nothing happened". Hold for at least
     // ~600 ms so the click visibly registers.
     const minSpin = new Promise<void>(resolve =>
-      window.setTimeout(resolve, 600)
+      window.setTimeout(resolve, spin ? 600 : 0)
     );
     const work = (async () => {
       try {
@@ -326,7 +343,7 @@ export class ShareFilesPanel extends Widget {
       this._render();
     })();
     await Promise.all([work, minSpin]);
-    if (this._refreshBtn) {
+    if (spin && this._refreshBtn) {
       this._refreshBtn.classList.remove('jp-mod-spinning');
     }
   }
@@ -443,21 +460,25 @@ export class ShareFilesPanel extends Widget {
         this._toggleFilter();
       }
     );
-    header.appendChild(this._filterBtn);
-
-    // cloud indicator - shown only when a public base URL (Cloudflare
-    // tunnel) is configured, meaning links carry the external host
+    // cloud indicator - shown when a Cloudflare tunnel is configured.
+    // Green when the tunnel is on (public links), dashed silhouette when
+    // off (private links); clicking toggles between the two.
     this._cloudIndicator = document.createElement('span');
     this._cloudIndicator.className = 'jp-ShareFilesPanel-cloudIndicator';
     this._cloudIndicator.style.display = 'none';
     this._cloudIndicator.appendChild(this._svgNode(cloudIcon.svgstr));
+    this._cloudIndicator.addEventListener('click', () => {
+      void this._toggleTunnel();
+    });
     header.appendChild(this._cloudIndicator);
+
+    header.appendChild(this._filterBtn);
 
     this._refreshBtn = this._makeIconButton(
       refreshIcon.svgstr,
       'Refresh',
       () => {
-        void this.refresh();
+        void this.refresh(true);
       }
     );
     header.appendChild(this._refreshBtn);
@@ -2289,6 +2310,50 @@ export class ShareFilesPanel extends Widget {
     input.addEventListener('focus', () => input.select());
     wrap.appendChild(input);
 
+    // Reachability: the server probes its own public link (a frontend fetch
+    // would be blocked by CORS). Kind and id come from the link itself, so
+    // every caller gets the check without extra plumbing.
+    const m = link.match(/\/public\/(share|request)\/([A-Z2-7]{6,16})$/);
+    if (m) {
+      const reach = document.createElement('div');
+      reach.style.cssText =
+        'padding: 6px 12px;' +
+        ' background: var(--jp-layout-color2);' +
+        ' color: var(--jp-ui-font-color2);' +
+        ' border-left: 2px solid var(--jp-border-color2);' +
+        ' border-radius: 2px;' +
+        ' font-size: var(--jp-ui-font-size1);' +
+        ' font-family: var(--jp-ui-font-family);' +
+        ' font-style: italic;';
+      reach.textContent = 'Checking link reachability…';
+      wrap.appendChild(reach);
+      void checkLink(
+        this._serverSettings,
+        m[1] as 'share' | 'request',
+        m[2]
+      ).then(
+        res => {
+          if (res.reachable) {
+            reach.style.borderLeftColor = 'var(--jp-success-color1)';
+            reach.textContent = '✓  Link is reachable';
+          } else {
+            reach.style.borderLeftColor = 'var(--jp-error-color1)';
+            reach.textContent =
+              '✗  Link is not reachable' +
+              (res.error
+                ? ` - ${res.error}`
+                : res.status
+                  ? ` (HTTP ${res.status})`
+                  : '');
+          }
+        },
+        () => {
+          reach.style.borderLeftColor = 'var(--jp-error-color1)';
+          reach.textContent = '✗  Link reachability check failed';
+        }
+      );
+    }
+
     const qr = qrcode(0, 'M');
     qr.addData(link);
     qr.make();
@@ -2385,16 +2450,69 @@ export class ShareFilesPanel extends Widget {
     return wrap;
   }
 
-  /** Show/hide the header cloud icon from the server-reported public base. */
+  /** Render the header cloud icon from the server-reported tunnel state:
+   * hidden when no tunnel is configured; green filled cloud when the tunnel
+   * is on (public links); dashed silhouette when off (private links);
+   * blinking blue while connecting. */
   private _updateCloudIndicator(): void {
     if (!this._cloudIndicator) {
       return;
     }
-    const base = this._state.info?.public_base_url || '';
-    this._cloudIndicator.style.display = base ? 'flex' : 'none';
-    this._cloudIndicator.title = base
-      ? `Cloud sharing active - links use ${base}`
-      : '';
+    const info = this._state.info;
+    const configured = !!info?.tunnel_configured;
+    this._cloudIndicator.style.display = configured ? 'flex' : 'none';
+    if (!configured) {
+      return;
+    }
+    if (this._tunnelToggling) {
+      // _toggleTunnel owns the icon while the switch is in flight
+      return;
+    }
+    const active = !!info?.tunnel_active;
+    this._cloudIndicator.classList.toggle('jp-mod-active', active);
+    this._cloudIndicator.classList.remove('jp-mod-connecting');
+    this._cloudIndicator.innerHTML = '';
+    this._cloudIndicator.appendChild(
+      this._svgNode(active ? cloudIcon.svgstr : cloudOffIcon.svgstr)
+    );
+    this._cloudIndicator.title = active
+      ? `Cloudflare sharing on - links use ${info?.public_base_url}. ` +
+        'Click to switch to private links.'
+      : 'Cloudflare sharing off - links use the private address. ' +
+        'Click to share publicly.';
+  }
+
+  /** Click on the cloud icon: switch between public links (tunnel up) and
+   * private links (tunnel down). Blinks blue while connecting. */
+  private async _toggleTunnel(): Promise<void> {
+    if (this._tunnelToggling) {
+      return;
+    }
+    const active = !!this._state.info?.tunnel_active;
+    this._tunnelToggling = true;
+    if (!active) {
+      this._cloudIndicator!.classList.remove('jp-mod-active');
+      this._cloudIndicator!.classList.add('jp-mod-connecting');
+      this._cloudIndicator!.innerHTML = '';
+      this._cloudIndicator!.appendChild(this._svgNode(cloudIcon.svgstr));
+      this._cloudIndicator!.title = 'Connecting…';
+    }
+    try {
+      const state = await setTunnel(this._serverSettings, { active: !active });
+      if (this._state.info) {
+        this._state.info = { ...this._state.info, ...state };
+      }
+    } catch (err: any) {
+      Notification.error(
+        `Could not switch the Cloudflare tunnel: ${err?.message || err}`,
+        { autoClose: 5000 }
+      );
+    } finally {
+      this._tunnelToggling = false;
+    }
+    this._updateCloudIndicator();
+    // Links in the panel change host with the toggle - refresh them.
+    await this.refresh();
   }
 
   private _spinnerNode(): HTMLElement {
@@ -2423,6 +2541,7 @@ export class ShareFilesPanel extends Widget {
   private _refreshBtn: HTMLElement | null = null;
   private _filterBtn: HTMLElement | null = null;
   private _cloudIndicator: HTMLElement | null = null;
+  private _tunnelToggling = false;
   private _filterBox: HTMLElement | null = null;
   private _filterInput: HTMLInputElement | null = null;
   private _filterText = '';

@@ -81,14 +81,40 @@
     background 80ms ease-out;
 }
 
-/* Cloud indicator - shown when a public base URL (tunnel) is active */
+/* Cloud indicator - shown when a Cloudflare tunnel is configured; click
+   toggles public (tunnel on) vs private (tunnel off) links */
 .jp-ShareFilesPanel-cloudIndicator {
   display: flex;
   align-items: center;
   justify-content: center;
   margin-left: 2px;
   padding: 0 3px;
+  cursor: pointer;
+
+  /* tunnel off - dim dashed silhouette, links are private */
+  color: var(--jp-ui-font-color3);
+}
+
+.jp-ShareFilesPanel-cloudIndicator.jp-mod-active {
+  /* tunnel on - links are public */
+  color: var(--jp-success-color1);
+}
+
+.jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
+  /* switch in flight - blinking blue */
   color: var(--jp-brand-color1);
+  animation: share-files-blink 0.9s ease-in-out infinite;
+}
+
+@keyframes share-files-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.25;
+  }
 }
 
 .jp-ShareFilesPanel-cloudIndicator svg {
@@ -507,7 +533,10 @@
   padding: 2px 6px;
   border: 1px solid var(--jp-border-color2);
   border-radius: 2px;
-  background: var(--jp-input-background, var(--jp-layout-color1));
+  background: var(
+    --neutral-fill-input-rest,
+    var(--jp-input-background, var(--jp-layout-color1))
+  );
   color: var(--jp-ui-font-color1);
   font-size: var(--jp-ui-font-size1);
   font-family: var(--jp-ui-font-family);

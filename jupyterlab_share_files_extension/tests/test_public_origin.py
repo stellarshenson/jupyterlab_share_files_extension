@@ -105,3 +105,34 @@ def test_own_cloudflare_link_counts_as_self(config_home):
     prefixes = routes._own_link_prefixes(handler)
     assert "https://share.example.com/user/alice/" in prefixes
     assert "http://hub.local:8000/user/alice/" in prefixes
+
+
+def test_tunnel_inactive_reverts_links_to_private(config_home):
+    """The tunnel toggle (api/tunnel, cloudflare start/stop): tunnel_active
+    false -> links carry the private (request) address even though
+    public_base_url stays configured; flipping it back restores public
+    links without a restart."""
+    _write_cli_config(
+        {"public_base_url": "https://share.example.com", "tunnel_active": False}
+    )
+    handler = _FakeHandler()
+    assert routes._public_origin(handler) == "http://hub.local:8000"
+    path = cli.config_path()
+    _write_cli_config(
+        {"public_base_url": "https://share.example.com", "tunnel_active": True}
+    )
+    os.utime(path, (os.path.getmtime(path) + 2,) * 2)
+    assert routes._public_origin(handler) == "https://share.example.com"
+
+
+def test_own_cloudflare_link_recognised_while_tunnel_off(config_home):
+    """Self-connect detection is toggle-independent: one's own Cloudflare
+    link is still 'us' while the tunnel is switched off."""
+    _write_cli_config(
+        {"public_base_url": "https://share.example.com", "tunnel_active": False}
+    )
+    handler = _FakeHandler()
+    assert (
+        "https://share.example.com/user/alice/"
+        in routes._own_link_prefixes(handler)
+    )

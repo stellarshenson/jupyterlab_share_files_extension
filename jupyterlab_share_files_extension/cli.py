@@ -16,10 +16,10 @@ comes from the environment:
 - ``SHARE_FILES_INSECURE`` - set to ``1`` to skip TLS verification (self-signed
   certificates). Off by default.
 
-Additionally provides a ``cloudflare`` command with four orthogonal
+Additionally provides a ``cloudflare`` command with six orthogonal
 subcommands:
 
-- ``setup --token T --account-id A --hostname H --local-base-url U`` - save
+- ``setup --token T --account-id A --hostname H --private-base-url U`` - save
   the credentials and provision the tunnel end to end (tunnel + DNS + HTTPS
   enforcement + ``public_base_url`` link rewriting + connector daemon)
 - ``validate`` - end-to-end check of the saved config: token validity, bind
@@ -27,6 +27,8 @@ subcommands:
   removing it)
 - ``info`` - current configuration with tokens masked to their last 4
   characters, plus daemon and tunnel status
+- ``start`` / ``stop`` - switch between public links (tunnel active, daemon
+  running) and private links (daemon stopped); setup and credentials kept
 - ``reset`` - reset the saved token to none (clears account id, tunnel state
   and ``public_base_url``; links revert to the local/hub address)
 
@@ -40,6 +42,8 @@ import json
 import logging
 import os
 import secrets
+import shutil
+import signal
 import ssl
 import stat
 import subprocess
@@ -435,7 +439,7 @@ def _origin_from_base_url(base_url: str) -> str:
     """Derive the tunnel origin (scheme://host) from the PUBLIC base URL.
 
     The origin is where the `cloudflared` connector forwards traffic. The
-    user provides it explicitly via the mandatory ``--local-base-url`` option
+    user provides it explicitly via the mandatory ``--private-base-url`` option
     - it is never inferred from the environment or defaulted, so an internal
     address can't sneak in by accident. `localhost` is acceptable when the
     server genuinely runs there (and the connector with it); HTTPS towards
@@ -444,12 +448,12 @@ def _origin_from_base_url(base_url: str) -> str:
     parsed = urllib.parse.urlsplit(base_url)
     if not parsed.scheme or not parsed.netloc:
         raise RuntimeError(
-            f"cloudflare setup: '--local-base-url {base_url}' is not an "
+            f"cloudflare setup: '--private-base-url {base_url}' is not an "
             "absolute URL (expected e.g. https://hub.example.com/user/<name>/)"
         )
     if parsed.scheme != "https":
         raise RuntimeError(
-            f"cloudflare setup: '--local-base-url {base_url}' must use "
+            f"cloudflare setup: '--private-base-url {base_url}' must use "
             "https - only secure connections are permitted (localhost is "
             "fine, but it must be served over https)"
         )
@@ -462,24 +466,27 @@ _RESET_KEYS = (
     "cloudflare_tunnel_id",
     "cloudflare_hostname",
     "cloudflare_tunnel_token",
+    "private_base_url",
     "public_base_url",
+    "tunnel_active",
+    "tunnel_autostart",
 )
 
 
 def cloudflare_setup(
-    token: str, account_id: str, hostname: str, local_base_url: str
+    token: str, account_id: str, hostname: str, private_base_url: str
 ) -> dict:
     """Provision a Cloudflare tunnel + DNS route and record the public base.
 
     Creates (or reuses) a tunnel named ``share-files``, points its ingress at
-    the origin derived from ``local_base_url`` (the PUBLIC server URL - see
+    the origin derived from ``private_base_url`` (the server's own URL - see
     ``_origin_from_base_url``) restricted to the extension's ``/public/``
     endpoints, routes ``hostname`` to it with a proxied CNAME, enforces HTTPS
     on the zone, and saves ``public_base_url = https://<hostname>`` so the
     server rewrites generated share/request links to the Cloudflare host.
     Returns the connector token and the ``cloudflared`` command to run.
     """
-    origin = _origin_from_base_url(local_base_url)
+    origin = _origin_from_base_url(private_base_url)
     verify = cloudflare_verify(token, account_id)
     if not verify.get("can_create_tunnel"):
         raise RuntimeError(
@@ -596,7 +603,9 @@ def cloudflare_setup(
         cloudflare_tunnel_id=tunnel_id,
         cloudflare_hostname=hostname,
         cloudflare_tunnel_token=tunnel_token,
+        private_base_url=private_base_url,
         public_base_url=public_base_url,
+        tunnel_active=True,
     )
     _save_config(cfg)
 
@@ -605,6 +614,7 @@ def cloudflare_setup(
         "tunnel_name": DEFAULT_TUNNEL_NAME,
         "hostname": hostname,
         "origin": origin,
+        "private_base_url": private_base_url,
         "public_base_url": public_base_url,
         "run_command": f"cloudflared tunnel run --token {tunnel_token}",
         "saved": str(config_path()),
@@ -624,6 +634,26 @@ def _connector_running() -> bool:
     return any("cloudflared tunnel run" in line for line in out.splitlines())
 
 
+def stop_connector() -> bool:
+    """Stop any running cloudflared connector. True when one was stopped."""
+    stopped = False
+    try:
+        out = subprocess.run(
+            ["ps", "-eo", "pid,args"], capture_output=True, text=True
+        ).stdout
+    except OSError:
+        return False
+    for line in out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and "cloudflared tunnel run" in parts[1]:
+            try:
+                os.kill(int(parts[0]), signal.SIGTERM)
+                stopped = True
+            except (OSError, ValueError):
+                pass
+    return stopped
+
+
 def ensure_connector(retries: int = 3, logger: Optional[logging.Logger] = None) -> bool:
     """Make sure the cloudflared connector for the configured tunnel runs.
 
@@ -636,7 +666,7 @@ def ensure_connector(retries: int = 3, logger: Optional[logging.Logger] = None) 
     log = logger or logging.getLogger("jupyterlab_share_files_extension")
     token = _load_config().get("cloudflare_tunnel_token", "")
     if not token:
-        log.error("cloudflared connector: no tunnel configured (run cloudflare --local-base-url first)")
+        log.error("cloudflared connector: no tunnel configured (run cloudflare setup first)")
         return False
     if _connector_running():
         log.info("cloudflared connector already running")
@@ -686,6 +716,24 @@ def _mask_secret(value: str) -> str:
 
 def _cmd_cloudflare(args: argparse.Namespace) -> Any:
     cmd = args.cf_command
+    if cmd == "start":
+        cfg = _load_config()
+        if not cfg.get("cloudflare_tunnel_token"):
+            raise RuntimeError(
+                "cloudflare start: no tunnel configured; run cloudflare setup first"
+            )
+        cfg["tunnel_active"] = True
+        _save_config(cfg)
+        return {
+            "tunnel_active": True,
+            "daemon_running": ensure_connector(),
+            "connector_log": CONNECTOR_LOG,
+        }
+    if cmd == "stop":
+        cfg = _load_config()
+        cfg["tunnel_active"] = False
+        _save_config(cfg)
+        return {"tunnel_active": False, "daemon_stopped": stop_connector()}
     if cmd == "reset":
         cfg = _load_config()
         removed = [k for k in _RESET_KEYS if cfg.pop(k, None) is not None]
@@ -718,7 +766,10 @@ def _cmd_cloudflare(args: argparse.Namespace) -> Any:
             "cloudflare_tunnel_token": _mask_secret(
                 cfg.get("cloudflare_tunnel_token", "")
             ),
+            "private_base_url": cfg.get("private_base_url", ""),
             "public_base_url": cfg.get("public_base_url", ""),
+            "tunnel_active": cfg.get("tunnel_active", True),
+            "tunnel_autostart": cfg.get("tunnel_autostart", True),
             "daemon_running": _connector_running(),
             "tunnel_status": tunnel_status,
         }
@@ -730,11 +781,16 @@ def _cmd_cloudflare(args: argparse.Namespace) -> Any:
                 "cloudflare validate: no token saved; run cloudflare setup "
                 "--token first"
             )
-        return {
-            "validate": cloudflare_verify(
-                token, cfg.get("cloudflare_account_id") or ""
-            )
-        }
+        result = cloudflare_verify(token, cfg.get("cloudflare_account_id") or "")
+        # The extension launches the connector itself - if the system can't
+        # reach the cloudflared binary, the tunnel can never come up.
+        cloudflared = shutil.which("cloudflared")
+        result["cloudflared_available"] = bool(cloudflared)
+        result["cloudflared_path"] = cloudflared or (
+            "NOT FOUND - install cloudflared and make sure it is on the "
+            "PATH of the Jupyter server process"
+        )
+        return {"validate": result}
     # setup
     out: dict[str, Any] = {}
     if args.token or args.account_id:
@@ -753,7 +809,7 @@ def _cmd_cloudflare(args: argparse.Namespace) -> Any:
         )
     account_id = args.account_id or cfg.get("cloudflare_account_id") or ""
     out["setup"] = cloudflare_setup(
-        token, account_id, args.hostname, args.local_base_url
+        token, account_id, args.hostname, args.private_base_url
     )
     out["setup"]["daemon_running"] = ensure_connector()
     out["setup"]["connector_log"] = CONNECTOR_LOG
@@ -785,7 +841,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="machine-readable JSON output instead of the human-readable form",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", metavar="<command>", title="commands")
 
     sub.add_parser("list-items", help="list your shares, requests and connections")
 
@@ -825,12 +881,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "cloudflare",
-        help="Cloudflare tunnel sharing: setup, validate, info, reset",
+        help="Cloudflare tunnel sharing: setup, validate, info, start, stop, reset",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Expose share/request links beyond the hub or local network "
             "through a Cloudflare tunnel.\n"
-            "Four orthogonal subcommands cover the whole lifecycle:\n\n"
+            "Six orthogonal subcommands cover the whole lifecycle:\n\n"
             "  setup     save credentials and provision everything: tunnel, "
             "proxied DNS record,\n"
             "            HTTPS enforcement (http 301s to https at the edge), "
@@ -849,6 +905,13 @@ def build_parser() -> argparse.ArgumentParser:
             "4 characters, account id\n"
             "            in full, daemon_running (cloudflared process) and "
             "tunnel_status (Cloudflare).\n"
+            "  start     switch to PUBLIC links: mark the tunnel active and "
+            "start the cloudflared\n"
+            "            daemon - generated links carry the public hostname.\n"
+            "  stop      switch to PRIVATE links: stop the daemon - links "
+            "revert to the\n"
+            "            local/hub address on the next request. Setup and "
+            "credentials are kept.\n"
             "  reset     reset the saved token to none: clears account id, "
             "tunnel state and\n"
             "            public_base_url - links revert to the local/hub "
@@ -862,13 +925,16 @@ def build_parser() -> argparse.ArgumentParser:
             "  jupyterlab_share_files cloudflare setup \\\n"
             "      --token <api-token> --account-id <account-id> \\\n"
             "      --hostname share.example.com \\\n"
-            "      --local-base-url https://hub.example.com/user/<name>/\n\n"
+            "      --private-base-url https://hub.example.com/user/<name>/\n\n"
             "  # check the saved config end to end\n"
             "  jupyterlab_share_files cloudflare validate\n\n"
             "  # show the configuration and daemon/tunnel status "
             "(machine-readable: --json before cloudflare)\n"
             "  jupyterlab_share_files cloudflare info\n"
             "  jupyterlab_share_files --json cloudflare info\n\n"
+            "  # toggle between public and private links\n"
+            "  jupyterlab_share_files cloudflare start\n"
+            "  jupyterlab_share_files cloudflare stop\n\n"
             "  # back to the unconfigured state\n"
             "  jupyterlab_share_files cloudflare reset\n\n"
             "full guide: docs/cloudflare_setup.md"
@@ -887,7 +953,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ps.add_argument("--hostname", default="share.duoptimum.com")
     ps.add_argument(
-        "--local-base-url",
+        "--private-base-url",
         required=True,
         help="REQUIRED: this server's URL as the cloudflared connector "
         "reaches it (e.g. https://hub.example.com/user/<name>/ - given "
@@ -905,6 +971,18 @@ def build_parser() -> argparse.ArgumentParser:
         "info",
         help="show the current Cloudflare configuration (tokens masked to "
         "their last 4 characters) and whether the connector is running",
+    )
+
+    cf.add_parser(
+        "start",
+        help="switch to public links: mark the tunnel active and start the "
+        "cloudflared daemon",
+    )
+
+    cf.add_parser(
+        "stop",
+        help="switch to private links: stop the cloudflared daemon; setup "
+        "and credentials are kept",
     )
 
     cf.add_parser(
@@ -940,8 +1018,65 @@ def _render_human(value: Any, indent: int = 0) -> list[str]:
     return lines
 
 
+# Human-output value colouring: states that read as healthy vs failed.
+_GOOD_VALUES = {"true", "healthy", "active", "on", "ok"}
+_BAD_VALUES = {"false", "down", "inactive", "degraded", "error"}
+
+
+def _colorize_human(lines: list[str]) -> list[str]:
+    """Conservative colouring of `key: value` output: keys cyan, healthy
+    state values green, failed state values red. Plain text when stdout is
+    not a terminal or NO_COLOR is set."""
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return lines
+    cyan, green, red, reset = "\033[36m", "\033[32m", "\033[31m", "\033[0m"
+    out: list[str] = []
+    for line in lines:
+        key, sep, value = line.partition(": ")
+        if sep:
+            v = value.strip().lower()
+            if v in _GOOD_VALUES:
+                value = green + value + reset
+            elif v in _BAD_VALUES or v.startswith("unknown"):
+                value = red + value + reset
+            indent = key[: len(key) - len(key.lstrip())]
+            line = indent + cyan + key.lstrip() + reset + sep + value
+        elif line.endswith(":"):
+            indent = line[: len(line) - len(line.lstrip())]
+            line = indent + cyan + line.lstrip() + reset
+        out.append(line)
+    return out
+
+
+def _colorize_help(text: str) -> str:
+    """Conservative ANSI colouring of argparse help: bold section headers
+    and usage prefix, cyan command/option names. Plain text when stdout is
+    not a terminal or NO_COLOR is set."""
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return text
+    bold, cyan, reset = "\033[1m", "\033[36m", "\033[0m"
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if line.startswith("usage:"):
+            out.append(bold + "usage:" + reset + line[len("usage:"):])
+        elif line and not line.startswith(" ") and line.endswith(":"):
+            out.append(bold + line + reset)
+        elif line.startswith("  ") and not line.startswith("       ") and stripped:
+            name, sep, rest = line.lstrip().partition("  ")
+            indent = line[: len(line) - len(line.lstrip())]
+            out.append(indent + cyan + name + reset + sep + rest)
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not args.command:
+        print(_colorize_help(parser.format_help()))
+        return 0
     try:
         result = _HANDLERS[args.command](args)
     except RuntimeError as exc:
@@ -950,7 +1085,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print("\n".join(_render_human(result)))
+        print("\n".join(_colorize_human(_render_human(result))))
     return 0
 
 

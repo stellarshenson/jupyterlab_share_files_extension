@@ -2,11 +2,32 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.6] - 2026-06-10
+
+Public/private link toggle for the Cloudflare tunnel, link reachability check in the dialog, CLI ergonomics.
+
+### Added
+
+- Tunnel toggle: `cloudflare start` / `stop` (and the cloud icon, now left of the filter icon) switch between public links (tunnel active, daemon running) and private links (daemon stopped) - per request, no restart; credentials, tunnel and DNS kept
+- Cloud icon states: green filled = tunnel on, dim dashed silhouette = off, blinking blue = connecting; click toggles via the new `api/tunnel` endpoint
+- `tunnelAutostart` setting (Settings Editor, default on) - bring the tunnel up at server startup; off starts with private links and no daemon
+- Link dialog reachability check: server-side probe (`api/link-check`, kind+id only - no SSRF surface) shows "Link is reachable" / "not reachable" for the displayed link
+- `cloudflare validate` also reports `cloudflared_available`/`cloudflared_path` - the extension launches the connector itself, a missing binary means the tunnel can never come up
+- `cloudflare info` reports `private_base_url`, `tunnel_active` and `tunnel_autostart`
+- Bare `jupyterlab_share_files` prints the full command reference (exit 0) instead of a usage error; help and human output conservatively coloured on a TTY (`NO_COLOR` honoured)
+
+### Changed
+
+- `--local-base-url` renamed `--private-base-url`
+- Refresh icon spins only on an explicit click - background polls run without icon feedback
+- Connect input background prefers `--neutral-fill-input-rest`
+- `docs/acc-crit-cloudflare-integration.md` rewritten in terse technical-documentation style (AC-CF18-AC-CF22 added)
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.3] - 2026-06-10
 
 Re-release of 1.2.2 - no functional changes.
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.2] - 2026-06-10
 

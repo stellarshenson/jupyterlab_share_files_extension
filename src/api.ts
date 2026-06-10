@@ -64,14 +64,56 @@ export interface IExtensionInfo {
   shares_subdir: string;
   requests_subdir: string;
   /** Configured external origin (e.g. a Cloudflare tunnel host) links are
-   * rewritten to; empty when none is configured. */
+   * rewritten to; empty when none is configured OR the tunnel is off. */
   public_base_url?: string;
+  /** A tunnel is set up (cloudflare setup ran), regardless of the toggle. */
+  tunnel_configured?: boolean;
+  /** Tunnel toggle: public links when true, private when false. */
+  tunnel_active?: boolean;
+  /** Server brings the tunnel up at startup. */
+  tunnel_autostart?: boolean;
+  /** The cloudflared daemon process is running. */
+  tunnel_running?: boolean;
 }
 
 export function getInfo(
   s: ServerConnection.ISettings
 ): Promise<IExtensionInfo> {
   return requestAPI('api/info', s);
+}
+
+export interface ITunnelState {
+  tunnel_configured: boolean;
+  tunnel_active: boolean;
+  tunnel_autostart: boolean;
+  tunnel_running: boolean;
+}
+
+/** Toggle the Cloudflare tunnel (active: public vs private links) or
+ * persist the autostart preference. Returns the new state. */
+export function setTunnel(
+  s: ServerConnection.ISettings,
+  body: { active?: boolean; autostart?: boolean }
+): Promise<ITunnelState> {
+  return requestAPI('api/tunnel', s, jsonBody(body));
+}
+
+export interface ILinkCheck {
+  link: string;
+  reachable: boolean;
+  status?: number;
+  error?: string;
+}
+
+/** Server-side probe of a generated public link - the server fetches its
+ * own link (through the Cloudflare edge when configured) and reports
+ * whether it answers. A frontend fetch would be blocked by CORS. */
+export function checkLink(
+  s: ServerConnection.ISettings,
+  kind: 'share' | 'request',
+  id: string
+): Promise<ILinkCheck> {
+  return requestAPI(`api/link-check?kind=${kind}&id=${id}`, s);
 }
 
 // --------------------------------------------------------------------------- //

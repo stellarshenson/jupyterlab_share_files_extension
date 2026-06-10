@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import ssl
 import zipfile
 from pathlib import Path
@@ -182,49 +183,77 @@ class _PublicBase(tornado.web.RequestHandler):
         return RequestStore(self.workspace_root, self.shares_dir)
 
 
-# Cached value of public_base_url from the CLI config file, keyed by mtime so
-# `cloudflare --setup` / `--reset` take effect on the next request without a
+# Cached content of the CLI config file, keyed by mtime so `cloudflare setup`
+# / `reset` / the api/tunnel toggle take effect on the next request without a
 # server restart and without re-reading the file on every link built.
-_PUBLIC_BASE_CACHE: dict[str, Any] = {"path": None, "mtime": None, "value": ""}
+_CONFIG_FILE_CACHE: dict[str, Any] = {"path": None, "mtime": None, "value": {}}
 
 
-def _config_file_public_base_url() -> str:
-    """Read public_base_url from the CLI config file (mtime-cached)."""
+def _config_file_state() -> dict:
+    """Read the CLI config file (mtime-cached)."""
     from .cli import config_path
 
     path = config_path()
     try:
         mtime = path.stat().st_mtime
     except OSError:
-        return ""
-    if _PUBLIC_BASE_CACHE["path"] == path and _PUBLIC_BASE_CACHE["mtime"] == mtime:
-        return _PUBLIC_BASE_CACHE["value"]
+        return {}
+    if _CONFIG_FILE_CACHE["path"] == path and _CONFIG_FILE_CACHE["mtime"] == mtime:
+        return _CONFIG_FILE_CACHE["value"]
     try:
-        value = json.loads(path.read_text(encoding="utf-8")).get("public_base_url") or ""
+        value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        value = ""
-    _PUBLIC_BASE_CACHE.update(path=path, mtime=mtime, value=value)
+        value = {}
+    _CONFIG_FILE_CACHE.update(path=path, mtime=mtime, value=value)
     return value
 
 
-def _configured_public_origin(handler: tornado.web.RequestHandler) -> str:
-    """Configured external origin (scheme://host) for generated links, or ''.
-
-    Precedence: the ``public_base_url`` trait, else the value the CLI wrote to
-    ``~/.config/jupyterlab-share-files/config.json`` (e.g. by
-    ``cloudflare --setup``). Only scheme + host are kept - the base path stays
-    auto-detected from the server's own ``base_url``.
-    """
-    cfg: ShareFilesConfig = handler.settings.get("share_files_config")
-    raw = (cfg.public_base_url if cfg is not None else "") or ""
-    if not raw:
-        raw = _config_file_public_base_url()
+def _parse_origin(raw: str) -> str:
+    """Reduce a base URL to scheme://host, or ''."""
     if not raw:
         return ""
     parsed = urlparse(raw if "://" in raw else "https://" + raw)
     if not parsed.netloc:
         return ""
     return (parsed.scheme or "https") + "://" + parsed.netloc
+
+
+def _raw_public_origin(handler: tornado.web.RequestHandler) -> str:
+    """Configured external origin regardless of the tunnel toggle.
+
+    Used where "is this OUR address?" must hold even while the tunnel is
+    switched off (self-connect detection) and for the configured/active
+    distinction in api/info.
+    """
+    cfg: ShareFilesConfig = handler.settings.get("share_files_config")
+    raw = (cfg.public_base_url if cfg is not None else "") or ""
+    if not raw:
+        raw = _config_file_state().get("public_base_url") or ""
+    return _parse_origin(raw)
+
+
+def _tunnel_active() -> bool:
+    """The api/tunnel toggle: public links when on, private when off."""
+    return bool(_config_file_state().get("tunnel_active", True))
+
+
+def _configured_public_origin(handler: tornado.web.RequestHandler) -> str:
+    """External origin (scheme://host) generated links should carry, or ''.
+
+    Precedence: the ``public_base_url`` trait (always wins - explicit admin
+    override), else the value the CLI wrote to
+    ``~/.config/jupyterlab-share-files/config.json`` - the latter only while
+    the tunnel toggle (``tunnel_active``) is on; switched off, links revert
+    to the private/request address. Only scheme + host are kept - the base
+    path stays auto-detected from the server's own ``base_url``.
+    """
+    cfg: ShareFilesConfig = handler.settings.get("share_files_config")
+    raw = (cfg.public_base_url if cfg is not None else "") or ""
+    if raw:
+        return _parse_origin(raw)
+    if not _tunnel_active():
+        return ""
+    return _parse_origin(_config_file_state().get("public_base_url") or "")
 
 
 def _public_origin(handler: tornado.web.RequestHandler) -> str:
@@ -263,7 +292,9 @@ def _own_link_prefixes(handler: tornado.web.RequestHandler) -> set[str]:
     prefixes = {
         handler.request.protocol + "://" + handler.request.host + own_base_url
     }
-    configured = _configured_public_origin(handler)
+    # Raw (toggle-independent): one's own Cloudflare link stays "us" even
+    # while the tunnel is switched off.
+    configured = _raw_public_origin(handler)
     if configured:
         prefixes.add(configured + own_base_url)
     return prefixes
@@ -304,8 +335,99 @@ class InfoHandler(_Base):
             "storage_path": display_path,
             "shares_subdir": "shares",
             "requests_subdir": "requests",
+            # '' while the tunnel toggle is off - links are private then
             "public_base_url": _configured_public_origin(self),
+            **_tunnel_state(self),
         })
+
+
+def _tunnel_state(handler: tornado.web.RequestHandler) -> dict:
+    """Tunnel state for the frontend: configured / active / running."""
+    from .cli import _connector_running
+
+    cfg = _config_file_state()
+    return {
+        "tunnel_configured": bool(_raw_public_origin(handler)),
+        "tunnel_active": _tunnel_active(),
+        "tunnel_autostart": bool(cfg.get("tunnel_autostart", True)),
+        "tunnel_running": _connector_running(),
+    }
+
+
+class TunnelHandler(_Base):
+    """Cloudflare tunnel toggle (api/tunnel): GET state, POST switch.
+
+    POST ``{"active": true}`` switches to public links (daemon started,
+    ``public_base_url`` applied to generated links); ``{"active": false}``
+    stops the daemon and reverts links to the private/request address.
+    POST ``{"autostart": bool}`` persists whether the server brings the
+    tunnel up at startup.
+    """
+
+    @tornado.web.authenticated
+    def get(self):
+        self.write_json(_tunnel_state(self))
+
+    @tornado.web.authenticated
+    def post(self):
+        from .cli import (
+            _load_config,
+            _save_config,
+            ensure_connector,
+            stop_connector,
+        )
+
+        body = self.get_json_body() or {}
+        cfg = _load_config()
+        if not cfg.get("cloudflare_tunnel_token"):
+            return self.write_error_json(
+                400, "Cloudflare sharing is not configured (run cloudflare setup)"
+            )
+        if "autostart" in body:
+            cfg["tunnel_autostart"] = bool(body["autostart"])
+        if "active" in body:
+            cfg["tunnel_active"] = bool(body["active"])
+        _save_config(cfg)
+        if body.get("active") is True:
+            share_config: ShareFilesConfig = self.settings.get("share_files_config")
+            retries = share_config.cloudflared_retries if share_config else 3
+            ensure_connector(retries)
+        elif body.get("active") is False:
+            stop_connector()
+        self.write_json(_tunnel_state(self))
+
+
+class LinkCheckHandler(_Base):
+    """Probe a generated public link server-side (api/link-check).
+
+    The link dialog asks "is this link actually reachable?" - a frontend
+    fetch would be blocked by CORS, so the server fetches its own public
+    link (through the Cloudflare edge when configured) and reports the
+    outcome. Only kind+id are accepted; the URL is rebuilt server-side,
+    never taken from the client.
+    """
+
+    @tornado.web.authenticated
+    async def get(self):
+        kind = self.get_query_argument("kind", "")
+        id_ = self.get_query_argument("id", "")
+        if not re.fullmatch(r"[A-Z2-7]{6,16}", id_):
+            return self.write_error_json(400, "invalid id")
+        if kind == "share":
+            link = _public_share_url(self, id_)
+        elif kind == "request":
+            link = _public_request_url(self, id_)
+        else:
+            return self.write_error_json(400, "kind must be 'share' or 'request'")
+        try:
+            resp = await self._peer_fetch(link, request_timeout=10)
+            self.write_json({
+                "link": link,
+                "reachable": resp.code == 200,
+                "status": resp.code,
+            })
+        except PeerUnavailable as exc:
+            self.write_json({"link": link, "reachable": False, "error": str(exc)})
 
 
 class SharesListHandler(_Base):
@@ -965,6 +1087,10 @@ def setup_route_handlers(web_app, config: ShareFilesConfig | None = None):
     handlers = [
         # api/info
         (url_path_join(base_url, ns, "api", "info"), InfoHandler),
+        # api/link-check
+        (url_path_join(base_url, ns, "api", "link-check"), LinkCheckHandler),
+        # api/tunnel
+        (url_path_join(base_url, ns, "api", "tunnel"), TunnelHandler),
         # api/shares
         (url_path_join(base_url, ns, "api", "shares"), SharesListHandler),
         (url_path_join(base_url, ns, "api", "shares", r"([A-Z2-7]{6,16})"), ShareItemHandler),

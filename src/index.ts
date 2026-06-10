@@ -29,6 +29,7 @@ interface IPluginSettings {
   enableShares: boolean;
   enableRequests: boolean;
   showHiddenFiles: boolean;
+  tunnelAutostart: boolean;
   pollIntervalSeconds: number;
 }
 
@@ -36,6 +37,7 @@ const DEFAULT_SETTINGS: IPluginSettings = {
   enableShares: true,
   enableRequests: true,
   showHiddenFiles: true,
+  tunnelAutostart: true,
   pollIntervalSeconds: 15
 };
 
@@ -316,6 +318,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
           enableShares: settings.get('enableShares').composite as boolean,
           enableRequests: settings.get('enableRequests').composite as boolean,
           showHiddenFiles: settings.get('showHiddenFiles').composite as boolean,
+          tunnelAutostart: settings.get('tunnelAutostart').composite as boolean,
           pollIntervalSeconds:
             (settings.get('pollIntervalSeconds').composite as number) || 15
         };

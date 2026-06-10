@@ -21,6 +21,12 @@
       "title": "Show hidden files",
       "description": "Show files and folders whose name starts with a dot (.env, .ssh, .ipynb_checkpoints, ...). Useful for sharing config files between team members."
     },
+    "tunnelAutostart": {
+      "type": "boolean",
+      "default": true,
+      "title": "Start the Cloudflare tunnel automatically",
+      "description": "When a Cloudflare tunnel is configured (cloudflare setup), bring it up at server startup so links are public. When off, the server starts with private links; the cloud icon in the panel header toggles the tunnel on demand."
+    },
     "pollIntervalSeconds": {
       "type": "number",
       "default": 15,

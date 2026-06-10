@@ -82,7 +82,7 @@ def test_cloudflare_token_and_account_saved_with_0600(config_home, monkeypatch, 
     assert (
         cli.main(
             ["cloudflare", "setup", "--token", "tok123", "--account-id", "acc9",
-             "--local-base-url", "https://hub.example.com/user/a/"]
+             "--private-base-url", "https://hub.example.com/user/a/"]
         )
         == 0
     )
@@ -285,23 +285,23 @@ def test_cloudflare_setup_refuses_without_create_rights(monkeypatch):
         cli.cloudflare_setup("tok", "acc1", "share.example.com", "https://hub.example.com")
 
 
-def test_cloudflare_setup_requires_local_base_url(config_home, capsys):
-    """Setup runs only when --local-base-url is given - the public base is
+def test_cloudflare_setup_requires_private_base_url(config_home, capsys):
+    """Setup runs only when --private-base-url is given - the public base is
     explicit, never inferred from the environment or defaulted to
     localhost/internal addresses. --run without it is refused."""
     cli._save_config({"cloudflare_token": "tok"})
     with pytest.raises(SystemExit):
         cli.main(["cloudflare", "setup"])
-    assert "--local-base-url" in capsys.readouterr().err
+    assert "--private-base-url" in capsys.readouterr().err
 
 
 def test_cloudflare_one_command_saves_and_sets_up(config_home, monkeypatch, capsys):
     """One `cloudflare` invocation: --token/--account_id are saved and
-    --local-base-url triggers the tunnel setup - no separate mode flag."""
+    --private-base-url triggers the tunnel setup - no separate mode flag."""
     captured = {}
 
-    def fake_setup(token, account_id, hostname, local_base_url):
-        captured["args"] = (token, account_id, hostname, local_base_url)
+    def fake_setup(token, account_id, hostname, private_base_url):
+        captured["args"] = (token, account_id, hostname, private_base_url)
         return {"tunnel_id": "tun-1"}
 
     monkeypatch.setattr(cli, "cloudflare_setup", fake_setup)
@@ -315,7 +315,7 @@ def test_cloudflare_one_command_saves_and_sets_up(config_home, monkeypatch, caps
                 "--token", "tok",
                 "--account-id", "acc1",
                 "--hostname", "share.example.com",
-                "--local-base-url", "https://hub.example.com/user/alice/",
+                "--private-base-url", "https://hub.example.com/user/alice/",
             ]
         )
         == 0
@@ -441,7 +441,10 @@ def test_cloudflare_reset_clears_token_and_setup_state(config_home, capsys):
             "cloudflare_tunnel_id": "tun-1",
             "cloudflare_hostname": "share.example.com",
             "cloudflare_tunnel_token": "conn-token",
+            "private_base_url": "https://hub.example.com/user/a/",
             "public_base_url": "https://share.example.com",
+            "tunnel_active": True,
+            "tunnel_autostart": True,
             "unrelated": "kept",
         }
     )
@@ -475,3 +478,70 @@ def test_cloudflare_verify_create_denied(monkeypatch):
     assert out["can_bind_existing"] is True
     assert out["can_create_tunnel"] is False
     assert "denied" in out["create_error"]
+
+
+def test_cloudflare_start_requires_setup(config_home, capsys):
+    assert cli.main(["cloudflare", "start"]) == 1
+    assert "run cloudflare setup first" in capsys.readouterr().err
+
+
+def test_cloudflare_start_and_stop_toggle_active_state(
+    config_home, monkeypatch, capsys
+):
+    """start/stop switch between public links (daemon up) and private links
+    (daemon stopped) without touching credentials or Cloudflare resources."""
+    cli._save_config(
+        {
+            "cloudflare_tunnel_token": "conn-token",
+            "public_base_url": "https://share.example.com",
+        }
+    )
+    monkeypatch.setattr(cli, "ensure_connector", lambda *a, **kw: True)
+    stopped = []
+    monkeypatch.setattr(cli, "stop_connector", lambda: stopped.append(True) or True)
+
+    assert cli.main(["--json", "cloudflare", "start"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["tunnel_active"] is True
+    assert out["daemon_running"] is True
+    assert json.loads(cli.config_path().read_text())["tunnel_active"] is True
+
+    assert cli.main(["--json", "cloudflare", "stop"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["tunnel_active"] is False
+    assert out["daemon_stopped"] is True
+    cfg = json.loads(cli.config_path().read_text())
+    assert cfg["tunnel_active"] is False
+    # credentials and setup state are kept - stop is not reset
+    assert cfg["cloudflare_tunnel_token"] == "conn-token"
+    assert cfg["public_base_url"] == "https://share.example.com"
+    assert stopped
+
+
+def test_bare_invocation_prints_full_help(capsys):
+    """No command -> the full help (not a terse usage error), exit 0."""
+    assert cli.main([]) == 0
+    out = capsys.readouterr().out
+    assert "commands:" in out
+    assert "cloudflare" in out
+
+
+def test_cloudflare_validate_reports_cloudflared_binary(
+    config_home, monkeypatch, capsys
+):
+    """validate checks the system can reach the cloudflared binary - the
+    extension launches the connector itself, so a missing binary means the
+    tunnel can never come up."""
+    cli._save_config({"cloudflare_token": "tok"})
+    monkeypatch.setattr(cli, "cloudflare_verify", lambda *a: {"token_valid": True})
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/cloudflared")
+    assert cli.main(["--json", "cloudflare", "validate"]) == 0
+    out = json.loads(capsys.readouterr().out)["validate"]
+    assert out["cloudflared_available"] is True
+    assert out["cloudflared_path"] == "/usr/bin/cloudflared"
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    assert cli.main(["--json", "cloudflare", "validate"]) == 0
+    out = json.loads(capsys.readouterr().out)["validate"]
+    assert out["cloudflared_available"] is False
+    assert "NOT FOUND" in out["cloudflared_path"]

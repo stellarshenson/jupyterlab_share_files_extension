@@ -4,8 +4,8 @@ How to configure a Cloudflare account and API token so the extension can
 expose share/request links beyond your hub or local network through a
 Cloudflare tunnel. Once configured, `jupyterlab_share_files cloudflare
 setup` provisions everything and generated links carry the public Cloudflare
-hostname. Four orthogonal subcommands cover the whole lifecycle: `setup`,
-`validate`, `info`, `reset`.
+hostname. Six orthogonal subcommands cover the whole lifecycle: `setup`,
+`validate`, `info`, `start`, `stop`, `reset`.
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ Caveats learned the hard way:
 
 ## Required configuration
 
-- `--local-base-url` (mandatory for `setup`) - the base URL of the Jupyter
+- `--private-base-url` (mandatory for `setup`) - the base URL of the Jupyter
   server as the `cloudflared` connector reaches it (on JupyterHub:
   `https://hub.example.com/user/<name>/`). It is given explicitly, never
   inferred from the environment, so an internal address cannot sneak in by
@@ -61,7 +61,7 @@ JSON (`jupyterlab_share_files --json cloudflare info`).
 ```bash
 # provision: save credentials, tunnel + DNS + HTTPS enforcement + link rewriting + daemon
 jupyterlab_share_files cloudflare setup --token <api-token> --account-id <account-id> \
-  --hostname share.example.com --local-base-url "https://hub.example.com/user/<name>/"
+  --hostname share.example.com --private-base-url "https://hub.example.com/user/<name>/"
 
 # end-to-end check of the saved config (creates a test tunnel and removes it)
 jupyterlab_share_files cloudflare validate
@@ -70,13 +70,22 @@ jupyterlab_share_files cloudflare validate
 # daemon_running (cloudflared process) and tunnel_status (Cloudflare-side)
 jupyterlab_share_files cloudflare info
 
+# switch to public links: mark the tunnel active and start the daemon
+jupyterlab_share_files cloudflare start
+
+# switch to private links: stop the daemon; credentials, tunnel and DNS kept
+jupyterlab_share_files cloudflare stop
+
 # back to the unconfigured state (links revert to the local/hub address)
 jupyterlab_share_files cloudflare reset
 ```
 
-`validate` reports `token_valid`, `can_bind_existing` (can list tunnels) and
+`validate` reports `token_valid`, `can_bind_existing` (can list tunnels),
 `can_create_tunnel` - the last proven by creating a test tunnel and removing
-it, so a policy gap shows up here and not halfway through setup.
+it, so a policy gap shows up here and not halfway through setup - and
+`cloudflared_available`/`cloudflared_path` (the extension launches the
+connector itself; a binary missing from the server's PATH means the tunnel
+can never come up).
 
 `setup` creates or reuses a tunnel named `share-files`, routes the hostname
 to the origin, upserts a proxied CNAME `<hostname> → <tunnel>.cfargotunnel.com`,
@@ -96,6 +105,28 @@ up to `c.ShareFilesConfig.cloudflared_retries` times (default 3, set in
 Cloudflare links will not work until the daemon runs; success is logged as
 info. Daemon output goes to `/tmp/cloudflared-share-files.log`; `cloudflare
 info` shows both `daemon_running` and the Cloudflare-side `tunnel_status`.
+
+Autostart is a user setting: Settings Editor → Share Files → "Start the
+Cloudflare tunnel automatically" (default on). Switched off, the server
+starts with the tunnel inactive - links stay private until switched on.
+
+## Public/private toggle
+
+`start`/`stop` (and the cloud icon in the panel header, left of the filter
+icon) switch between the two link modes without touching credentials,
+tunnel or DNS:
+
+- **on** (`start`, green filled cloud) - daemon running, generated links
+  carry the public hostname
+- **off** (`stop`, dim dashed cloud) - daemon stopped, links carry the
+  private/request address
+- **connecting** - blinking blue cloud while a switch-on is in flight
+
+The toggle is read per request (mtime-cached config file), so it takes
+effect on the next request in either direction - no restart. The same
+switch is exposed to the frontend as `POST api/tunnel {"active": bool}`.
+The link dialog also probes reachability server-side (`api/link-check`)
+and shows "Link is reachable" / "not reachable" for the displayed link.
 
 ## What is exposed
 
