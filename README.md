@@ -141,7 +141,7 @@ jupyterlab_share_files cloudflare reset
 
 ## Releases
 
-Versioned releases ship to [npm](https://www.npmjs.com/package/jupyterlab_share_files_extension) and [PyPI](https://pypi.org/project/jupyterlab-share-files-extension/) together, tagged `RELEASE_v<version>` and published on the [GitHub releases page](https://github.com/stellarshenson/jupyterlab_share_files_extension/releases). What a release consists of and how it is produced: [RELEASE.md](RELEASE.md); per-version content: [CHANGELOG.md](CHANGELOG.md).
+Versioned releases ship to [npm](https://www.npmjs.com/package/jupyterlab_share_files_extension) and [PyPI](https://pypi.org/project/jupyterlab-share-files-extension/) together, tagged `RELEASE_v<version>` and published on the [GitHub releases page](https://github.com/stellarshenson/jupyterlab_share_files_extension/releases). Every release delivers the complete feature set - the full list is in [RELEASE.md](RELEASE.md) (Delivered functionality); what changed per version: [CHANGELOG.md](CHANGELOG.md).
 
 ## Uninstall
 
