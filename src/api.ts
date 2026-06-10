@@ -98,6 +98,20 @@ export function setTunnel(
   return requestAPI('api/tunnel', s, jsonBody(body));
 }
 
+/** Provision Cloudflare sharing from the panel - same inputs and sequence
+ * as `cloudflare setup` (token, account id, hostname, private_base_url). */
+export function setupTunnel(
+  s: ServerConnection.ISettings,
+  body: {
+    token: string;
+    account_id: string;
+    hostname: string;
+    private_base_url: string;
+  }
+): Promise<ITunnelState> {
+  return requestAPI('api/tunnel/setup', s, jsonBody(body));
+}
+
 export interface ILinkCheck {
   link: string;
   reachable: boolean;

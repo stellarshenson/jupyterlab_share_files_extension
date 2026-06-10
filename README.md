@@ -28,7 +28,7 @@ Peer-to-peer file sharing for JupyterLab. Create a **share** (file drop) or **re
 - **Symlink-friendly** - sharing `@shared/...` and similar works
 - **Delete to trash** - panel deletes go to the OS trash by default (`c.ShareFilesConfig.use_trash`)
 - **HTTPS-aware links** - share URLs follow the scheme the browser is on
-- **Cloudflare tunnel sharing** - optional: links carry a public Cloudflare hostname, usable outside your network; a cloud icon in the panel header shows when active ([docs/cloudflare_setup.md](docs/cloudflare_setup.md))
+- **Cloudflare tunnel sharing** - optional: links carry a public Cloudflare hostname, usable outside your network; the cloud icon in the panel header shows the state, toggles public/private links, and opens a setup popup when nothing is configured yet ([docs/cloudflare_setup.md](docs/cloudflare_setup.md))
 - **Settings toggles** - shares, requests, hidden-file visibility, poll interval
 
 ## Requirements
@@ -104,7 +104,7 @@ The `cloudflare` command exposes share/request links beyond the hub or local net
 
 The connector daemon is guaranteed by the extension: at server startup (and after setup) it makes sure `cloudflared tunnel run` is running, retrying up to `c.ShareFilesConfig.cloudflared_retries` times (default 3); all attempts failing is logged as an error, success as info. Autostart is a user setting - Settings Editor → Share Files → "Start the Cloudflare tunnel automatically" (default on); switched off, the server starts with private links and the tunnel down.
 
-The cloud icon in the panel header (left of the filter icon) shows and controls the state: green filled cloud = tunnel on, links public; dim dashed silhouette = tunnel off, links private; blinking blue = connecting. Clicking it toggles between public and private links - same switch as `cloudflare start`/`stop`.
+The cloud icon in the panel header (left of the filter icon) is always visible and shows/controls the state: green filled cloud = tunnel on, links public; dim dashed silhouette = tunnel off (or not configured), links private; blinking blue = connecting. Configured: clicking toggles between public and private links - same switch as `cloudflare start`/`stop`. Not configured: clicking opens a setup popup with the same inputs as `cloudflare setup` (token, account id, public hostname, private base URL), each with a hint where to take the value from.
 
 When a link is displayed (copy-link icon), the dialog checks reachability: the server probes its own public link (through the Cloudflare edge when active) and the dialog shows "Link is reachable" (green) or "not reachable" (red) - a frontend fetch would be blocked by CORS, so the probe runs server-side (`api/link-check`).
 

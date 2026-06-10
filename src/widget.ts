@@ -35,6 +35,7 @@ import {
   removeShareItems,
   saveFromConnection,
   setTunnel,
+  setupTunnel,
   uploadToConnection
 } from './api';
 import { clearClip, getClip, setClip } from './clipboard';
@@ -2462,13 +2463,24 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     const info = this._state.info;
-    const configured = !!info?.tunnel_configured;
-    this._cloudIndicator.style.display = configured ? 'flex' : 'none';
-    if (!configured) {
+    // Always visible once the server has answered: the silhouette doubles
+    // as the entry point to configure Cloudflare sharing.
+    this._cloudIndicator.style.display = info ? 'flex' : 'none';
+    if (!info) {
       return;
     }
     if (this._tunnelToggling) {
       // _toggleTunnel owns the icon while the switch is in flight
+      return;
+    }
+    const configured = !!info.tunnel_configured;
+    if (!configured) {
+      this._cloudIndicator.classList.remove('jp-mod-active');
+      this._cloudIndicator.classList.remove('jp-mod-connecting');
+      this._cloudIndicator.innerHTML = '';
+      this._cloudIndicator.appendChild(this._svgNode(cloudOffIcon.svgstr));
+      this._cloudIndicator.title =
+        'Cloudflare sharing not configured - click to set up public links.';
       return;
     }
     const active = !!info?.tunnel_active;
@@ -2490,6 +2502,10 @@ export class ShareFilesPanel extends Widget {
   private async _toggleTunnel(): Promise<void> {
     if (this._tunnelToggling) {
       return;
+    }
+    if (this._state.info && !this._state.info.tunnel_configured) {
+      // No tunnel yet - the icon is the entry point to configure one.
+      return this._showTunnelSetupDialog();
     }
     const active = !!this._state.info?.tunnel_active;
     this._tunnelToggling = true;
@@ -2515,6 +2531,140 @@ export class ShareFilesPanel extends Widget {
     }
     this._updateCloudIndicator();
     // Links in the panel change host with the toggle - refresh them.
+    await this.refresh();
+  }
+
+  /**
+   * Configuration popup for Cloudflare sharing - same inputs as the CLI's
+   * `cloudflare setup`. Opened by clicking the cloud icon while no tunnel
+   * is configured.
+   */
+  private async _showTunnelSetupDialog(): Promise<void> {
+    const wrap = document.createElement('div');
+    wrap.style.cssText =
+      'display: flex;' +
+      ' flex-direction: column;' +
+      ' gap: 10px;' +
+      ' min-width: min(560px, 90vw);';
+
+    const field = (
+      label: string,
+      hint: string,
+      value: string,
+      type = 'text'
+    ): HTMLInputElement => {
+      const block = document.createElement('div');
+      block.style.cssText = 'display: flex; flex-direction: column; gap: 2px;';
+      const lab = document.createElement('label');
+      lab.textContent = label;
+      lab.style.cssText =
+        'font-size: var(--jp-ui-font-size1);' +
+        ' color: var(--jp-ui-font-color1);' +
+        ' font-weight: 600;';
+      const inp = document.createElement('input');
+      inp.type = type;
+      inp.value = value;
+      inp.style.cssText =
+        'width: 100%;' +
+        ' padding: 6px 8px;' +
+        ' font-family: var(--jp-code-font-family, monospace);' +
+        ' font-size: var(--jp-ui-font-size1);' +
+        ' color: var(--jp-ui-font-color1);' +
+        ' background: var(--neutral-fill-input-rest,' +
+        ' var(--jp-input-background, var(--jp-layout-color1)));' +
+        ' border: 1px solid var(--jp-border-color2);' +
+        ' border-radius: 2px;' +
+        ' box-sizing: border-box;';
+      const hintEl = document.createElement('div');
+      hintEl.textContent = hint;
+      hintEl.style.cssText =
+        'font-size: var(--jp-ui-font-size0);' +
+        ' color: var(--jp-ui-font-color2);' +
+        ' font-style: italic;';
+      block.appendChild(lab);
+      block.appendChild(inp);
+      block.appendChild(hintEl);
+      wrap.appendChild(block);
+      return inp;
+    };
+
+    const intro = document.createElement('div');
+    intro.textContent =
+      'Share links publicly through a Cloudflare tunnel. ' +
+      'Same configuration as "jupyterlab_share_files cloudflare setup".';
+    intro.style.cssText =
+      'font-size: var(--jp-ui-font-size1);' +
+      ' color: var(--jp-ui-font-color2);';
+    wrap.appendChild(intro);
+
+    const tokenInp = field(
+      'Cloudflare API token',
+      'Cloudflare dashboard → My Profile → API Tokens (or Account API ' +
+        'Tokens). Needs Account → Cloudflare Tunnel → Edit and zone-scoped ' +
+        'DNS → Edit for your domain.',
+      '',
+      'password'
+    );
+    const accountInp = field(
+      'Account id',
+      'Cloudflare dashboard → your domain → Overview, "Account ID" in the ' +
+        'right-hand column (32 hex characters).',
+      ''
+    );
+    const hostnameInp = field(
+      'Public hostname',
+      'The public address links will carry - a subdomain of a domain ' +
+        'managed in your Cloudflare account, e.g. share.example.com. ' +
+        'Created/updated for you as a DNS record.',
+      ''
+    );
+    const privateInp = field(
+      'Private base URL',
+      'This Jupyter server as the cloudflared connector reaches it - ' +
+        'usually the address in your browser bar (prefilled). Must be ' +
+        'https.',
+      this._serverSettings.baseUrl
+    );
+
+    const widget = new Widget({ node: wrap });
+    const result = await showDialog({
+      title: 'Set up Cloudflare sharing',
+      body: widget,
+      buttons: [Dialog.cancelButton(), Dialog.okButton({ label: 'Set up' })]
+    });
+    if (!result.button.accept) {
+      return;
+    }
+    const notifyId = Notification.emit(
+      'Setting up Cloudflare sharing…',
+      'in-progress',
+      { autoClose: false }
+    );
+    try {
+      const state = await setupTunnel(this._serverSettings, {
+        token: tokenInp.value.trim(),
+        account_id: accountInp.value.trim(),
+        hostname: hostnameInp.value.trim(),
+        private_base_url: privateInp.value.trim()
+      });
+      if (this._state.info) {
+        this._state.info = { ...this._state.info, ...state };
+      }
+      Notification.update({
+        id: notifyId,
+        message: 'Cloudflare sharing is set up - links are public now.',
+        type: 'success',
+        autoClose: 5000
+      });
+    } catch (err: any) {
+      Notification.update({
+        id: notifyId,
+        message: `Cloudflare setup failed: ${err?.message || err}`,
+        type: 'error',
+        autoClose: 8000
+      });
+    }
+    this._updateCloudIndicator();
     await this.refresh();
   }
 

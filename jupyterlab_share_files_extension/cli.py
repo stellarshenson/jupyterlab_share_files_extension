@@ -823,28 +823,39 @@ def _cmd_cloudflare(args: argparse.Namespace) -> Any:
         )
         return {"validate": result}
     # setup
+    return setup_and_start(
+        args.token, args.account_id, args.hostname, args.private_base_url
+    )
+
+
+def setup_and_start(
+    token: str, account_id: str, hostname: str, private_base_url: str
+) -> dict:
+    """Save credentials, provision the tunnel end to end, guarantee the daemon.
+
+    The full `cloudflare setup` sequence, shared by the CLI and the panel's
+    configuration popup (`api/tunnel/setup`). Restarts the connector when the
+    tunnel token changed - a daemon still serving the OLD tunnel would leave
+    the new hostname dead.
+    """
     out: dict[str, Any] = {}
-    if args.token or args.account_id:
+    if token or account_id:
         cfg = _load_config()
-        if args.token:
-            cfg["cloudflare_token"] = args.token
-        if args.account_id:
-            cfg["cloudflare_account_id"] = args.account_id
+        if token:
+            cfg["cloudflare_token"] = token
+        if account_id:
+            cfg["cloudflare_account_id"] = account_id
         _save_config(cfg)
         out["saved"] = str(config_path())
     cfg = _load_config()
-    token = args.token or cfg.get("cloudflare_token")
+    token = token or cfg.get("cloudflare_token") or ""
     if not token:
         raise RuntimeError(
             "cloudflare setup: no token given or saved; pass --token"
         )
-    account_id = args.account_id or cfg.get("cloudflare_account_id") or ""
+    account_id = account_id or cfg.get("cloudflare_account_id") or ""
     prev_tunnel_token = cfg.get("cloudflare_tunnel_token", "")
-    out["setup"] = cloudflare_setup(
-        token, account_id, args.hostname, args.private_base_url
-    )
-    # The tunnel (and so its connector token) may have changed - a daemon
-    # still serving the OLD tunnel would leave the new hostname dead.
+    out["setup"] = cloudflare_setup(token, account_id, hostname, private_base_url)
     if (
         _load_config().get("cloudflare_tunnel_token", "") != prev_tunnel_token
         and _connector_running()

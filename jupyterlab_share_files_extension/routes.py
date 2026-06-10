@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 import tornado
 import tornado.httpclient
+import tornado.ioloop
 import tornado.web
 from jupyter_server.base.handlers import APIHandler
 from jupyter_server.utils import url_path_join
@@ -428,6 +429,42 @@ class LinkCheckHandler(_Base):
             })
         except PeerUnavailable as exc:
             self.write_json({"link": link, "reachable": False, "error": str(exc)})
+
+
+class TunnelSetupHandler(_Base):
+    """Provision Cloudflare sharing from the panel (api/tunnel/setup).
+
+    Same inputs and sequence as ``cloudflare setup``: token, account id,
+    hostname (the public share host) and the mandatory https
+    private_base_url. The blocking Cloudflare API calls run in an executor
+    so the event loop stays responsive.
+    """
+
+    @tornado.web.authenticated
+    async def post(self):
+        from .cli import setup_and_start
+
+        body = self.get_json_body() or {}
+        token = str(body.get("token") or "")
+        account_id = str(body.get("account_id") or "")
+        hostname = str(body.get("hostname") or "")
+        private_base_url = str(body.get("private_base_url") or "")
+        if not hostname or not private_base_url:
+            return self.write_error_json(
+                400, "hostname and private_base_url are required"
+            )
+        try:
+            result = await tornado.ioloop.IOLoop.current().run_in_executor(
+                None,
+                setup_and_start,
+                token,
+                account_id,
+                hostname,
+                private_base_url,
+            )
+        except RuntimeError as exc:
+            return self.write_error_json(400, str(exc))
+        self.write_json({**result, **_tunnel_state(self)})
 
 
 class SharesListHandler(_Base):
@@ -1091,6 +1128,7 @@ def setup_route_handlers(web_app, config: ShareFilesConfig | None = None):
         (url_path_join(base_url, ns, "api", "link-check"), LinkCheckHandler),
         # api/tunnel
         (url_path_join(base_url, ns, "api", "tunnel"), TunnelHandler),
+        (url_path_join(base_url, ns, "api", "tunnel", "setup"), TunnelSetupHandler),
         # api/shares
         (url_path_join(base_url, ns, "api", "shares"), SharesListHandler),
         (url_path_join(base_url, ns, "api", "shares", r"([A-Z2-7]{6,16})"), ShareItemHandler),

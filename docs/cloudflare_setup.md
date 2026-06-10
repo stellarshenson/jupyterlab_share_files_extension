@@ -117,7 +117,10 @@ starts with the tunnel inactive - links stay private until switched on.
 
 `start`/`stop` (and the cloud icon in the panel header, left of the filter
 icon) switch between the two link modes without touching credentials,
-tunnel or DNS:
+tunnel or DNS. The icon is always visible; while nothing is configured,
+clicking it opens a setup popup with the same inputs as `cloudflare setup`
+(token, account id, public hostname, private base URL - each with a hint
+where to find the value):
 
 - **on** (`start`, green filled cloud) - daemon running, generated links
   carry the public hostname

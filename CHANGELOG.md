@@ -2,6 +2,22 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.15] - 2026-06-10
+
+Cloudflare sharing configurable straight from the panel.
+
+### Added
+
+- The cloud icon is always visible in the panel header; while no tunnel is configured, clicking it opens a "Set up Cloudflare sharing" popup with the same inputs as `cloudflare setup` - API token (password field), account id, public hostname, private base URL (prefilled from the page's own address)
+- Each popup field carries a hint where to take the value from: token policies in the dashboard, account id on the domain Overview page, hostname as a subdomain of a Cloudflare-managed domain, private URL from the browser bar (https required)
+- `POST api/tunnel/setup` - runs the full setup server-side; the blocking Cloudflare API calls execute in a thread executor so the server stays responsive; in-progress notification with success/error outcome
+
+### Changed
+
+- CLI setup sequence refactored into `setup_and_start()`, shared verbatim by `cloudflare setup` and the popup endpoint (including the daemon-restart-on-token-change behaviour)
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.13] - 2026-06-10
 
 Per-user tunnel names, link dialog polish, UI consistency.
@@ -22,8 +38,6 @@ Per-user tunnel names, link dialog polish, UI consistency.
 
 - Setup restarts the connector when the tunnel token changed - a daemon still serving the old tunnel left the new hostname dead (edge 530)
 - `stop_connector` waits for the processes to actually exit, so `ensure_connector` no longer races a dying daemon and skips the relaunch
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.6] - 2026-06-10
 
