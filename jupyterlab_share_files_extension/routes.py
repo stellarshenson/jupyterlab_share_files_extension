@@ -192,7 +192,7 @@ _CONFIG_FILE_CACHE: dict[str, Any] = {"path": None, "mtime": None, "value": {}}
 
 def _config_file_state() -> dict:
     """Read the CLI config file (mtime-cached)."""
-    from .cli import config_path
+    from .tunnel import config_path
 
     path = config_path()
     try:
@@ -344,15 +344,12 @@ class InfoHandler(_Base):
 
 def _tunnel_state(handler: tornado.web.RequestHandler) -> dict:
     """Tunnel state for the frontend: configured / active / running."""
-    from .cli import _connector_running
+    from .tunnel import tunnel_state as _lib_tunnel_state
 
-    cfg = _config_file_state()
-    return {
-        "tunnel_configured": bool(_raw_public_origin(handler)),
-        "tunnel_active": _tunnel_active(),
-        "tunnel_autostart": bool(cfg.get("tunnel_autostart", True)),
-        "tunnel_running": _connector_running(),
-    }
+    state = _lib_tunnel_state()
+    # handler-aware: the public_base_url trait also counts as configured
+    state["tunnel_configured"] = bool(_raw_public_origin(handler))
+    return state
 
 
 class TunnelHandler(_Base):
@@ -371,30 +368,29 @@ class TunnelHandler(_Base):
 
     @tornado.web.authenticated
     def post(self):
-        from .cli import (
+        from .tunnel import (
             _load_config,
-            _save_config,
-            ensure_connector,
-            stop_connector,
+            set_tunnel_autostart,
+            tunnel_start,
+            tunnel_stop,
         )
 
         body = self.get_json_body() or {}
-        cfg = _load_config()
-        if not cfg.get("cloudflare_tunnel_token"):
+        if not _load_config().get("cloudflare_tunnel_token"):
             return self.write_error_json(
                 400, "Cloudflare sharing is not configured (run cloudflare setup)"
             )
         if "autostart" in body:
-            cfg["tunnel_autostart"] = bool(body["autostart"])
-        if "active" in body:
-            cfg["tunnel_active"] = bool(body["active"])
-        _save_config(cfg)
+            set_tunnel_autostart(bool(body["autostart"]))
         if body.get("active") is True:
             share_config: ShareFilesConfig = self.settings.get("share_files_config")
             retries = share_config.cloudflared_retries if share_config else 3
-            ensure_connector(retries)
+            try:
+                tunnel_start(retries)
+            except RuntimeError as exc:
+                return self.write_error_json(400, str(exc))
         elif body.get("active") is False:
-            stop_connector()
+            tunnel_stop()
         self.write_json(_tunnel_state(self))
 
 
@@ -420,14 +416,20 @@ class LinkCheckHandler(_Base):
             link = _public_request_url(self, id_)
         else:
             return self.write_error_json(400, "kind must be 'share' or 'request'")
+        # The URL is OUR OWN (rebuilt from kind+id above) - the question is
+        # "does it answer", not "is the certificate trusted", so a
+        # self-signed hub certificate must not fail the probe.
+        client = tornado.httpclient.AsyncHTTPClient()
         try:
-            resp = await self._peer_fetch(link, request_timeout=10)
+            resp = await client.fetch(
+                link, raise_error=False, validate_cert=False, request_timeout=10
+            )
             self.write_json({
                 "link": link,
                 "reachable": resp.code == 200,
                 "status": resp.code,
             })
-        except PeerUnavailable as exc:
+        except (ssl.SSLError, OSError, ConnectionError) as exc:
             self.write_json({"link": link, "reachable": False, "error": str(exc)})
 
 
@@ -442,7 +444,7 @@ class TunnelSetupHandler(_Base):
 
     @tornado.web.authenticated
     async def post(self):
-        from .cli import setup_and_start
+        from .tunnel import setup_and_start
 
         body = self.get_json_body() or {}
         token = str(body.get("token") or "")
@@ -464,6 +466,22 @@ class TunnelSetupHandler(_Base):
             )
         except RuntimeError as exc:
             return self.write_error_json(400, str(exc))
+        self.write_json({**result, **_tunnel_state(self)})
+
+
+class TunnelResetHandler(_Base):
+    """Reset Cloudflare sharing from the panel (api/tunnel/reset).
+
+    Same as ``cloudflare reset``: credentials, tunnel state and the
+    private/public base URLs are cleared; links revert to the private
+    address on the next request; Cloudflare-side resources are kept.
+    """
+
+    @tornado.web.authenticated
+    def post(self):
+        from .tunnel import reset_config
+
+        result = reset_config()
         self.write_json({**result, **_tunnel_state(self)})
 
 
@@ -1129,6 +1147,7 @@ def setup_route_handlers(web_app, config: ShareFilesConfig | None = None):
         # api/tunnel
         (url_path_join(base_url, ns, "api", "tunnel"), TunnelHandler),
         (url_path_join(base_url, ns, "api", "tunnel", "setup"), TunnelSetupHandler),
+        (url_path_join(base_url, ns, "api", "tunnel", "reset"), TunnelResetHandler),
         # api/shares
         (url_path_join(base_url, ns, "api", "shares"), SharesListHandler),
         (url_path_join(base_url, ns, "api", "shares", r"([A-Z2-7]{6,16})"), ShareItemHandler),

@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from jupyterlab_share_files_extension import cli
+from jupyterlab_share_files_extension import cli, tunnel
 
 
 class _FakeResponse(io.BytesIO):
@@ -77,8 +77,8 @@ def test_runtime_error_prints_to_stderr_and_exits_1(monkeypatch, capsys):
 
 
 def test_cloudflare_token_and_account_saved_with_0600(config_home, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "cloudflare_setup", lambda *a: {"tunnel_id": "t"})
-    monkeypatch.setattr(cli, "ensure_connector", lambda *a, **kw: True)
+    monkeypatch.setattr(tunnel, "cloudflare_setup", lambda *a: {"tunnel_id": "t"})
+    monkeypatch.setattr(tunnel, "ensure_connector", lambda *a, **kw: True)
     assert (
         cli.main(
             ["cloudflare", "setup", "--token", "tok123", "--account-id", "acc9",
@@ -86,7 +86,7 @@ def test_cloudflare_token_and_account_saved_with_0600(config_home, monkeypatch, 
         )
         == 0
     )
-    path = cli.config_path()
+    path = tunnel.config_path()
     cfg = json.loads(path.read_text())
     assert cfg["cloudflare_token"] == "tok123"
     assert cfg["cloudflare_account_id"] == "acc9"
@@ -118,8 +118,8 @@ def test_cloudflare_verify_happy_path(config_home, monkeypatch, capsys):
             return {"success": True, "result": {}}
         raise AssertionError(f"unexpected call {method} {endpoint}")
 
-    monkeypatch.setattr(cli, "_cf_request", fake_cf)
-    out = cli.cloudflare_verify("tok")
+    monkeypatch.setattr(tunnel, "_cf_request", fake_cf)
+    out = tunnel.cloudflare_verify("tok")
 
     assert out["token_valid"] is True
     assert out["accounts"] == [{"id": "acc1", "name": "Acme"}]
@@ -134,8 +134,8 @@ def test_cloudflare_verify_invalid_token_short_circuits(monkeypatch):
     def fake_cf(method, endpoint, token, body=None):
         return {"success": False, "errors": [{"code": 6003, "message": "bad header"}]}
 
-    monkeypatch.setattr(cli, "_cf_request", fake_cf)
-    out = cli.cloudflare_verify("nope", "acc1")
+    monkeypatch.setattr(tunnel, "_cf_request", fake_cf)
+    out = tunnel.cloudflare_verify("nope", "acc1")
     assert out["token_valid"] is False
     assert "6003" in out["error"]
     assert out["can_create_tunnel"] is False
@@ -158,8 +158,8 @@ def test_cloudflare_verify_account_owned_token_falls_back(monkeypatch):
             return {"success": True, "result": {"id": "probe-id"}}
         return {"success": True, "result": {}}
 
-    monkeypatch.setattr(cli, "_cf_request", fake_cf)
-    out = cli.cloudflare_verify("cfat_x")
+    monkeypatch.setattr(tunnel, "_cf_request", fake_cf)
+    out = tunnel.cloudflare_verify("cfat_x")
     assert out["token_valid"] is True
     assert out["account_id"] == "acc1"
 
@@ -202,8 +202,8 @@ def _setup_fake_cf(calls):
 
 def test_cloudflare_setup_provisions_and_saves(config_home, monkeypatch):
     calls = []
-    monkeypatch.setattr(cli, "_cf_request", _setup_fake_cf(calls))
-    out = cli.cloudflare_setup(
+    monkeypatch.setattr(tunnel, "_cf_request", _setup_fake_cf(calls))
+    out = tunnel.cloudflare_setup(
         "tok", "", "share.example.com", "https://hub.example.com/user/alice/"
     )
 
@@ -242,7 +242,7 @@ def test_cloudflare_setup_provisions_and_saves(config_home, monkeypatch):
         "content": "tun-1.cfargotunnel.com",
         "proxied": True,
     }
-    cfg = json.loads(cli.config_path().read_text())
+    cfg = json.loads(tunnel.config_path().read_text())
     assert cfg["cloudflare_tunnel_id"] == "tun-1"
     assert cfg["cloudflare_hostname"] == "share.example.com"
     assert cfg["cloudflare_tunnel_token"] == "conn-token"
@@ -262,8 +262,8 @@ def test_cloudflare_setup_reuses_existing_tunnel(config_home, monkeypatch):
             }
         return base(method, endpoint, token, body)
 
-    monkeypatch.setattr(cli, "_cf_request", fake_cf)
-    out = cli.cloudflare_setup("tok", "", "share.example.com", "https://hub.example.com")
+    monkeypatch.setattr(tunnel, "_cf_request", fake_cf)
+    out = tunnel.cloudflare_setup("tok", "", "share.example.com", "https://hub.example.com")
     assert out["tunnel_id"] == "tun-1"
     # no second share-files tunnel was created (only the verify probe POSTs)
     creates = [b for m, e, b in calls if m == "POST" and e == "accounts/acc1/cfd_tunnel"]
@@ -272,7 +272,7 @@ def test_cloudflare_setup_reuses_existing_tunnel(config_home, monkeypatch):
 
 def test_cloudflare_setup_refuses_without_create_rights(monkeypatch):
     monkeypatch.setattr(
-        cli,
+        tunnel,
         "cloudflare_verify",
         lambda token, account_id="": {
             "can_create_tunnel": False,
@@ -282,14 +282,14 @@ def test_cloudflare_setup_refuses_without_create_rights(monkeypatch):
         },
     )
     with pytest.raises(RuntimeError, match="cannot create tunnels"):
-        cli.cloudflare_setup("tok", "acc1", "share.example.com", "https://hub.example.com")
+        tunnel.cloudflare_setup("tok", "acc1", "share.example.com", "https://hub.example.com")
 
 
 def test_cloudflare_setup_requires_private_base_url(config_home, capsys):
     """Setup runs only when --private-base-url is given - the public base is
     explicit, never inferred from the environment or defaulted to
     localhost/internal addresses. --run without it is refused."""
-    cli._save_config({"cloudflare_token": "tok"})
+    tunnel._save_config({"cloudflare_token": "tok"})
     with pytest.raises(SystemExit):
         cli.main(["cloudflare", "setup"])
     assert "--private-base-url" in capsys.readouterr().err
@@ -304,8 +304,8 @@ def test_cloudflare_one_command_saves_and_sets_up(config_home, monkeypatch, caps
         captured["args"] = (token, account_id, hostname, private_base_url)
         return {"tunnel_id": "tun-1"}
 
-    monkeypatch.setattr(cli, "cloudflare_setup", fake_setup)
-    monkeypatch.setattr(cli, "ensure_connector", lambda *a, **kw: True)
+    monkeypatch.setattr(tunnel, "cloudflare_setup", fake_setup)
+    monkeypatch.setattr(tunnel, "ensure_connector", lambda *a, **kw: True)
     assert (
         cli.main(
             [
@@ -323,7 +323,7 @@ def test_cloudflare_one_command_saves_and_sets_up(config_home, monkeypatch, caps
     assert captured["args"] == (
         "tok", "acc1", "share.example.com", "https://hub.example.com/user/alice/"
     )
-    cfg = json.loads(cli.config_path().read_text())
+    cfg = json.loads(tunnel.config_path().read_text())
     assert cfg["cloudflare_token"] == "tok"
     out = json.loads(capsys.readouterr().out)
     assert out["setup"]["tunnel_id"] == "tun-1"
@@ -334,7 +334,7 @@ def test_cloudflare_one_command_saves_and_sets_up(config_home, monkeypatch, caps
 def test_cloudflare_info_masks_tokens(config_home, monkeypatch, capsys):
     """--info shows the current config with secrets masked to the last 4
     characters; the account id is shown in full."""
-    cli._save_config(
+    tunnel._save_config(
         {
             "cloudflare_token": "cfat_secretsecretb676",
             "cloudflare_account_id": "acc-full-id",
@@ -344,9 +344,9 @@ def test_cloudflare_info_masks_tokens(config_home, monkeypatch, capsys):
             "public_base_url": "https://share.example.com",
         }
     )
-    monkeypatch.setattr(cli, "_connector_running", lambda: True)
+    monkeypatch.setattr(tunnel, "_connector_running", lambda: True)
     monkeypatch.setattr(
-        cli,
+        tunnel,
         "_cf_request",
         lambda *a, **kw: {"success": True, "result": {"status": "healthy"}},
     )
@@ -374,9 +374,9 @@ def test_human_output_is_default_json_optional(monkeypatch, capsys):
 def test_ensure_connector_retries_and_fails(config_home, monkeypatch, caplog):
     """ensure_connector tries the configured number of times and logs the
     failure when the connector never stays up."""
-    cli._save_config({"cloudflare_tunnel_token": "tt"})
-    monkeypatch.setattr(cli, "_connector_running", lambda: False)
-    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    tunnel._save_config({"cloudflare_tunnel_token": "tt"})
+    monkeypatch.setattr(tunnel, "_connector_running", lambda: False)
+    monkeypatch.setattr(tunnel.time, "sleep", lambda s: None)
     attempts = []
 
     class _DeadProc:
@@ -390,20 +390,20 @@ def test_ensure_connector_retries_and_fails(config_home, monkeypatch, caplog):
         attempts.append(a)
         return _DeadProc()
 
-    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(tunnel.subprocess, "Popen", fake_popen)
     import logging as _logging
 
     log = _logging.getLogger("test-connector")
     with caplog.at_level("ERROR", logger="test-connector"):
-        assert cli.ensure_connector(retries=3, logger=log) is False
+        assert tunnel.ensure_connector(retries=3, logger=log) is False
     assert len(attempts) == 3
     assert any("failed after 3 attempts" in r.message for r in caplog.records)
 
 
 def test_ensure_connector_succeeds_when_process_stays_up(config_home, monkeypatch):
-    cli._save_config({"cloudflare_tunnel_token": "tt"})
-    monkeypatch.setattr(cli, "_connector_running", lambda: False)
-    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    tunnel._save_config({"cloudflare_tunnel_token": "tt"})
+    monkeypatch.setattr(tunnel, "_connector_running", lambda: False)
+    monkeypatch.setattr(tunnel.time, "sleep", lambda s: None)
 
     class _LiveProc:
         pid = 123
@@ -411,21 +411,21 @@ def test_ensure_connector_succeeds_when_process_stays_up(config_home, monkeypatc
         def poll(self):
             return None
 
-    monkeypatch.setattr(cli.subprocess, "Popen", lambda *a, **kw: _LiveProc())
-    assert cli.ensure_connector(retries=3) is True
+    monkeypatch.setattr(tunnel.subprocess, "Popen", lambda *a, **kw: _LiveProc())
+    assert tunnel.ensure_connector(retries=3) is True
 
 
 def test_cloudflare_setup_rejects_relative_base_url():
     with pytest.raises(RuntimeError, match="not an\\s+absolute URL"):
-        cli._origin_from_base_url("/user/alice/")
+        tunnel._origin_from_base_url("/user/alice/")
 
 
 def test_cloudflare_setup_rejects_http_base_url():
     """Only secure connections are permitted - an http base URL is refused
     with guidance; localhost is fine as long as it is https."""
     with pytest.raises(RuntimeError, match="must use\\s+https"):
-        cli._origin_from_base_url("http://localhost:8888/")
-    assert cli._origin_from_base_url("https://localhost:8888/") == "https://localhost:8888"
+        tunnel._origin_from_base_url("http://localhost:8888/")
+    assert tunnel._origin_from_base_url("https://localhost:8888/") == "https://localhost:8888"
 
 
 # --------------------------------------------------------------------------- #
@@ -434,7 +434,7 @@ def test_cloudflare_setup_rejects_http_base_url():
 
 
 def test_cloudflare_reset_clears_token_and_setup_state(config_home, capsys):
-    cli._save_config(
+    tunnel._save_config(
         {
             "cloudflare_token": "tok",
             "cloudflare_account_id": "acc1",
@@ -450,8 +450,8 @@ def test_cloudflare_reset_clears_token_and_setup_state(config_home, capsys):
     )
     assert cli.main(["--json", "cloudflare", "reset"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert set(out["reset"]) == set(cli._RESET_KEYS)
-    cfg = json.loads(cli.config_path().read_text())
+    assert set(out["reset"]) == set(tunnel._RESET_KEYS)
+    cfg = json.loads(tunnel.config_path().read_text())
     assert cfg == {"unrelated": "kept"}
     # back to the unconfigured state: validate now demands a token
     assert cli.main(["cloudflare", "validate"]) == 1
@@ -473,8 +473,8 @@ def test_cloudflare_verify_create_denied(monkeypatch):
             return {"success": True, "result": []}
         return {"success": False, "errors": [{"code": 10000, "message": "denied"}]}
 
-    monkeypatch.setattr(cli, "_cf_request", fake_cf)
-    out = cli.cloudflare_verify("tok")
+    monkeypatch.setattr(tunnel, "_cf_request", fake_cf)
+    out = tunnel.cloudflare_verify("tok")
     assert out["can_bind_existing"] is True
     assert out["can_create_tunnel"] is False
     assert "denied" in out["create_error"]
@@ -490,27 +490,27 @@ def test_cloudflare_start_and_stop_toggle_active_state(
 ):
     """start/stop switch between public links (daemon up) and private links
     (daemon stopped) without touching credentials or Cloudflare resources."""
-    cli._save_config(
+    tunnel._save_config(
         {
             "cloudflare_tunnel_token": "conn-token",
             "public_base_url": "https://share.example.com",
         }
     )
-    monkeypatch.setattr(cli, "ensure_connector", lambda *a, **kw: True)
+    monkeypatch.setattr(tunnel, "ensure_connector", lambda *a, **kw: True)
     stopped = []
-    monkeypatch.setattr(cli, "stop_connector", lambda: stopped.append(True) or True)
+    monkeypatch.setattr(tunnel, "stop_connector", lambda: stopped.append(True) or True)
 
     assert cli.main(["--json", "cloudflare", "start"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["tunnel_active"] is True
     assert out["daemon_running"] is True
-    assert json.loads(cli.config_path().read_text())["tunnel_active"] is True
+    assert json.loads(tunnel.config_path().read_text())["tunnel_active"] is True
 
     assert cli.main(["--json", "cloudflare", "stop"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["tunnel_active"] is False
     assert out["daemon_stopped"] is True
-    cfg = json.loads(cli.config_path().read_text())
+    cfg = json.loads(tunnel.config_path().read_text())
     assert cfg["tunnel_active"] is False
     # credentials and setup state are kept - stop is not reset
     assert cfg["cloudflare_tunnel_token"] == "conn-token"
@@ -532,15 +532,15 @@ def test_cloudflare_validate_reports_cloudflared_binary(
     """validate checks the system can reach the cloudflared binary - the
     extension launches the connector itself, so a missing binary means the
     tunnel can never come up."""
-    cli._save_config({"cloudflare_token": "tok"})
-    monkeypatch.setattr(cli, "cloudflare_verify", lambda *a: {"token_valid": True})
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/cloudflared")
+    tunnel._save_config({"cloudflare_token": "tok"})
+    monkeypatch.setattr(tunnel, "cloudflare_verify", lambda *a: {"token_valid": True})
+    monkeypatch.setattr(tunnel.shutil, "which", lambda name: "/usr/bin/cloudflared")
     assert cli.main(["--json", "cloudflare", "validate"]) == 0
     out = json.loads(capsys.readouterr().out)["validate"]
     assert out["cloudflared_available"] is True
     assert out["cloudflared_path"] == "/usr/bin/cloudflared"
 
-    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(tunnel.shutil, "which", lambda name: None)
     assert cli.main(["--json", "cloudflare", "validate"]) == 0
     out = json.loads(capsys.readouterr().out)["validate"]
     assert out["cloudflared_available"] is False
@@ -552,14 +552,14 @@ def test_tunnel_name_is_deterministic_slug_of_private_url():
     same URL always yields the same name (reuse), different users/servers
     never collide on a shared account."""
     assert (
-        cli.tunnel_name("https://hub.example.com/user/alice/")
+        tunnel.tunnel_name("https://hub.example.com/user/alice/")
         == "share-files-hub-example-com-user-alice"
     )
     assert (
-        cli.tunnel_name("https://hub.example.com/user/alice/")
-        == cli.tunnel_name("https://hub.example.com/user/alice")
+        tunnel.tunnel_name("https://hub.example.com/user/alice/")
+        == tunnel.tunnel_name("https://hub.example.com/user/alice")
     )
-    assert cli.tunnel_name("https://hub.example.com/user/alice/") != cli.tunnel_name(
+    assert tunnel.tunnel_name("https://hub.example.com/user/alice/") != tunnel.tunnel_name(
         "https://hub.example.com/user/bob/"
     )
-    assert cli.tunnel_name("https://myhost.example.com") == "share-files-myhost-example-com"
+    assert tunnel.tunnel_name("https://myhost.example.com") == "share-files-myhost-example-com"

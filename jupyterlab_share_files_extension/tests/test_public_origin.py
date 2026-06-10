@@ -14,7 +14,7 @@ import os
 
 import pytest
 
-from jupyterlab_share_files_extension import cli, routes
+from jupyterlab_share_files_extension import cli, routes, tunnel
 from jupyterlab_share_files_extension.config import ShareFilesConfig
 
 
@@ -38,7 +38,7 @@ def config_home(tmp_path, monkeypatch):
 
 
 def _write_cli_config(values: dict) -> None:
-    path = cli.config_path()
+    path = tunnel.config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(values), encoding="utf-8")
 
@@ -83,7 +83,7 @@ def test_reset_reverts_to_old_behaviour(config_home):
 
     _write_cli_config({})
     # force a distinct mtime - back-to-back writes can land in the same tick
-    path = cli.config_path()
+    path = tunnel.config_path()
     stamp = path.stat().st_mtime + 10
     os.utime(path, (stamp, stamp))
     assert routes._public_origin(handler) == "http://hub.local:8000"
@@ -117,7 +117,7 @@ def test_tunnel_inactive_reverts_links_to_private(config_home):
     )
     handler = _FakeHandler()
     assert routes._public_origin(handler) == "http://hub.local:8000"
-    path = cli.config_path()
+    path = tunnel.config_path()
     _write_cli_config(
         {"public_base_url": "https://share.example.com", "tunnel_active": True}
     )

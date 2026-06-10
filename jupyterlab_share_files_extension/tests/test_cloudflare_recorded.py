@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jupyterlab_share_files_extension import cli
+from jupyterlab_share_files_extension import cli, tunnel
 
 FIXTURE = Path(__file__).parent / "fixtures" / "cloudflare_responses.json"
 ACCOUNT_ID = "d3786894d5db55e6074c57ab92e09888"
@@ -52,7 +52,7 @@ def replay_cf(recorded, monkeypatch):
         responses = table[key]
         return responses.pop(0) if len(responses) > 1 else responses[0]
 
-    monkeypatch.setattr(cli, "_cf_request", fake_cf)
+    monkeypatch.setattr(tunnel, "_cf_request", fake_cf)
     return calls
 
 
@@ -64,7 +64,7 @@ def config_home(tmp_path, monkeypatch):
 
 def test_recorded_verify_full_capabilities(replay_cf):
     """The real API envelopes drive verify to all-green."""
-    out = cli.cloudflare_verify("REDACTED_API_TOKEN", ACCOUNT_ID)
+    out = tunnel.cloudflare_verify("REDACTED_API_TOKEN", ACCOUNT_ID)
     assert out["token_valid"] is True
     assert out["account_id"] == ACCOUNT_ID
     assert out["accounts"][0]["name"] == "stellars"
@@ -96,7 +96,7 @@ ORIGIN = "https://jupyterhub.lab.stellars-tech.eu"
 
 
 def test_recorded_setup_provisions_and_saves(replay_cf, config_home):
-    out = cli.cloudflare_setup("REDACTED_API_TOKEN", ACCOUNT_ID, HOSTNAME, ORIGIN)
+    out = tunnel.cloudflare_setup("REDACTED_API_TOKEN", ACCOUNT_ID, HOSTNAME, ORIGIN)
     assert out["tunnel_id"] == TUNNEL_ID
     assert out["hostname"] == HOSTNAME
     assert out["public_base_url"] == "https://" + HOSTNAME
@@ -127,7 +127,7 @@ def test_recorded_setup_provisions_and_saves(replay_cf, config_home):
         m == "PUT" and e.startswith(f"zones/{ZONE_ID}/dns_records/")
         for m, e, b in replay_cf
     )
-    cfg = json.loads(cli.config_path().read_text())
+    cfg = json.loads(tunnel.config_path().read_text())
     assert cfg["cloudflare_tunnel_id"] == TUNNEL_ID
     assert cfg["cloudflare_hostname"] == HOSTNAME
     assert cfg["cloudflare_tunnel_token"] == "REDACTED_TUNNEL_TOKEN"
@@ -137,7 +137,7 @@ def test_recorded_setup_provisions_and_saves(replay_cf, config_home):
 def test_recorded_setup_reuses_existing_tunnel(replay_cf, config_home):
     """The recording lists the live `share-files` tunnel - setup must reuse it
     and never POST a second one (only the verify probe creates)."""
-    cli.cloudflare_setup("REDACTED_API_TOKEN", ACCOUNT_ID, HOSTNAME, ORIGIN)
+    tunnel.cloudflare_setup("REDACTED_API_TOKEN", ACCOUNT_ID, HOSTNAME, ORIGIN)
     creates = [
         b
         for m, e, b in replay_cf

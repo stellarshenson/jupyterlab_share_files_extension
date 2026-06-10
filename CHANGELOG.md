@@ -2,6 +2,25 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.19] - 2026-06-10
+
+Reset from the link dialog, icon colour, own-link TLS fix.
+
+### Added
+
+- "Reset Cloudflare sharing settings" link at the bottom of the share-link popup (shown while a tunnel is configured): closes the popup and runs the same reset as `cloudflare reset` via the new `POST api/tunnel/reset` - credentials, tunnel state and base URLs cleared, Cloudflare-side resources kept; the cloud icon returns to its "click to set up" state
+
+### Changed
+
+- ALL tunnel/Cloudflare behaviour centralised in the new `tunnel` library module - the CLI (`cloudflare` subcommands) and the HTTP API (`api/tunnel*`) are thin dispatchers into it (one implementation, two frontends; new shared entry points `tunnel_start`/`tunnel_stop`/`set_tunnel_autostart`/`tunnel_state`/`tunnel_info`/`validate_config`)
+- Dashed cloud silhouette uses the same colour as the other header icons (was too faint) - the dash and missing fill alone signal the off/unconfigured state
+
+### Fixed
+
+- Link reachability check no longer fails with "TLS verification failed" behind a self-signed hub certificate: the probed URL is the server's own, so the probe skips certificate validation - the question is reachability, not trust
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.15] - 2026-06-10
 
 Cloudflare sharing configurable straight from the panel.
@@ -15,8 +34,6 @@ Cloudflare sharing configurable straight from the panel.
 ### Changed
 
 - CLI setup sequence refactored into `setup_and_start()`, shared verbatim by `cloudflare setup` and the popup endpoint (including the daemon-restart-on-token-change behaviour)
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.13] - 2026-06-10
 

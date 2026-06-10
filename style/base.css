@@ -94,8 +94,9 @@
   padding: 0 3px;
   cursor: pointer;
 
-  /* tunnel off - dim dashed silhouette, links are private */
-  color: var(--jp-ui-font-color3);
+  /* tunnel off / not configured - dashed no-fill silhouette; same colour
+     as the other header icons (the dash + no fill carry the meaning) */
+  color: var(--jp-ui-font-color2);
 }
 
 .jp-ShareFilesPanel-cloudIndicator.jp-mod-active {

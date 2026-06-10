@@ -112,6 +112,14 @@ export function setupTunnel(
   return requestAPI('api/tunnel/setup', s, jsonBody(body));
 }
 
+/** Reset Cloudflare sharing - same as `cloudflare reset`: credentials,
+ * tunnel state and base URLs cleared; Cloudflare-side resources kept. */
+export function resetTunnel(
+  s: ServerConnection.ISettings
+): Promise<ITunnelState & { reset: string[] }> {
+  return requestAPI('api/tunnel/reset', s, jsonBody({}));
+}
+
 export interface ILinkCheck {
   link: string;
   reachable: boolean;

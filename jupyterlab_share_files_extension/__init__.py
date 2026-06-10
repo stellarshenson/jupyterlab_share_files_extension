@@ -42,25 +42,7 @@ def _load_jupyter_server_extension(server_app):
     workspace_root = server_app.web_app.settings.get("server_root_dir", "")
     resolved = resolve_shares_dir(workspace_root, config.shares_dir)
     server_app.log.info(f"Registered {name} server extension (shares_dir={resolved})")
-    # Cloudflare sharing configured -> the extension guarantees the connector
-    # runs (cloudflare setup wrote the tunnel token), unless autostart was
-    # switched off (Settings -> Share Files, or api/tunnel). With autostart
-    # off the tunnel starts inactive so generated links stay private instead
-    # of carrying a public host the tunnel can't serve. Failure after the
-    # configured retries is logged as an error; success as info.
-    from .cli import _load_config, _save_config, ensure_connector
-    cfg = _load_config()
-    if cfg.get("cloudflare_tunnel_token"):
-        if cfg.get("tunnel_autostart", True):
-            if not cfg.get("tunnel_active", True):
-                cfg["tunnel_active"] = True
-                _save_config(cfg)
-            ensure_connector(config.cloudflared_retries, server_app.log)
-        else:
-            if cfg.get("tunnel_active", True):
-                cfg["tunnel_active"] = False
-                _save_config(cfg)
-            server_app.log.info(
-                "cloudflared connector autostart disabled - links stay private "
-                "(toggle the cloud icon or api/tunnel to go public)"
-            )
+    # Cloudflare sharing: honour the autostart preference (all behaviour
+    # lives in the tunnel library module, shared with the CLI and api/tunnel)
+    from .tunnel import apply_autostart
+    apply_autostart(config.cloudflared_retries, server_app.log)

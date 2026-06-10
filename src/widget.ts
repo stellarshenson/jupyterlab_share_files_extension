@@ -33,6 +33,7 @@ import {
   removeConnection,
   removeRequestUpload,
   removeShareItems,
+  resetTunnel,
   saveFromConnection,
   setTunnel,
   setupTunnel,
@@ -2381,11 +2382,62 @@ export class ShareFilesPanel extends Widget {
       input.select();
     }, 50);
 
-    await showDialog({
+    const dialog = new Dialog({
       title: 'Share link',
       body: widget,
       buttons: [Dialog.okButton({ label: 'Close' })]
     });
+
+    // Bottom escape hatch: reset Cloudflare sharing (same as `cloudflare
+    // reset`) - closes this popup, clears credentials and base URLs; links
+    // revert to the private address and the cloud icon goes back to its
+    // "click to set up" state.
+    if (this._state.info?.tunnel_configured) {
+      const reset = document.createElement('a');
+      reset.textContent = 'Reset Cloudflare sharing settings';
+      reset.href = '#';
+      reset.style.cssText =
+        'align-self: center;' +
+        ' margin-top: 4px;' +
+        ' font-size: var(--jp-ui-font-size0);' +
+        ' color: var(--jp-ui-font-color2);' +
+        ' text-decoration: underline;' +
+        ' cursor: pointer;';
+      reset.addEventListener('mouseenter', () => {
+        reset.style.color = 'var(--jp-error-color1)';
+      });
+      reset.addEventListener('mouseleave', () => {
+        reset.style.color = 'var(--jp-ui-font-color2)';
+      });
+      reset.addEventListener('click', evt => {
+        evt.preventDefault();
+        dialog.resolve(0);
+        void resetTunnel(this._serverSettings)
+          .then(state => {
+            if (this._state.info) {
+              this._state.info = { ...this._state.info, ...state };
+            }
+            Notification.info(
+              'Cloudflare sharing reset - links use the private address. ' +
+                'Click the cloud icon to configure again.',
+              { autoClose: 6000 }
+            );
+          })
+          .catch((err: any) => {
+            Notification.error(
+              `Cloudflare reset failed: ${err?.message || err}`,
+              { autoClose: 8000 }
+            );
+          })
+          .then(() => {
+            this._updateCloudIndicator();
+            return this.refresh();
+          });
+      });
+      wrap.appendChild(reset);
+    }
+
+    await dialog.launch();
   }
 
   private _detectNewUploads(): void {
