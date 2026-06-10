@@ -1,0 +1,199 @@
+<!--
+  sharing-flow.svg - JupyterLab Share Files extension README hero diagram
+  Shows: left-to-right flow - Owner's JupyterLab (Share Files panel: Shares + Requests)
+    to Shareable link (capability URL, optional password) to two delivery paths
+    (Hub-local same JupyterHub; Cloudflare Tunnel outbound connector / HTTPS edge)
+    converging on the Recipient web page (download / upload).
+  Intent: compact top-of-README overview of how files move from owner to recipient.
+  Theme: default Stellars-derived neutral swatch. accent-1 #0096d1 (spine + hub path),
+    accent-2 #c47a2a (Cloudflare path). Own card + panel fills + 1px strokes give
+    legibility on BOTH GitHub light and dark backgrounds (transparent page bg).
+  Card shape: flat top, rounded bottom r=3; accent bar h=5 opacity 0.6.
+-->
+<!-- === GRID ===
+  viewBox: 800 x 230
+  Background panel: x=8 y=8 w=784 h=214 r=8 (own fill, dual-bg legibility)
+  Outer card margin: 20 left, 20 right; main card band y=56..176 (h=120)
+  Title row: y=34 (centred at x=400)
+
+  Columns (left-to-right flow):
+    A Owner's JupyterLab : x=20  y=56  w=170 h=120   (center 105,116)
+    B Shareable link     : x=250 y=56  w=150 h=120   (center 325,116)
+    Path-top Hub-local   : x=450 y=56  w=160 h=54    (center 530,83)
+    Path-bottom CF Tunnel: x=450 y=122 w=160 h=54    (center 530,149)
+    D Recipient          : x=670 y=56  w=110 h=120   (center 725,116)
+
+  Card shape: flat top, rounded bottom r=3; accent bar h=5 opacity 0.6 flush top.
+  Vertical rhythm inside cards (14px): title +20 from accent-bar bottom, desc lines +14.
+
+  Connector routes (direction forward, standoff 2; all leave/arrive horizontally):
+    C1 A to B  straight   : M192,116 L238,116 ; head 248,116
+    C2 B to Hub l-chamfer : M402,112 H418 up via x=422 to y=83 H438 ; head 448,83
+    C3 B to CF  l-chamfer : M402,120 H418 down via x=422 to y=149 H438 ; head 448,149
+    C4 Hub to D l-chamfer : M612,83 H630 down via x=634 to y=110 H658 ; head 668,110
+    C5 CF to D  l-chamfer : M612,149 H630 up via x=634 to y=122 H658 ; head 668,122
+    C4 and C5 arrive at D's left edge at separate y (110 / 122) - no stacked heads.
+  Colour coding: spine A to B to D plus Hub path = accent-1; Cloudflare path = accent-2.
+=== -->
+
+<!-- === LAYOUT TOPOLOGY ===
+  Top-level Z-order layers (these are the groups the alignment checker resolves):
+    z-order: background, nodes, connectors, content
+    overlay: content text sits on the nodes cards (same x-extent per card)
+
+  Nested card relationships (described; cards live inside the nodes/content layers):
+    flow: card-owner, card-link, [card-hublocal over card-cloudflare], card-recipient
+    cards-top-aligned(y=56): card-owner, card-link, card-hublocal, card-recipient
+    paths-stacked: card-hublocal (y=56) above card-cloudflare (y=122)
+    label-on-card: label-owner on card-owner; label-link on card-link;
+      label-hublocal on card-hublocal; label-cloudflare on card-cloudflare;
+      label-recipient on card-recipient
+    connect: card-owner to card-link (straight, accent-1, forward)
+    connect: card-link to card-hublocal (l-chamfer, accent-1, forward)
+    connect: card-link to card-cloudflare (l-chamfer, accent-2, forward)
+    connect: card-hublocal to card-recipient (l-chamfer, accent-1, forward)
+    connect: card-cloudflare to card-recipient (l-chamfer, accent-2, forward)
+    merge: hub-local + cloudflare paths both arrive at card-recipient
+=== -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 230">
+  <style>
+    .fg-1 { fill: #1a5a6e; }
+    .fg-2 { fill: #24697e; }
+    .fg-3 { fill: #236a74; }
+    .panel { fill: #cfe0e6; stroke: #4f7785; }
+    .card-1 { fill: #d7eaf2; stroke: #0a6f97; }
+    .card-2 { fill: #f1e2cf; stroke: #a25f1e; }
+    .bar-1 { fill: #0096d1; }
+    .bar-2 { fill: #c47a2a; }
+    .arrow-stroke-1 { stroke: #0a7fb0; }
+    .arrow-fill-1 { fill: #0a7fb0; }
+    .arrow-stroke-2 { stroke: #b56a1f; }
+    .arrow-fill-2 { fill: #b56a1f; }
+    @media (prefers-color-scheme: dark) {
+      .fg-1 { fill: #b8e4f0; }
+      .fg-2 { fill: #8fd4e6; }
+      .fg-3 { fill: #6cc0d6; }
+      .panel { fill: #243c44; stroke: #6f97a5; }
+      .card-1 { fill: #14323d; stroke: #5cc8e0; }
+      .card-2 { fill: #34291b; stroke: #d4a04a; }
+      .bar-1 { fill: #4bb4d8; }
+      .bar-2 { fill: #d4a04a; }
+      .arrow-stroke-1 { stroke: #6fc6e2; }
+      .arrow-fill-1 { fill: #6fc6e2; }
+      .arrow-stroke-2 { stroke: #d4a04a; }
+      .arrow-fill-2 { fill: #d4a04a; }
+    }
+  </style>
+
+  <g id="guide-grid" display="none">
+    <line x1="0" y1="0" x2="800" y2="0" stroke="red" stroke-width="0.5"/>
+    <line x1="400" y1="0" x2="400" y2="230" stroke="red" stroke-width="0.5"/>
+    <line x1="0" y1="115" x2="800" y2="115" stroke="red" stroke-width="0.5"/>
+    <line x1="200" y1="0" x2="200" y2="230" stroke="red" stroke-width="0.5"/>
+    <line x1="600" y1="0" x2="600" y2="230" stroke="red" stroke-width="0.5"/>
+  </g>
+
+  <!-- ===== LAYER: background ===== -->
+  <g id="background">
+    <rect x="0" y="0" width="800" height="230" fill="transparent"/>
+    <path d="M8.0,8.0 H792.0 V214.0 Q792.0,222.0 784.0,222.0 H16.0 Q8.0,222.0 8.0,214.0 Z" class="panel" fill-opacity="0.5" stroke-width="1.2"/>
+  </g>
+
+  <!-- ===== LAYER: nodes (cards) ===== -->
+  <g id="nodes">
+    <!-- A: Owner's JupyterLab -->
+    <g id="card-owner">
+      <path d="M20.0,56.0 H190.0 V173.0 Q190.0,176.0 187.0,176.0 H23.0 Q20.0,176.0 20.0,173.0 Z" class="card-1" fill-opacity="0.9" stroke-width="1.5"/>
+      <rect x="20" y="56" width="170" height="5" class="bar-1" opacity="0.6"/>
+    </g>
+
+    <!-- B: Shareable link -->
+    <g id="card-link">
+      <path d="M250.0,56.0 H400.0 V173.0 Q400.0,176.0 397.0,176.0 H253.0 Q250.0,176.0 250.0,173.0 Z" class="card-1" fill-opacity="0.9" stroke-width="1.5"/>
+      <rect x="250" y="56" width="150" height="5" class="bar-1" opacity="0.6"/>
+    </g>
+
+    <!-- Path-top: Hub-local -->
+    <g id="card-hublocal">
+      <path d="M450.0,56.0 H610.0 V107.0 Q610.0,110.0 607.0,110.0 H453.0 Q450.0,110.0 450.0,107.0 Z" class="card-1" fill-opacity="0.9" stroke-width="1.5"/>
+      <rect x="450" y="56" width="160" height="5" class="bar-1" opacity="0.6"/>
+    </g>
+
+    <!-- Path-bottom: Cloudflare Tunnel -->
+    <g id="card-cloudflare">
+      <path d="M450.0,122.0 H610.0 V173.0 Q610.0,176.0 607.0,176.0 H453.0 Q450.0,176.0 450.0,173.0 Z" class="card-2" fill-opacity="0.9" stroke-width="1.5"/>
+      <rect x="450" y="122" width="160" height="5" class="bar-2" opacity="0.6"/>
+    </g>
+
+    <!-- D: Recipient -->
+    <g id="card-recipient">
+      <path d="M670.0,56.0 H780.0 V173.0 Q780.0,176.0 777.0,176.0 H673.0 Q670.0,176.0 670.0,173.0 Z" class="card-1" fill-opacity="0.9" stroke-width="1.5"/>
+      <rect x="670" y="56" width="110" height="5" class="bar-1" opacity="0.6"/>
+    </g>
+  </g>
+
+  <!-- ===== LAYER: connectors ===== -->
+  <g id="connectors">
+    <!-- C1: A -> B (straight) -->
+    <path d="M192.00,116.00 L238.00,116.00" fill="none" class="arrow-stroke-1" stroke-width="1.4" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="248.00,116.00 238.00,111.00 238.00,121.00" class="arrow-fill-1" opacity="0.75"/>
+
+    <!-- C2: B -> Hub-local (leaves B east, chamfers up) -->
+    <path d="M402.00,112.00 L418.00,112.00 L422.00,108.00 L422.00,87.00 L426.00,83.00 L438.00,83.00" fill="none" class="arrow-stroke-1" stroke-width="1.4" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="448.00,83.00 438.00,78.00 438.00,88.00" class="arrow-fill-1" opacity="0.75"/>
+
+    <!-- C3: B -> Cloudflare (leaves B east, chamfers down) -->
+    <path d="M402.00,120.00 L418.00,120.00 L422.00,124.00 L422.00,145.00 L426.00,149.00 L438.00,149.00" fill="none" class="arrow-stroke-2" stroke-width="1.4" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="448.00,149.00 438.00,144.00 438.00,154.00" class="arrow-fill-2" opacity="0.75"/>
+
+    <!-- C4: Hub-local -> D (leaves east, arrives D at y=110) -->
+    <path d="M612.00,83.00 L630.00,83.00 L634.00,87.00 L634.00,106.00 L638.00,110.00 L658.00,110.00" fill="none" class="arrow-stroke-1" stroke-width="1.4" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="668.00,110.00 658.00,105.00 658.00,115.00" class="arrow-fill-1" opacity="0.75"/>
+
+    <!-- C5: Cloudflare -> D (leaves east, arrives D at y=122) -->
+    <path d="M612.00,149.00 L630.00,149.00 L634.00,145.00 L634.00,126.00 L638.00,122.00 L658.00,122.00" fill="none" class="arrow-stroke-2" stroke-width="1.4" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="668.00,122.00 658.00,117.00 658.00,127.00" class="arrow-fill-2" opacity="0.75"/>
+  </g>
+
+  <!-- ===== LAYER: content (text labels) ===== -->
+  <g id="content">
+    <!-- Title -->
+    <text x="400" y="34" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" class="fg-1" text-anchor="middle" letter-spacing="0.6">Share Files &#8212; sharing flow</text>
+
+    <!-- A: Owner's JupyterLab -->
+    <g id="label-owner">
+      <text x="105" y="86" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" font-weight="700" class="fg-1" text-anchor="middle">Owner's JupyterLab</text>
+      <text x="34" y="120" font-family="Segoe UI, Arial, sans-serif" font-size="9" class="fg-2">Share Files panel</text>
+      <text x="34" y="138" font-family="Segoe UI, Arial, sans-serif" font-size="9" class="fg-3">&#8226; Shares &#8212; send files</text>
+      <text x="34" y="154" font-family="Segoe UI, Arial, sans-serif" font-size="9" class="fg-3">&#8226; Requests &#8212; receive files</text>
+    </g>
+
+    <!-- B: Shareable link -->
+    <g id="label-link">
+      <text x="325" y="86" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" font-weight="700" class="fg-1" text-anchor="middle">Shareable link</text>
+      <text x="266" y="120" font-family="Segoe UI, Arial, sans-serif" font-size="9" class="fg-2">Capability URL</text>
+      <text x="266" y="138" font-family="Segoe UI, Arial, sans-serif" font-size="9" class="fg-3">&#8226; Unguessable token</text>
+      <text x="266" y="154" font-family="Segoe UI, Arial, sans-serif" font-size="9" class="fg-3">&#8226; Optional password</text>
+    </g>
+
+    <!-- Path-top: Hub-local -->
+    <g id="label-hublocal">
+      <text x="461" y="80" font-family="Segoe UI, Arial, sans-serif" font-size="10.5" font-weight="700" class="fg-1">Hub-local</text>
+      <text x="461" y="98" font-family="Segoe UI, Arial, sans-serif" font-size="8.5" class="fg-3">Same JupyterHub</text>
+    </g>
+
+    <!-- Path-bottom: Cloudflare Tunnel -->
+    <g id="label-cloudflare">
+      <text x="461" y="144" font-family="Segoe UI, Arial, sans-serif" font-size="10.5" font-weight="700" class="fg-1">Cloudflare Tunnel</text>
+      <text x="461" y="161" font-family="Segoe UI, Arial, sans-serif" font-size="8.5" class="fg-3">Outbound connector &#8226; HTTPS edge</text>
+    </g>
+
+    <!-- D: Recipient -->
+    <g id="label-recipient">
+      <text x="725" y="86" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" font-weight="700" class="fg-1" text-anchor="middle">Recipient</text>
+      <text x="725" y="116" font-family="Segoe UI, Arial, sans-serif" font-size="9" class="fg-2" text-anchor="middle">Web page</text>
+      <text x="725" y="134" font-family="Segoe UI, Arial, sans-serif" font-size="9" class="fg-3" text-anchor="middle">&#8595; download</text>
+      <text x="725" y="150" font-family="Segoe UI, Arial, sans-serif" font-size="9" class="fg-3" text-anchor="middle">&#8593; upload</text>
+    </g>
+  </g>
+</svg>

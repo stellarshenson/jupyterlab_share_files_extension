@@ -2,6 +2,23 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.24] - 2026-06-10
+
+Standalone page themes, dialog polish, README diagram and screenshots.
+
+### Added
+
+- Standalone share/request page: light and dark themes with a Light / Dark / Auto switch - Auto (default) follows the system `prefers-color-scheme`, the choice persists in a cookie and applies before first paint
+- README sharing-flow diagram (`.resources/sharing-flow.svg`, legible on GitHub light and dark) and screenshots of the panel, create-share dialog and standalone pages
+
+### Changed
+
+- "Generate" password button sized compactly so it no longer gets cropped in the create/change-password dialogs
+- Link dialog shows the password directly below the link (was between the copied-confirmation and reachability lines)
+- README rewritten in terse technical-documentation style - overview sentences plus factual bullets; screenshots before the feature list, flow diagram after it
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.22] - 2026-06-10
 
 Tunnel autostart off by default, comprehensive validate.
@@ -13,8 +30,6 @@ Tunnel autostart off by default, comprehensive validate.
 ### Changed
 
 - `tunnelAutostart` defaults to OFF (was on) - a freshly started server never exposes links publicly without an explicit action; the tunnel comes up via the cloud icon, `cloudflare start`, or `cloudflare setup` itself
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.20] - 2026-06-10
 

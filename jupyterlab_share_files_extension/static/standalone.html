@@ -5,12 +5,53 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Share Files</title>
 <style>
+  :root {
+    --bg: #f5f7fa;
+    --fg: #1f2937;
+    --muted: #6b7280;
+    --faint: #9ca3af;
+    --panel: #ffffff;
+    --border: #e5e7eb;
+    --border-soft: #f3f4f6;
+    --input-border: #d1d5db;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --accent-disabled: #93c5fd;
+    --secondary-bg: #e5e7eb;
+    --secondary-hover: #d1d5db;
+    --drop-over-bg: #eff6ff;
+    --ok-bg: #d1fae5;
+    --ok-fg: #065f46;
+    --err-bg: #fee2e2;
+    --err-fg: #991b1b;
+  }
+  html[data-theme="dark"] {
+    --bg: #111827;
+    --fg: #e5e7eb;
+    --muted: #9ca3af;
+    --faint: #6b7280;
+    --panel: #1f2937;
+    --border: #374151;
+    --border-soft: #283242;
+    --input-border: #4b5563;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --accent-disabled: #1e3a8a;
+    --secondary-bg: #374151;
+    --secondary-hover: #4b5563;
+    --drop-over-bg: #1e3a5f;
+    --ok-bg: #064e3b;
+    --ok-fg: #6ee7b7;
+    --err-bg: #7f1d1d;
+    --err-fg: #fecaca;
+    color-scheme: dark;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
-    background: #f5f7fa;
-    color: #1f2937;
+    background: var(--bg);
+    color: var(--fg);
     min-height: 100vh;
   }
   main {
@@ -20,6 +61,7 @@
   }
   header {
     margin-bottom: 24px;
+    position: relative;
   }
   h1 {
     margin: 0 0 4px;
@@ -28,12 +70,34 @@
   }
   .meta {
     margin: 0;
-    color: #6b7280;
+    color: var(--muted);
     font-size: 14px;
   }
+  .theme-switch {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .theme-switch button {
+    background: var(--panel);
+    color: var(--muted);
+    border: none;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .theme-switch button + button { border-left: 1px solid var(--border); }
+  .theme-switch button.active {
+    background: var(--accent);
+    color: white;
+  }
   .panel {
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
+    background: var(--panel);
+    border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
   }
@@ -41,7 +105,7 @@
     display: flex;
     align-items: center;
     padding: 12px 16px;
-    border-bottom: 1px solid #f3f4f6;
+    border-bottom: 1px solid var(--border-soft);
     font-size: 14px;
   }
   .row:last-child { border-bottom: none; }
@@ -52,7 +116,7 @@
     white-space: nowrap;
   }
   .row .size {
-    color: #9ca3af;
+    color: var(--faint);
     font-size: 12px;
     margin-right: 12px;
   }
@@ -62,7 +126,7 @@
     width: 16px;
     text-align: center;
     cursor: pointer;
-    color: #9ca3af;
+    color: var(--faint);
     user-select: none;
     margin-right: 4px;
   }
@@ -73,7 +137,7 @@
     flex-shrink: 0;
   }
   .btn {
-    background: #3b82f6;
+    background: var(--accent);
     color: white;
     border: none;
     padding: 8px 16px;
@@ -83,30 +147,30 @@
     font-weight: 500;
     transition: background 0.15s;
   }
-  .btn:hover { background: #2563eb; }
-  .btn:disabled { background: #93c5fd; cursor: not-allowed; }
-  .btn.secondary { background: #e5e7eb; color: #1f2937; }
-  .btn.secondary:hover { background: #d1d5db; }
+  .btn:hover { background: var(--accent-hover); }
+  .btn:disabled { background: var(--accent-disabled); cursor: not-allowed; }
+  .btn.secondary { background: var(--secondary-bg); color: var(--fg); }
+  .btn.secondary:hover { background: var(--secondary-hover); }
   .actions {
     margin-top: 16px;
     display: flex;
     gap: 8px;
   }
   .dropzone {
-    border: 2px dashed #d1d5db;
+    border: 2px dashed var(--input-border);
     border-radius: 8px;
     padding: 48px 24px;
     text-align: center;
-    background: #ffffff;
+    background: var(--panel);
     transition: all 0.15s;
   }
   .dropzone.drag-over {
-    border-color: #3b82f6;
-    background: #eff6ff;
+    border-color: var(--accent);
+    background: var(--drop-over-bg);
   }
   .dropzone p {
     margin: 0 0 12px;
-    color: #6b7280;
+    color: var(--muted);
     font-size: 15px;
   }
   .dropzone input[type=file] {
@@ -114,22 +178,22 @@
   }
   .progress {
     margin-top: 16px;
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
+    background: var(--panel);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 12px 16px;
     font-size: 13px;
   }
   .progress-bar {
     height: 6px;
-    background: #e5e7eb;
+    background: var(--secondary-bg);
     border-radius: 3px;
     overflow: hidden;
     margin-top: 8px;
   }
   .progress-bar > div {
     height: 100%;
-    background: #3b82f6;
+    background: var(--accent);
     transition: width 0.2s;
   }
   .status {
@@ -138,21 +202,45 @@
     border-radius: 6px;
     font-size: 14px;
   }
-  .status.ok { background: #d1fae5; color: #065f46; }
-  .status.err { background: #fee2e2; color: #991b1b; }
+  .status.ok { background: var(--ok-bg); color: var(--ok-fg); }
+  .status.err { background: var(--err-bg); color: var(--err-fg); }
   footer {
     margin-top: 32px;
     text-align: center;
-    color: #9ca3af;
+    color: var(--faint);
     font-size: 12px;
   }
   .empty {
     padding: 24px;
     text-align: center;
-    color: #9ca3af;
+    color: var(--faint);
     font-size: 14px;
   }
 </style>
+<script>
+  // Theme: light / dark / auto (system). Preference saved in a cookie;
+  // default is auto. Runs before first paint to avoid a flash.
+  (function() {
+    function readCookie() {
+      const m = document.cookie.match(/(?:^|;\s*)sf_theme=(light|dark|auto)/);
+      return m ? m[1] : 'auto';
+    }
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    function apply(pref) {
+      const resolved = pref === 'auto' ? (media.matches ? 'dark' : 'light') : pref;
+      document.documentElement.setAttribute('data-theme', resolved);
+    }
+    apply(readCookie());
+    media.addEventListener('change', function() {
+      apply(readCookie());
+    });
+    window.__sfSetTheme = function(pref) {
+      document.cookie = 'sf_theme=' + pref + '; path=/; max-age=31536000; SameSite=Lax';
+      apply(pref);
+    };
+    window.__sfGetTheme = readCookie;
+  })();
+</script>
 <script>
   window.__SHARE_FILES_CONTEXT__ = __CONTEXT__;
 </script>
@@ -160,6 +248,11 @@
 <body>
 <main>
   <header>
+    <div class="theme-switch" id="theme-switch">
+      <button type="button" data-pref="light">Light</button>
+      <button type="button" data-pref="dark">Dark</button>
+      <button type="button" data-pref="auto">Auto</button>
+    </div>
     <h1 id="title">Loading...</h1>
     <p class="meta" id="meta"></p>
   </header>
@@ -172,6 +265,20 @@
   const titleEl = document.getElementById('title');
   const metaEl = document.getElementById('meta');
   const contentEl = document.getElementById('content');
+
+  // Theme switch buttons - highlight the saved preference, save on click.
+  (function() {
+    const buttons = document.querySelectorAll('#theme-switch button');
+    function highlight() {
+      const pref = window.__sfGetTheme();
+      buttons.forEach(b => b.classList.toggle('active', b.dataset.pref === pref));
+    }
+    buttons.forEach(b => b.addEventListener('click', function() {
+      window.__sfSetTheme(b.dataset.pref);
+      highlight();
+    }));
+    highlight();
+  })();
 
   function fmtSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
@@ -218,7 +325,7 @@
     input.type = 'password';
     input.placeholder = 'Password';
     input.autocomplete = 'off';
-    input.style.cssText = 'flex:1;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;';
+    input.style.cssText = 'flex:1;padding:8px 12px;border:1px solid var(--input-border);border-radius:6px;font-size:14px;background:var(--panel);color:var(--fg);';
     const btn = document.createElement('button');
     btn.className = 'btn';
     btn.textContent = 'Unlock';
@@ -342,11 +449,11 @@
 
     const uploaderRow = document.createElement('div');
     uploaderRow.style.marginBottom = '12px';
-    uploaderRow.innerHTML = '<label style="font-size:13px;color:#6b7280;display:block;margin-bottom:4px;">Your name (optional)</label>';
+    uploaderRow.innerHTML = '<label style="font-size:13px;color:var(--muted);display:block;margin-bottom:4px;">Your name (optional)</label>';
     const uploaderInput = document.createElement('input');
     uploaderInput.type = 'text';
     uploaderInput.placeholder = 'anonymous';
-    uploaderInput.style.cssText = 'width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;';
+    uploaderInput.style.cssText = 'width:100%;padding:8px 12px;border:1px solid var(--input-border);border-radius:6px;font-size:14px;background:var(--panel);color:var(--fg);';
     uploaderRow.appendChild(uploaderInput);
     wrap.appendChild(uploaderRow);
 

@@ -8,7 +8,23 @@
 [![Brought To You By KOLOMOLO](https://img.shields.io/badge/Brought%20To%20You%20By-KOLOMOLO-00ffff?style=flat)](https://kolomolo.com)
 [![Donate PayPal](https://img.shields.io/badge/Donate-PayPal-blue?style=flat)](https://www.paypal.com/donate/?hosted_button_id=B4KPBJDLLXTSA)
 
-Peer-to-peer file sharing for JupyterLab. Create a **share** (file drop) or **request** (inbox) from a side panel, copy the link, paste it in chat - recipients open it in their own JupyterLab panel or any plain browser.
+Peer-to-peer file sharing for JupyterLab. Create a **share** (file drop) or **request** (inbox) from a side panel, copy the link - recipients open it in their own JupyterLab panel or any plain browser.
+
+## Screenshots
+
+The Share Files panel and the create-share dialog with optional password:
+
+| Side panel                                            | New share with password                                         |
+| ----------------------------------------------------- | --------------------------------------------------------------- |
+| ![Share Files panel](.resources/jupyterlab-panel.png) | ![Create new share dialog](.resources/jupyterlab-new-share.png) |
+
+The standalone page recipients see in any browser - download view, upload view (dark theme), password gate. System theme by default, Light / Dark / Auto switch:
+
+![Share page](.resources/page-share-light.png)
+
+![Request page, dark theme](.resources/page-request-dark.png)
+
+![Password gate](.resources/page-password-gate.png)
 
 ## Features
 
@@ -19,18 +35,20 @@ Peer-to-peer file sharing for JupyterLab. Create a **share** (file drop) or **re
 - **Browse inside a share** - double-click a folder to drill in; the `..` row goes back up
 - **Open files directly** - double-click a file in the panel, JupyterLab opens it with the right viewer
 - **Copy/paste** between the panel and the file browser
-- **Right-click context menu** - in the file browser ("Share Files...") and on panel rows ("Copy to Current Folder", "Show in File Browser")
-- **Optional password protection** - set a password when creating a share or request (or later via right-click → Set Password); recipients must enter it before they can see or access anything. Generate a memorable passphrase (xkcdpass) with one click; the link dialog shows the password with its own copy button. Attempts are rate limited server-side
+- **Right-click context menu** - file browser ("Share Files...") and panel rows ("Copy to Current Folder", "Show in File Browser")
+- **Optional password protection** - set at creation or later (right-click → Set Password); recipients unlock before any access; one-click xkcdpass passphrase generation; link dialog shows the password with a copy button; attempts rate limited server-side
 - **Hidden files visible by default** - dotfiles like `.env`, `.gitignore` are shareable; toggle in Settings
-- **Standalone HTML page** - link works in any browser, no JupyterLab needed
+- **Standalone HTML page** - link works in any browser, no JupyterLab needed; Light / Dark / Auto theme
 - **QR code** in the share-link dialog for scanning from a phone
 - **Live upload notifications** when someone uploads to your request
 - **Self-connect guard** - pasting your own link shows a "you already own this" dialog
 - **Symlink-friendly** - sharing `@shared/...` and similar works
 - **Delete to trash** - panel deletes go to the OS trash by default (`c.ShareFilesConfig.use_trash`)
 - **HTTPS-aware links** - share URLs follow the scheme the browser is on
-- **Cloudflare tunnel sharing** - optional: links carry a public Cloudflare hostname, usable outside your network; the cloud icon in the panel header shows the state, toggles public/private links, and opens a setup popup when nothing is configured yet ([docs/cloudflare_setup.md](docs/cloudflare_setup.md))
+- **Cloudflare tunnel sharing** - optional public links beyond your network; cloud icon in the panel header shows state, toggles public/private, opens setup when unconfigured ([docs/cloudflare_setup.md](docs/cloudflare_setup.md))
 - **Settings toggles** - shares, requests, hidden-file visibility, poll interval
+
+![Sharing flow](.resources/sharing-flow.svg)
 
 ## Requirements
 
@@ -63,24 +81,20 @@ c.ShareFilesConfig.password_max_attempts_per_minute = 30   # default: 30
 c.ShareFilesConfig.password_attempt_cooldown_seconds = 1   # default: 1
 ```
 
-- **`shares_dir`** - where shares/requests/connections are stored; relative paths resolve against the notebook root (the server's `root_dir`), created on demand<br>
-  Must resolve **inside** the notebook root - the extension refuses to start with a `StorageError` otherwise (shares outside the root are unreachable from the file browser and Contents API)
+- **`shares_dir`** - storage for shares/requests/connections; relative paths resolve against the notebook root, created on demand; must resolve **inside** the notebook root or the extension refuses to start with a `StorageError`
 - **`use_trash`** - `False` deletes permanently instead of moving to the OS trash
-- **`verify_peer_tls`** - set `False` when peers (e.g. a JupyterHub) use a self-signed certificate; server-side saves/uploads to such peers otherwise fail with a 502
-- **`password_max_attempts_per_minute`** / **`password_attempt_cooldown_seconds`** - rate limiting of password attempts against a protected share/request (per resource, via the `limits` library). Defaults are deliberately generous (30/minute, 1s between attempts); lower the cap or raise the cooldown to harden against brute force
-- **`pollIntervalSeconds`** - panel refresh interval, in Settings Editor under **Share Files** (default 15, minimum 2); one tick refreshes all shares, requests and connections
-- **`tunnelAutostart`** - Settings Editor under **Share Files** (default off); bring the Cloudflare tunnel up at server startup when one is configured - off, the server starts with private links and the cloud icon switches the tunnel on demand
+- **`verify_peer_tls`** - set `False` for peers with self-signed certificates; otherwise server-side saves/uploads to them fail with a 502
+- **`password_max_attempts_per_minute`** / **`password_attempt_cooldown_seconds`** - per-resource rate limiting of password attempts (`limits` library); generous defaults (30/minute, 1s); lower the cap or raise the cooldown to harden
+- **`pollIntervalSeconds`** - panel refresh interval, Settings Editor → Share Files (default 15, minimum 2)
+- **`tunnelAutostart`** - Settings Editor → Share Files (default off); bring the Cloudflare tunnel up at server startup - off, the server starts with private links and the cloud icon switches the tunnel on demand
 
 ## CLI
 
-`jupyterlab_share_files` - the panel's operations as subcommands. A thin client over the same authenticated HTTP API the panel uses, acting as one user via that user's Jupyter/JupyterHub token; scripts and AI agents drive the extension with it. Output is human-readable by default; `--json` switches to machine-readable JSON.
+`jupyterlab_share_files` - the panel's operations as subcommands; a thin client over the same authenticated HTTP API, for scripts and AI agents. Human-readable output by default, `--json` for machine-readable.
 
-Environment variables:
-
-- **`SHARE_FILES_BASE_URL`** - base URL of the Jupyter server running the extension<br>
-  On JupyterHub this **must be the public user URL** (e.g. `https://hub.example.com/user/<name>/`) so generated links carry the public host; falls back to `JUPYTER_SERVER_URL` (internal on JupyterHub - links would not be shareable)
-- **`SHARE_FILES_TOKEN`** - Jupyter or JupyterHub API token; falls back to `JUPYTERHUB_API_TOKEN` / `JUPYTER_TOKEN`
-- **`SHARE_FILES_INSECURE`** - `1` skips TLS verification (self-signed hub certificates); off by default
+- **`SHARE_FILES_BASE_URL`** - base URL of the Jupyter server; on JupyterHub this **must be the public user URL** (e.g. `https://hub.example.com/user/<name>/`) so links carry the public host; falls back to `JUPYTER_SERVER_URL`
+- **`SHARE_FILES_TOKEN`** - Jupyter/JupyterHub API token; falls back to `JUPYTERHUB_API_TOKEN` / `JUPYTER_TOKEN`
+- **`SHARE_FILES_INSECURE`** - `1` skips TLS verification (self-signed certificates); off by default
 
 ```bash
 jupyterlab_share_files list-items
@@ -99,26 +113,18 @@ jupyterlab_share_files list-request-uploads <id>
 
 ## Cloudflare tunnel sharing
 
-The `cloudflare` command exposes share/request links beyond the hub or local network through a Cloudflare tunnel. Cloudflare was chosen for security reasons: the tunnel is outbound-only (no inbound port is opened on your network), traffic terminates at the Cloudflare edge with enforced HTTPS, and path-restricted ingress means only the extension's `/public/...` endpoints are routable - the hub login, authenticated APIs and the rest of the private network answer 404 at the edge before any packet reaches your server. Six orthogonal subcommands cover the lifecycle; `cloudflare --help` carries the full reference with examples. Policy and configuration guide: [docs/cloudflare_setup.md](docs/cloudflare_setup.md).
+The `cloudflare` command exposes share/request links beyond the hub or local network through a Cloudflare tunnel. Chosen for security: outbound-only connector (no inbound port), HTTPS enforced at the edge, and path-restricted ingress - only the extension's `/public/...` endpoints are routable; everything else answers 404 at the edge. Full guide: [docs/cloudflare_setup.md](docs/cloudflare_setup.md).
 
-- **`setup --token <T> --account-id <A> --hostname <H> --private-base-url <URL>`** - save credentials (chmod-600 config file) and provision end to end: create/reuse the user's own tunnel (named `share-files-<sluggified private base URL>` - deterministic, so repeated setups reuse it; unique per user/server on a shared account), route the hostname to the server URL, add a proxied CNAME, enforce HTTPS, save `public_base_url`, start the connector daemon<br>
-  `--private-base-url` is required - the URL the `cloudflared` connector reaches the server at; explicit, never inferred; must be `https` (error with guidance otherwise; `localhost` is fine if served over https)
-- **`validate`** - end-to-end check of the saved config: token validity (user-owned and account-owned `cfat_` tokens), bind capability (list tunnels), create capability - proven by creating a test tunnel and removing it - and that the `cloudflared` binary is reachable on PATH (the extension launches the connector itself; missing binary = the tunnel can never come up)
-- **`info`** - current configuration; tokens masked to their last 4 characters, account id in full, `private_base_url`/`public_base_url`, `tunnel_active`, `daemon_running` (cloudflared process) and `tunnel_status` (Cloudflare-side)
-- **`start`** / **`stop`** - switch between public links (tunnel active, daemon running) and private links (daemon stopped); credentials, tunnel and DNS kept, effective on the next request without a restart
-- **`reset`** - reset the saved token to none (clears account id, tunnel state, `public_base_url`); links revert to the local/hub address on the next request; Cloudflare-side resources untouched
-
-The connector daemon is guaranteed by the extension: at server startup (and after setup) it makes sure `cloudflared tunnel run` is running, retrying up to `c.ShareFilesConfig.cloudflared_retries` times (default 3); all attempts failing is logged as an error, success as info. Autostart is a user setting - Settings Editor → Share Files → "Start the Cloudflare tunnel automatically" (default off); the server starts with private links and the tunnel down until you switch it on via the cloud icon or `cloudflare start`.
-
-The cloud icon in the panel header (left of the filter icon) is always visible and shows/controls the state: green filled cloud = tunnel on, links public; dim dashed silhouette = tunnel off (or not configured), links private; blinking blue = connecting. Configured: clicking toggles between public and private links - same switch as `cloudflare start`/`stop`. Not configured: clicking opens a setup popup with the same inputs as `cloudflare setup` (token, account id, public hostname, private base URL), each with a hint where to take the value from.
-
-When a link is displayed (copy-link icon), the dialog checks reachability: the server probes its own public link (through the Cloudflare edge when active) and the dialog shows "Link is reachable" (green) or "not reachable" (red) - a frontend fetch would be blocked by CORS, so the probe runs server-side (`api/link-check`).
-
-How links change: the server reads `public_base_url` and the tunnel toggle per request (no restart needed) and rewrites only the scheme+host of generated links - the path stays auto-detected from the server's own base URL. Without Cloudflare config (or with the tunnel switched off), links keep the old behaviour (the host the browser is on).
-
-What is exposed: only the extension's unauthenticated `/public/...` endpoints pass through the tunnel; the hub login, authenticated API and the rest of the private network answer 404 at the Cloudflare edge. Plain `http` to the share hostname is 301-redirected to `https`.
-
-Token policies required: `Account → Cloudflare Tunnel → Edit` and zone-scoped `DNS → Edit` for the hostname's domain.
+- **`setup --token <T> --account-id <A> --hostname <H> --private-base-url <URL>`** - save credentials (chmod-600 config) and provision end to end: create/reuse the tunnel (deterministic name `share-files-<sluggified private base URL>`), route the hostname, add a proxied CNAME, enforce HTTPS, save `public_base_url`, start the connector; `--private-base-url` is required and must be `https`
+- **`validate`** - verify every component of the saved config: config completeness, URL sanity, token validity, tunnel existence/status/name on Cloudflare, proxied CNAME, ingress rule, `cloudflared` binary on PATH, daemon/toggle state
+- **`info`** - current configuration; tokens masked to last 4 characters, `tunnel_active`, `daemon_running`, Cloudflare-side `tunnel_status`
+- **`start`** / **`stop`** - switch between public links (daemon running) and private links; credentials, tunnel and DNS kept; effective on the next request, no restart
+- **`reset`** - clear the saved token and derived state; links revert to the local/hub address; Cloudflare-side resources untouched
+- **Connector supervision** - the extension keeps `cloudflared tunnel run` alive, retrying up to `c.ShareFilesConfig.cloudflared_retries` times (default 3); autostart is a user setting (default off)
+- **Cloud icon** - panel header, always visible: green filled = tunnel on (public links), dim dashed = off/unconfigured (private links), blinking blue = connecting; click toggles, or opens the setup popup when unconfigured
+- **Reachability check** - the link dialog probes the public link server-side (`api/link-check`; a frontend fetch would be blocked by CORS) and shows reachable/not reachable
+- **Link rewrite** - the server reads `public_base_url` and the toggle per request and rewrites only scheme+host; the path stays auto-detected; without config, links keep the browser's host
+- **Token policies required** - `Account → Cloudflare Tunnel → Edit` plus zone-scoped `DNS → Edit` for the hostname's domain
 
 ```bash
 jupyterlab_share_files cloudflare setup --token <api-token> --account-id <account-id> \
@@ -132,16 +138,16 @@ jupyterlab_share_files cloudflare reset
 
 ## Security
 
-- The link is the credential (40 bits of entropy); no expiry - share over trusted channels (Slack, email)
-- **Optional password** as a second factor: set it at creation or later (right-click → Set Password), recipients unlock before any access. The unlock token is bound to the password, so changing the password instantly locks out everyone who held the old one
-- **Brute-force protection**: password attempts are rate limited per resource (`limits` library, in-memory) - a per-minute cap plus a mandatory cooldown between attempts, both tunable in config (generous defaults: 30/minute, 1s)
-- HTTPS is inherited from your JupyterHub/Jupyter proxy
-- With Cloudflare sharing active, links are reachable from the whole internet - HTTPS only, and only the `/public/...` capability endpoints; everything else stays unreachable (a security property of the tunnel design - see above)
-- The `cloudflared` connector receives its token via the `TUNNEL_TOKEN` environment variable, never on the command line, so it cannot leak through `ps`/`/proc` on shared hosts
+- **The link is the credential** - 40 bits of entropy, no expiry; share over trusted channels
+- **Optional password** as a second factor - unlock token bound to the password, so changing it instantly locks out everyone holding the old one
+- **Brute-force protection** - per-resource rate limiting (`limits` library, in-memory): per-minute cap plus mandatory cooldown, both tunable (defaults 30/minute, 1s)
+- **HTTPS** inherited from your JupyterHub/Jupyter proxy
+- **Cloudflare exposure** is HTTPS-only and limited to the `/public/...` capability endpoints; the hub login, authenticated APIs and the private network stay unreachable
+- **Connector token** passed via the `TUNNEL_TOKEN` environment variable, never on the command line - cannot leak through `ps`/`/proc`
 
 ## Releases
 
-Versioned releases ship to [npm](https://www.npmjs.com/package/jupyterlab_share_files_extension) and [PyPI](https://pypi.org/project/jupyterlab-share-files-extension/) together, tagged `RELEASE_v<version>` and published on the [GitHub releases page](https://github.com/stellarshenson/jupyterlab_share_files_extension/releases). Every release delivers the complete feature set - the full list is in [RELEASE.md](RELEASE.md) (Delivered functionality); what changed per version: [CHANGELOG.md](CHANGELOG.md).
+Versioned releases ship to [npm](https://www.npmjs.com/package/jupyterlab_share_files_extension) and [PyPI](https://pypi.org/project/jupyterlab-share-files-extension/) together, tagged `RELEASE_v<version>` on the [GitHub releases page](https://github.com/stellarshenson/jupyterlab_share_files_extension/releases). Full delivered feature list: [RELEASE.md](RELEASE.md); per-version changes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Uninstall
 

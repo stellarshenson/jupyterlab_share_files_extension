@@ -2336,6 +2336,11 @@ export class ShareFilesPanel extends Widget {
     gen.textContent = 'Generate';
     gen.title = 'Generate a memorable passphrase';
     gen.className = 'jp-Dialog-button jp-mod-styled';
+    // The dialog button class carries large padding/min-width that crops the
+    // button inside the flex row - force a compact size.
+    gen.style.cssText =
+      'flex: 0 0 auto; min-width: 0; height: auto;' +
+      ' padding: 2px 10px; font-size: var(--jp-ui-font-size1);';
     gen.addEventListener('click', evt => {
       evt.preventDefault();
       evt.stopPropagation();
@@ -2576,14 +2581,9 @@ export class ShareFilesPanel extends Widget {
             });
           });
           pwLine.appendChild(copyBtn);
-          // keep ordering: link, copied-status, password, reachability, QR -
-          // insert before the reachability line when it is already there
-          const reachEl = wrap.querySelector('[data-reach]');
-          if (reachEl) {
-            wrap.insertBefore(pwLine, reachEl);
-          } else {
-            wrap.appendChild(pwLine);
-          }
+          // ordering: link, password, copied-status, reachability, QR -
+          // the password sits directly below the link itself
+          wrap.insertBefore(pwLine, input.nextSibling);
         },
         () => {
           /* not the owner or gone - no password line */
