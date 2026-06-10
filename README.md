@@ -69,7 +69,7 @@ c.ShareFilesConfig.password_attempt_cooldown_seconds = 1   # default: 1
 - **`verify_peer_tls`** - set `False` when peers (e.g. a JupyterHub) use a self-signed certificate; server-side saves/uploads to such peers otherwise fail with a 502
 - **`password_max_attempts_per_minute`** / **`password_attempt_cooldown_seconds`** - rate limiting of password attempts against a protected share/request (per resource, via the `limits` library). Defaults are deliberately generous (30/minute, 1s between attempts); lower the cap or raise the cooldown to harden against brute force
 - **`pollIntervalSeconds`** - panel refresh interval, in Settings Editor under **Share Files** (default 15, minimum 2); one tick refreshes all shares, requests and connections
-- **`tunnelAutostart`** - Settings Editor under **Share Files** (default on); bring the Cloudflare tunnel up at server startup when one is configured
+- **`tunnelAutostart`** - Settings Editor under **Share Files** (default off); bring the Cloudflare tunnel up at server startup when one is configured - off, the server starts with private links and the cloud icon switches the tunnel on demand
 
 ## CLI
 
@@ -108,7 +108,7 @@ The `cloudflare` command exposes share/request links beyond the hub or local net
 - **`start`** / **`stop`** - switch between public links (tunnel active, daemon running) and private links (daemon stopped); credentials, tunnel and DNS kept, effective on the next request without a restart
 - **`reset`** - reset the saved token to none (clears account id, tunnel state, `public_base_url`); links revert to the local/hub address on the next request; Cloudflare-side resources untouched
 
-The connector daemon is guaranteed by the extension: at server startup (and after setup) it makes sure `cloudflared tunnel run` is running, retrying up to `c.ShareFilesConfig.cloudflared_retries` times (default 3); all attempts failing is logged as an error, success as info. Autostart is a user setting - Settings Editor → Share Files → "Start the Cloudflare tunnel automatically" (default on); switched off, the server starts with private links and the tunnel down.
+The connector daemon is guaranteed by the extension: at server startup (and after setup) it makes sure `cloudflared tunnel run` is running, retrying up to `c.ShareFilesConfig.cloudflared_retries` times (default 3); all attempts failing is logged as an error, success as info. Autostart is a user setting - Settings Editor → Share Files → "Start the Cloudflare tunnel automatically" (default off); the server starts with private links and the tunnel down until you switch it on via the cloud icon or `cloudflare start`.
 
 The cloud icon in the panel header (left of the filter icon) is always visible and shows/controls the state: green filled cloud = tunnel on, links public; dim dashed silhouette = tunnel off (or not configured), links private; blinking blue = connecting. Configured: clicking toggles between public and private links - same switch as `cloudflare start`/`stop`. Not configured: clicking opens a setup popup with the same inputs as `cloudflare setup` (token, account id, public hostname, private base URL), each with a hint where to take the value from.
 

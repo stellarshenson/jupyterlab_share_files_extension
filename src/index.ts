@@ -37,7 +37,7 @@ const DEFAULT_SETTINGS: IPluginSettings = {
   enableShares: true,
   enableRequests: true,
   showHiddenFiles: true,
-  tunnelAutostart: true,
+  tunnelAutostart: false,
   pollIntervalSeconds: 15
 };
 

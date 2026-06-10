@@ -2,6 +2,20 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.22] - 2026-06-10
+
+Tunnel autostart off by default, comprehensive validate.
+
+### Added
+
+- `cloudflare validate` now verifies every component the configuration carries instead of just the token: config completeness (missing keys named), private-URL https and public-URL/hostname match, tunnel existence/status/name on Cloudflare, the proxied CNAME routing the hostname to the tunnel, the path-restricted ingress rule, the `cloudflared` binary, and the local daemon/toggle/autostart state
+
+### Changed
+
+- `tunnelAutostart` defaults to OFF (was on) - a freshly started server never exposes links publicly without an explicit action; the tunnel comes up via the cloud icon, `cloudflare start`, or `cloudflare setup` itself
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.20] - 2026-06-10
 
 Optional password protection for shares and requests, brute-force rate limiting, connector-token hardening.
@@ -19,8 +33,6 @@ Optional password protection for shares and requests, brute-force rate limiting,
 
 - The `cloudflared` connector receives its token via the `TUNNEL_TOKEN` environment variable instead of the command line, so it can no longer leak through `ps` / `/proc/<pid>/cmdline` on shared hosts
 - Unlock tokens are HMAC-bound to the password and expire after 6 hours - changing the password instantly invalidates everyone who unlocked with the old one
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.19] - 2026-06-10
 

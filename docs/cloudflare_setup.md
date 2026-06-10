@@ -110,8 +110,9 @@ info. Daemon output goes to `/tmp/cloudflared-share-files.log`; `cloudflare
 info` shows both `daemon_running` and the Cloudflare-side `tunnel_status`.
 
 Autostart is a user setting: Settings Editor → Share Files → "Start the
-Cloudflare tunnel automatically" (default on). Switched off, the server
-starts with the tunnel inactive - links stay private until switched on.
+Cloudflare tunnel automatically" (default off). The server starts with the
+tunnel inactive - links stay private until switched on via the cloud icon
+or `cloudflare start`.
 
 ## Public/private toggle
 

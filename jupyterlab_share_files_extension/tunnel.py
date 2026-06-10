@@ -591,7 +591,7 @@ def tunnel_state() -> dict:
     return {
         "tunnel_configured": bool(cfg.get("public_base_url")),
         "tunnel_active": bool(cfg.get("tunnel_active", True)),
-        "tunnel_autostart": bool(cfg.get("tunnel_autostart", True)),
+        "tunnel_autostart": bool(cfg.get("tunnel_autostart", False)),
         "tunnel_running": _connector_running(),
     }
 
@@ -630,14 +630,22 @@ def tunnel_info() -> dict:
         "private_base_url": cfg.get("private_base_url", ""),
         "public_base_url": cfg.get("public_base_url", ""),
         "tunnel_active": cfg.get("tunnel_active", True),
-        "tunnel_autostart": cfg.get("tunnel_autostart", True),
+        "tunnel_autostart": cfg.get("tunnel_autostart", False),
         "daemon_running": _connector_running(),
         "tunnel_status": tunnel_status,
     }
 
 
 def validate_config() -> dict:
-    """End-to-end check of the SAVED config - `cloudflare validate`."""
+    """End-to-end check of EVERYTHING the saved config carries - `cloudflare
+    validate`.
+
+    Mirrors the full `info` view but verifies each component instead of just
+    displaying it: token capabilities, config completeness, URL sanity,
+    tunnel existence + status on Cloudflare, the DNS record routing the
+    hostname to the tunnel, the path-restricted ingress, the `cloudflared`
+    binary, and the daemon/toggle state.
+    """
     cfg = _load_config()
     token = cfg.get("cloudflare_token")
     if not token:
@@ -645,8 +653,114 @@ def validate_config() -> dict:
             "cloudflare validate: no token saved; run cloudflare setup "
             "--token first"
         )
-    result = cloudflare_verify(token, cfg.get("cloudflare_account_id") or "")
-    # The extension launches the connector itself - if the system can't
+    result: dict[str, Any] = {"config_path": str(config_path())}
+
+    # 1. Config completeness - every key setup writes must be present.
+    required = (
+        "cloudflare_token",
+        "cloudflare_account_id",
+        "cloudflare_tunnel_id",
+        "cloudflare_tunnel_name",
+        "cloudflare_hostname",
+        "cloudflare_tunnel_token",
+        "private_base_url",
+        "public_base_url",
+    )
+    missing = [k for k in required if not cfg.get(k)]
+    result["config_complete"] = not missing
+    if missing:
+        result["config_missing"] = missing
+
+    # 2. URL sanity - private must be https, public must match the hostname.
+    private = cfg.get("private_base_url") or ""
+    hostname = cfg.get("cloudflare_hostname") or ""
+    public = cfg.get("public_base_url") or ""
+    result["private_base_url_https"] = private.startswith("https://")
+    result["public_base_url_matches_hostname"] = bool(
+        hostname and public == "https://" + hostname
+    )
+
+    # 3. Token capabilities (verify + create probe), as before.
+    account_id = cfg.get("cloudflare_account_id") or ""
+    result.update(cloudflare_verify(token, account_id))
+    account_id = result.get("account_id") or account_id
+
+    # 4. Tunnel exists on Cloudflare and its status.
+    tunnel_id = cfg.get("cloudflare_tunnel_id") or ""
+    result["tunnel_exists"] = False
+    result["tunnel_status"] = ""
+    if account_id and tunnel_id:
+        try:
+            env = _cf_request(
+                "GET", f"accounts/{account_id}/cfd_tunnel/{tunnel_id}", token
+            )
+            if env.get("success"):
+                tun = env.get("result", {})
+                result["tunnel_exists"] = not tun.get("deleted_at")
+                result["tunnel_status"] = tun.get("status", "")
+                result["tunnel_name_matches"] = (
+                    tun.get("name") == cfg.get("cloudflare_tunnel_name")
+                )
+            else:
+                result["tunnel_error"] = _cf_errors(env)
+        except RuntimeError as exc:
+            result["tunnel_error"] = str(exc)
+
+    # 5. DNS - proxied CNAME <hostname> -> <tunnel>.cfargotunnel.com.
+    result["dns_record_ok"] = False
+    if hostname and tunnel_id:
+        apex = ".".join(hostname.split(".")[-2:])
+        try:
+            zones = _cf_request("GET", f"zones?name={apex}", token)
+            zone_list = zones.get("result") or []
+            if zone_list:
+                zone_id = zone_list[0]["id"]
+                records = _cf_request(
+                    "GET",
+                    f"zones/{zone_id}/dns_records?type=CNAME&name={hostname}",
+                    token,
+                )
+                for rec in records.get("result") or []:
+                    if rec.get("content") == f"{tunnel_id}.cfargotunnel.com":
+                        result["dns_record_ok"] = True
+                        result["dns_proxied"] = bool(rec.get("proxied"))
+                        break
+                else:
+                    result["dns_error"] = (
+                        f"no CNAME {hostname} -> {tunnel_id}.cfargotunnel.com"
+                    )
+            else:
+                result["dns_error"] = f"zone '{apex}' not reachable with this token"
+        except RuntimeError as exc:
+            result["dns_error"] = str(exc)
+
+    # 6. Ingress - the path-restricted rule must route the hostname.
+    result["ingress_ok"] = False
+    if account_id and tunnel_id:
+        try:
+            conf = _cf_request(
+                "GET",
+                f"accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations",
+                token,
+            )
+            ingress = (
+                (conf.get("result") or {}).get("config", {}).get("ingress") or []
+            )
+            for rule in ingress:
+                if rule.get("hostname") == hostname and "/public/" in (
+                    rule.get("path") or ""
+                ):
+                    result["ingress_ok"] = True
+                    result["ingress_origin"] = rule.get("service", "")
+                    break
+            else:
+                result["ingress_error"] = (
+                    "no path-restricted ingress rule for the hostname"
+                )
+        except RuntimeError as exc:
+            result["ingress_error"] = str(exc)
+
+    # 7. The extension launches the connector itself - if the system can't
     # reach the cloudflared binary, the tunnel can never come up.
     cloudflared = shutil.which("cloudflared")
     result["cloudflared_available"] = bool(cloudflared)
@@ -654,6 +768,12 @@ def validate_config() -> dict:
         "NOT FOUND - install cloudflared and make sure it is on the "
         "PATH of the Jupyter server process"
     )
+
+    # 8. Local state - toggle, autostart, daemon.
+    result["tunnel_active"] = bool(cfg.get("tunnel_active", True))
+    result["tunnel_autostart"] = bool(cfg.get("tunnel_autostart", False))
+    result["daemon_running"] = _connector_running()
+
     return {"validate": result}
 
 
@@ -663,15 +783,15 @@ def apply_autostart(
     """Honour the autostart preference at server startup.
 
     Configured + autostart on -> tunnel active, daemon ensured. Autostart
-    off -> tunnel forced inactive so generated links stay private instead
-    of carrying a public host the tunnel can't serve. No tunnel configured
-    -> no-op.
+    off (the DEFAULT) -> tunnel forced inactive so generated links stay
+    private instead of carrying a public host the tunnel can't serve. No
+    tunnel configured -> no-op.
     """
     log = logger or logging.getLogger("jupyterlab_share_files_extension")
     cfg = _load_config()
     if not cfg.get("cloudflare_tunnel_token"):
         return
-    if cfg.get("tunnel_autostart", True):
+    if cfg.get("tunnel_autostart", False):
         if not cfg.get("tunnel_active", True):
             cfg["tunnel_active"] = True
             _save_config(cfg)

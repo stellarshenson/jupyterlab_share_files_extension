@@ -547,6 +547,114 @@ def test_cloudflare_validate_reports_cloudflared_binary(
     assert "NOT FOUND" in out["cloudflared_path"]
 
 
+def test_cloudflare_validate_checks_every_component(
+    config_home, monkeypatch, capsys
+):
+    """validate mirrors the full info view but VERIFIES each component:
+    config completeness, URL sanity, tunnel existence/status/name, the DNS
+    record, the path-restricted ingress, and the local daemon/toggle state."""
+    tunnel._save_config(
+        {
+            "cloudflare_token": "tok",
+            "cloudflare_account_id": "acc1",
+            "cloudflare_tunnel_id": "tun-1",
+            "cloudflare_tunnel_name": "share-files-hub-example-com",
+            "cloudflare_hostname": "share.example.com",
+            "cloudflare_tunnel_token": "conn-token",
+            "private_base_url": "https://hub.example.com/user/a/",
+            "public_base_url": "https://share.example.com",
+            "tunnel_active": True,
+            "tunnel_autostart": False,
+        }
+    )
+    monkeypatch.setattr(
+        tunnel,
+        "cloudflare_verify",
+        lambda *a: {"token_valid": True, "account_id": "acc1"},
+    )
+
+    def fake_cf(method, endpoint, token, body=None):
+        if endpoint == "accounts/acc1/cfd_tunnel/tun-1":
+            return {
+                "success": True,
+                "result": {
+                    "id": "tun-1",
+                    "name": "share-files-hub-example-com",
+                    "status": "healthy",
+                    "deleted_at": None,
+                },
+            }
+        if endpoint.startswith("zones?name="):
+            return {"success": True, "result": [{"id": "zone-1"}]}
+        if endpoint.startswith("zones/zone-1/dns_records"):
+            return {
+                "success": True,
+                "result": [
+                    {
+                        "content": "tun-1.cfargotunnel.com",
+                        "proxied": True,
+                    }
+                ],
+            }
+        if endpoint == "accounts/acc1/cfd_tunnel/tun-1/configurations":
+            return {
+                "success": True,
+                "result": {
+                    "config": {
+                        "ingress": [
+                            {
+                                "hostname": "share.example.com",
+                                "path": "^(/user/[^/]+)?/jupyterlab-share-files-extension/public/.*",
+                                "service": "https://hub.example.com",
+                            },
+                            {"service": "http_status:404"},
+                        ]
+                    }
+                },
+            }
+        raise AssertionError(f"unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(tunnel, "_cf_request", fake_cf)
+    monkeypatch.setattr(tunnel.shutil, "which", lambda name: "/usr/bin/cloudflared")
+    monkeypatch.setattr(tunnel, "_connector_running", lambda: True)
+
+    assert cli.main(["--json", "cloudflare", "validate"]) == 0
+    out = json.loads(capsys.readouterr().out)["validate"]
+    assert out["config_complete"] is True
+    assert out["private_base_url_https"] is True
+    assert out["public_base_url_matches_hostname"] is True
+    assert out["tunnel_exists"] is True
+    assert out["tunnel_status"] == "healthy"
+    assert out["tunnel_name_matches"] is True
+    assert out["dns_record_ok"] is True
+    assert out["dns_proxied"] is True
+    assert out["ingress_ok"] is True
+    assert out["ingress_origin"] == "https://hub.example.com"
+    assert out["tunnel_active"] is True
+    assert out["tunnel_autostart"] is False
+    assert out["daemon_running"] is True
+
+
+def test_cloudflare_validate_reports_incomplete_config(
+    config_home, monkeypatch, capsys
+):
+    """Missing setup keys are named so the user knows what to re-run."""
+    tunnel._save_config({"cloudflare_token": "tok"})
+    monkeypatch.setattr(
+        tunnel, "cloudflare_verify", lambda *a: {"token_valid": True}
+    )
+    monkeypatch.setattr(tunnel.shutil, "which", lambda name: None)
+    monkeypatch.setattr(tunnel, "_connector_running", lambda: False)
+    assert cli.main(["--json", "cloudflare", "validate"]) == 0
+    out = json.loads(capsys.readouterr().out)["validate"]
+    assert out["config_complete"] is False
+    assert "cloudflare_tunnel_id" in out["config_missing"]
+    assert out["tunnel_exists"] is False
+    assert out["dns_record_ok"] is False
+    assert out["ingress_ok"] is False
+    assert out["daemon_running"] is False
+
+
 def test_tunnel_name_is_deterministic_slug_of_private_url():
     """Tunnel name = extension prefix + sluggified private base URL - the
     same URL always yields the same name (reuse), different users/servers
