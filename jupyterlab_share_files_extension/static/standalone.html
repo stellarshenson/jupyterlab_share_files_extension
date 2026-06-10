@@ -184,15 +184,84 @@
     return ctx.api_base.replace(/\/$/, '') + '/' + ctx.kind + '/' + ctx.id + path;
   }
 
-  if (ctx.kind === 'share') {
-    loadShare();
-  } else if (ctx.kind === 'request') {
-    loadRequest();
+  // Password-protected resources: the page first asks for the password,
+  // trades it for an unlock token (rate limited server-side), then sends the
+  // token on every API call (header) and download link (?t=).
+  let unlockToken = '';
+  function authHeaders() {
+    return unlockToken ? { 'X-Share-Token': unlockToken } : {};
+  }
+  function tokenQs() {
+    return unlockToken ? '?t=' + encodeURIComponent(unlockToken) : '';
+  }
+
+  function start() {
+    if (ctx.kind === 'share') {
+      loadShare();
+    } else if (ctx.kind === 'request') {
+      loadRequest();
+    }
+  }
+
+  if (ctx.password_required) {
+    renderPasswordGate();
+  } else {
+    start();
+  }
+
+  function renderPasswordGate() {
+    titleEl.textContent = 'Password required';
+    metaEl.textContent = 'The owner protected this link with a password.';
+    const form = document.createElement('form');
+    form.style.cssText = 'display:flex;gap:8px;max-width:420px;';
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.placeholder = 'Password';
+    input.autocomplete = 'off';
+    input.style.cssText = 'flex:1;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;';
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.textContent = 'Unlock';
+    form.appendChild(input);
+    form.appendChild(btn);
+    const status = document.createElement('div');
+    contentEl.appendChild(form);
+    contentEl.appendChild(status);
+    input.focus();
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      btn.disabled = true;
+      status.textContent = '';
+      status.className = '';
+      try {
+        const r = await fetch(api('/unlock'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: input.value })
+        });
+        if (r.status === 429) {
+          throw new Error('Too many attempts - wait a moment and try again');
+        }
+        if (!r.ok) {
+          throw new Error('Wrong password');
+        }
+        const data = await r.json();
+        unlockToken = data.token || '';
+        contentEl.innerHTML = '';
+        titleEl.textContent = 'Loading...';
+        metaEl.textContent = '';
+        start();
+      } catch (err) {
+        status.className = 'status err';
+        status.textContent = err.message || 'Unlock failed';
+        btn.disabled = false;
+      }
+    });
   }
 
   async function loadShare() {
     try {
-      const r = await fetch(api('/manifest'));
+      const r = await fetch(api('/manifest'), { headers: authHeaders() });
       if (!r.ok) throw new Error('Share unavailable');
       const m = await r.json();
       titleEl.textContent = m.name;
@@ -225,7 +294,7 @@
     const allBtn = document.createElement('a');
     allBtn.className = 'btn';
     allBtn.textContent = 'Download All as ZIP';
-    allBtn.href = api('/download-all');
+    allBtn.href = api('/download-all') + tokenQs();
     actions.appendChild(allBtn);
     contentEl.appendChild(actions);
   }
@@ -249,14 +318,14 @@
     const dl = document.createElement('a');
     dl.className = 'btn secondary';
     dl.textContent = isDir ? 'Download ZIP' : 'Download';
-    dl.href = api('/download/' + encodeURIComponent(entry.name));
+    dl.href = api('/download/' + encodeURIComponent(entry.name)) + tokenQs();
     row.appendChild(dl);
     return row;
   }
 
   async function loadRequest() {
     try {
-      const r = await fetch(api('/manifest'));
+      const r = await fetch(api('/manifest'), { headers: authHeaders() });
       if (!r.ok) throw new Error('Request unavailable');
       const m = await r.json();
       titleEl.textContent = m.name;
@@ -351,6 +420,9 @@
       fd.append('file', file, file.webkitRelativePath || file.name);
       const xhr = new XMLHttpRequest();
       xhr.open('POST', api('/upload?uploader=' + encodeURIComponent(uploader)));
+      if (unlockToken) {
+        xhr.setRequestHeader('X-Share-Token', unlockToken);
+      }
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
           bar.style.width = ((e.loaded / e.total) * 100).toFixed(0) + '%';

@@ -192,17 +192,49 @@ def list_items() -> dict:
     }
 
 
-def create_share(name: str, paths: list[str]) -> dict:
+def create_share(name: str, paths: list[str], password: str = "") -> dict:
     """Create a named share (a read-only drop) from workspace-relative paths
-    and return its shareable link."""
-    s = _request("POST", "api/shares", {"name": name, "paths": paths})
-    return {"id": s.get("id"), "name": s.get("name"), "link": s.get("link")}
+    and return its shareable link. An optional password protects all public
+    access to the share."""
+    body: dict = {"name": name, "paths": paths}
+    if password:
+        body["password"] = password
+    s = _request("POST", "api/shares", body)
+    result = {"id": s.get("id"), "name": s.get("name"), "link": s.get("link")}
+    if password:
+        result["password"] = password
+    return result
 
 
-def create_request(name: str) -> dict:
-    """Create a named file request (an inbox) and return its link."""
-    r = _request("POST", "api/requests", {"name": name})
-    return {"id": r.get("id"), "name": r.get("name"), "link": r.get("link")}
+def create_request(name: str, password: str = "") -> dict:
+    """Create a named file request (an inbox) and return its link. An optional
+    password protects all public access to the request."""
+    body: dict = {"name": name}
+    if password:
+        body["password"] = password
+    r = _request("POST", "api/requests", body)
+    result = {"id": r.get("id"), "name": r.get("name"), "link": r.get("link")}
+    if password:
+        result["password"] = password
+    return result
+
+
+def set_password(kind: str, id_: str, password: str) -> dict:
+    """Set, change, or clear (empty) the password of one of your shares or
+    requests. ``kind`` is 'share' or 'request'."""
+    plural = "shares" if kind == "share" else "requests"
+    r = _request("POST", f"api/{plural}/{id_}/password", {"password": password})
+    return {
+        "id": r.get("id"),
+        "name": r.get("name"),
+        "has_password": bool(password),
+        "password": password,
+    }
+
+
+def generate_password() -> dict:
+    """Generate an xkcd-style passphrase (server-side, via xkcdpass)."""
+    return _request("GET", "api/generate-password")
 
 
 def connect(link: str) -> dict:
@@ -302,10 +334,28 @@ def _cmd_cloudflare(args: argparse.Namespace) -> Any:
     )
 
 
+def _resolve_password(args: argparse.Namespace) -> str:
+    """Password for a create command: explicit value, or xkcdpass-generated."""
+    if getattr(args, "generate_password", False):
+        return generate_password().get("password") or ""
+    return getattr(args, "password", "") or ""
+
+
+def _cmd_set_password(args: argparse.Namespace) -> dict:
+    if args.clear:
+        return set_password(args.kind, args.id, "")
+    password = args.password
+    if args.generate or not password:
+        password = generate_password().get("password") or ""
+    return set_password(args.kind, args.id, password)
+
+
 _HANDLERS = {
     "list-items": lambda a: list_items(),
-    "create-share": lambda a: create_share(a.name, a.paths),
-    "create-request": lambda a: create_request(a.name),
+    "create-share": lambda a: create_share(a.name, a.paths, _resolve_password(a)),
+    "create-request": lambda a: create_request(a.name, _resolve_password(a)),
+    "set-password": _cmd_set_password,
+    "generate-password": lambda a: generate_password(),
     "connect": lambda a: connect(a.link),
     "disconnect": lambda a: disconnect(a.key),
     "close-share": lambda a: close_share(a.id),
@@ -334,9 +384,35 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("create-share", help="create a share from workspace paths")
     p.add_argument("name")
     p.add_argument("paths", nargs="*", default=[])
+    p.add_argument("--password", default="", help="protect public access with this password")
+    p.add_argument(
+        "--generate-password",
+        action="store_true",
+        help="protect public access with a generated xkcd-style passphrase",
+    )
 
     p = sub.add_parser("create-request", help="create a file request (inbox)")
     p.add_argument("name")
+    p.add_argument("--password", default="", help="protect public access with this password")
+    p.add_argument(
+        "--generate-password",
+        action="store_true",
+        help="protect public access with a generated xkcd-style passphrase",
+    )
+
+    p = sub.add_parser(
+        "set-password",
+        help="set, change, or clear the password of a share or request",
+    )
+    p.add_argument("kind", choices=("share", "request"))
+    p.add_argument("id")
+    p.add_argument("password", nargs="?", default="")
+    p.add_argument("--generate", action="store_true", help="generate an xkcd-style passphrase")
+    p.add_argument("--clear", action="store_true", help="remove the password")
+
+    sub.add_parser(
+        "generate-password", help="generate an xkcd-style passphrase (xkcdpass)"
+    )
 
     p = sub.add_parser("connect", help="connect to a share or request link")
     p.add_argument("link")

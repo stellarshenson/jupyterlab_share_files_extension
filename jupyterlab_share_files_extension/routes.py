@@ -10,11 +10,14 @@ The public endpoints rely on the share/request ID being secret (8-char base32).
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import io
 import json
 import os
 import re
 import ssl
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -39,7 +42,9 @@ from .storage import (
     _is_safe_relative,
     _resolve_unique_target,
     _safe_name,
+    generate_password,
     resolve_shares_dir,
+    verify_password,
 )
 
 
@@ -123,6 +128,37 @@ class _Base(APIHandler):
         except (OSError, ConnectionError) as exc:
             raise PeerUnavailable(f"Could not reach the peer: {exc}") from None
 
+    async def _peer_auth_headers(self, conn: dict) -> dict:
+        """Unlock a password-protected peer resource before fetching from it.
+
+        Connections to protected shares/requests persist the password; this
+        trades it for a short-lived unlock token via the peer's public unlock
+        endpoint and returns the ``X-Share-Token`` header to send on every
+        subsequent peer fetch. Unprotected connections return no headers.
+        """
+        password = conn.get("password") or ""
+        if not password:
+            return {}
+        link = (conn.get("link") or "").rstrip("/")
+        if not link:
+            return {}
+        resp = await self._peer_fetch(
+            link + "/unlock",
+            method="POST",
+            body=json.dumps({"password": password}),
+            headers={"Content-Type": "application/json"},
+        )
+        if resp.code != 200:
+            raise PeerUnavailable(
+                "The peer rejected the stored password (the owner may have "
+                "changed it) - reconnect the link with the new password."
+            )
+        try:
+            token = json.loads(resp.body).get("token") or ""
+        except ValueError:
+            token = ""
+        return {"X-Share-Token": token} if token else {}
+
     @property
     def share_store(self) -> ShareStore:
         return ShareStore(self.workspace_root, self.shares_dir, self.use_trash)
@@ -160,7 +196,9 @@ class _PublicBase(tornado.web.RequestHandler):
         # JupyterLab panels can fetch directly from this server.
         self.set_header("Access-Control-Allow-Origin", "*")
         self.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.set_header("Access-Control-Allow-Headers", "Content-Type")
+        self.set_header(
+            "Access-Control-Allow-Headers", "Content-Type, X-Share-Token"
+        )
 
     def options(self, *args, **kwargs):
         self.set_status(204)
@@ -310,6 +348,98 @@ def _public_share_url(handler: tornado.web.RequestHandler, id_: str) -> str:
 def _public_request_url(handler: tornado.web.RequestHandler, id_: str) -> str:
     path = url_path_join(handler.settings.get("base_url", "/"), EXTENSION_NAMESPACE, "public", "request", id_)
     return _public_origin(handler) + path
+
+
+# --------------------------------------------------------------------------- #
+# Password protection: rate-limited unlock + capability token
+# --------------------------------------------------------------------------- #
+
+# In-memory rate limiter (the `limits` library) guarding the public unlock
+# endpoint against brute force. Per-resource keying (share/request id) - one
+# protected resource being hammered cannot lock out a different one. Storage is
+# process-local; on a multi-process server each worker keeps its own counters,
+# which only makes the limit more lenient, never less safe.
+from limits import RateLimitItemPerMinute, RateLimitItemPerSecond  # noqa: E402
+from limits import storage as _limits_storage  # noqa: E402
+from limits import strategies as _limits_strategies  # noqa: E402
+
+_RATE_STORAGE = _limits_storage.MemoryStorage()
+_RATE_LIMITER = _limits_strategies.MovingWindowRateLimiter(_RATE_STORAGE)
+# Token-of-the-day style secret: random per process. Unlock tokens are also
+# bound to the password value, so a restart simply asks recipients to re-enter
+# the password (tokens expire); no persistence needed.
+_TOKEN_TTL_SECONDS = 6 * 3600
+
+
+def _rate_limit_ok(handler, kind: str, id_: str) -> bool:
+    """Charge one password attempt against the per-resource limits.
+
+    Returns False (and the caller should 429) when either the per-attempt
+    cooldown or the per-minute cap is exceeded. Defaults are generous; both
+    are tunable via ShareFilesConfig.
+    """
+    cfg: ShareFilesConfig = handler.settings.get("share_files_config")
+    per_min = getattr(cfg, "password_max_attempts_per_minute", 30) or 30
+    cooldown = getattr(cfg, "password_attempt_cooldown_seconds", 1) or 0
+    key = f"pw:{kind}:{id_}"
+    burst = RateLimitItemPerMinute(per_min)
+    if not _RATE_LIMITER.test(burst, key):
+        return False
+    if cooldown > 0:
+        gap = RateLimitItemPerSecond(1, cooldown)
+        if not _RATE_LIMITER.test(gap, key):
+            return False
+        _RATE_LIMITER.hit(gap, key)
+    _RATE_LIMITER.hit(burst, key)
+    return True
+
+
+def _make_unlock_token(id_: str, password: str) -> str:
+    """Signed capability token for a successfully-unlocked resource.
+
+    HMAC-keyed on the password itself, so changing the password invalidates
+    every outstanding token automatically. Format: ``<expiry>.<hex-sig>``.
+    """
+    exp = int(time.time()) + _TOKEN_TTL_SECONDS
+    msg = f"{id_}.{exp}".encode("utf-8")
+    sig = hmac.new(password.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def _check_unlock_token(id_: str, password: str, token: str) -> bool:
+    """Validate an unlock token against the current password (constant-time)."""
+    if not token or not password:
+        return False
+    try:
+        exp_s, sig = token.split(".", 1)
+        exp = int(exp_s)
+    except (ValueError, AttributeError):
+        return False
+    if exp < int(time.time()):
+        return False
+    msg = f"{id_}.{exp}".encode("utf-8")
+    expected = hmac.new(password.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+def _password_gate(handler, store, id_: str) -> bool:
+    """Allow a public request through, or write 401 and return False.
+
+    No password set on the resource -> always allowed. Otherwise a valid
+    unlock token (header ``X-Share-Token`` or ``?t=``) is required.
+    """
+    password = store.get_password(id_)
+    if not password:
+        return True
+    token = handler.request.headers.get("X-Share-Token", "")
+    if not token:
+        token = handler.get_query_argument("t", default="")
+    if _check_unlock_token(id_, password, token):
+        return True
+    handler.set_status(401)
+    handler.set_header("Content-Type", "application/json")
+    handler.finish(json.dumps({"error": "password required", "password_required": True}))
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -485,6 +615,88 @@ class TunnelResetHandler(_Base):
         self.write_json({**result, **_tunnel_state(self)})
 
 
+class PasswordHandler(_Base):
+    """Owner-side password management (api/<shares|requests>/<id>/password).
+
+    GET returns the stored plaintext (owner-only - the link dialog shows it
+    with a copy button); POST sets/changes it, an empty value clears it.
+    """
+
+    def _store(self, kind: str):
+        return self.share_store if kind == "shares" else self.request_store
+
+    @tornado.web.authenticated
+    def get(self, kind, id_):
+        store = self._store(kind)
+        if not store.exists(id_):
+            return self.write_error_json(404, "not found")
+        self.write_json({"id": id_, "password": store.get_password(id_)})
+
+    @tornado.web.authenticated
+    def post(self, kind, id_):
+        body = self.get_json_body() or {}
+        password = str(body.get("password") or "")
+        store = self._store(kind)
+        try:
+            manifest = store.set_password(id_, password)
+        except NotFoundError as exc:
+            return self.write_error_json(404, str(exc))
+        manifest["password"] = password
+        self.write_json(manifest)
+
+
+class GeneratePasswordHandler(_Base):
+    """xkcd-style passphrase generation (api/generate-password)."""
+
+    @tornado.web.authenticated
+    def get(self):
+        try:
+            self.write_json({"password": generate_password()})
+        except RuntimeError as exc:
+            self.write_error_json(500, str(exc))
+
+
+class PublicUnlockHandler(_PublicBase):
+    """Password attempt for a protected resource (public/<kind>/<id>/unlock).
+
+    Rate limited per resource id - a generous per-minute cap plus a
+    per-attempt cooldown (both tunable via ShareFilesConfig). A correct
+    password returns a signed unlock token the standalone page and peers
+    send back via the ``X-Share-Token`` header (or ``?t=`` for plain
+    download links). Wrong password and rate-limit both burn one attempt.
+    """
+
+    def post(self, kind, id_):
+        store = self.share_store if kind == "share" else self.request_store
+        password = store.get_password(id_)
+        if not store.exists(id_):
+            self.set_status(404)
+            self.finish(json.dumps({"error": "not found"}))
+            return
+        if not password:
+            self.finish(json.dumps({"unlocked": True, "token": ""}))
+            return
+        if not _rate_limit_ok(self, kind, id_):
+            self.set_status(429)
+            self.finish(json.dumps({
+                "error": "too many attempts - wait before retrying",
+            }))
+            return
+        try:
+            body = json.loads(self.request.body or b"{}")
+        except ValueError:
+            body = {}
+        attempt = str(body.get("password") or "")
+        if verify_password(password, attempt):
+            self.finish(json.dumps({
+                "unlocked": True,
+                "token": _make_unlock_token(id_, password),
+            }))
+        else:
+            self.set_status(401)
+            self.finish(json.dumps({"error": "wrong password"}))
+
+
 class SharesListHandler(_Base):
     @tornado.web.authenticated
     def get(self):
@@ -498,12 +710,13 @@ class SharesListHandler(_Base):
         body = self.get_json_body() or {}
         name = (body.get("name") or "").strip()
         paths = body.get("paths") or []
+        password = str(body.get("password") or "")
         if not name:
             return self.write_error_json(400, "Missing 'name'")
         if not isinstance(paths, list):
             return self.write_error_json(400, "'paths' must be a list")
         try:
-            manifest = self.share_store.create(name, paths)
+            manifest = self.share_store.create(name, paths, password=password)
         except (StorageError, NotFoundError) as exc:
             return self.write_error_json(400, str(exc))
         manifest["link"] = _public_share_url(self, manifest["id"])
@@ -581,9 +794,10 @@ class RequestsListHandler(_Base):
     def post(self):
         body = self.get_json_body() or {}
         name = (body.get("name") or "").strip()
+        password = str(body.get("password") or "")
         if not name:
             return self.write_error_json(400, "Missing 'name'")
-        manifest = self.request_store.create(name)
+        manifest = self.request_store.create(name, password=password)
         manifest["link"] = _public_request_url(self, manifest["id"])
         manifest["uploaders"] = []
         self.write_json(manifest)
@@ -642,14 +856,20 @@ class ConnectionsHandler(_Base):
         self.write_json({"connections": self.connection_store.list()})
 
     @tornado.web.authenticated
-    def post(self):
+    async def post(self):
         """Add a connection.
 
-        Body: { "link": "https://host/.../public/share/<id>" }
-        We parse the link, fetch its manifest, and persist a connection entry.
+        Body: { "link": "https://host/.../public/share/<id>",
+                "password": "..." (optional) }
+        We parse the link, probe whether the resource is password protected,
+        verify a provided password against the peer's unlock endpoint, and
+        persist a connection entry. A protected resource without (or with a
+        wrong) password answers 401 `password_required` so the panel can
+        prompt and retry.
         """
         body = self.get_json_body() or {}
         link = (body.get("link") or "").strip()
+        password = str(body.get("password") or "")
         if not link:
             return self.write_error_json(400, "Missing 'link'")
         try:
@@ -667,6 +887,36 @@ class ConnectionsHandler(_Base):
                 400,
                 "That link points to your own server - it's already in your panel.",
             )
+        # Probe the peer: protected resources answer 401 on the bare manifest.
+        # With a password given, verify it via the peer's unlock endpoint so a
+        # wrong password is caught at connect time, not at first download.
+        try:
+            probe = await self._peer_fetch(link.rstrip("/") + "/manifest")
+            if probe.code == 401:
+                if not password:
+                    self.set_status(401)
+                    return self.write_json({
+                        "error": "password required",
+                        "password_required": True,
+                    })
+                unlock = await self._peer_fetch(
+                    link.rstrip("/") + "/unlock",
+                    method="POST",
+                    body=json.dumps({"password": password}),
+                    headers={"Content-Type": "application/json"},
+                )
+                if unlock.code == 429:
+                    return self.write_error_json(
+                        429, "too many password attempts - wait before retrying"
+                    )
+                if unlock.code != 200:
+                    self.set_status(401)
+                    return self.write_json({
+                        "error": "wrong password",
+                        "password_required": True,
+                    })
+        except PeerUnavailable as exc:
+            return self.write_error_json(502, str(exc))
         entry = self.connection_store.add(
             kind=parsed["kind"],
             id_=parsed["id"],
@@ -674,6 +924,7 @@ class ConnectionsHandler(_Base):
             name=parsed.get("name", ""),
             owner=parsed.get("owner", ""),
             link=link,
+            password=password,
         )
         # Ensure the response carries the link even if the entry already existed
         # without one (older persisted connections); the store backfills on disk.
@@ -775,8 +1026,10 @@ class ConnectionSaveHandler(_Base):
         # Peer fetches can fail on TLS (self-signed) or connection - map those
         # to a clean 502 rather than an unhandled 500.
         try:
+            # Protected peer? trade the stored password for an unlock token
+            auth_headers = await self._peer_auth_headers(conn)
             # Resolve share name for the wrapping folder when saving all
-            manifest_resp = await self._peer_fetch(api_base + "/manifest")
+            manifest_resp = await self._peer_fetch(api_base + "/manifest", headers=auth_headers)
             if manifest_resp.code != 200:
                 return self.write_error_json(502, f"Remote unavailable ({manifest_resp.code})")
             manifest = json.loads(manifest_resp.body)
@@ -784,7 +1037,7 @@ class ConnectionSaveHandler(_Base):
 
             if names is None:
                 # Save All - download zip, extract into <dest_root>/<share-slug>/
-                zip_resp = await self._peer_fetch(api_base + "/download-all")
+                zip_resp = await self._peer_fetch(api_base + "/download-all", headers=auth_headers)
                 if zip_resp.code != 200:
                     return self.write_error_json(502, f"Could not download share ({zip_resp.code})")
                 wrap_dir = _resolve_unique_target(dest_root, share_slug)
@@ -802,7 +1055,7 @@ class ConnectionSaveHandler(_Base):
                     if entry is None:
                         return self.write_error_json(404, f"Not in share: {name}")
                     url = api_base + "/download/" + tornado.escape.url_escape(name)
-                    resp = await self._peer_fetch(url)
+                    resp = await self._peer_fetch(url, headers=auth_headers)
                     if resp.code != 200:
                         return self.write_error_json(502, f"Could not download {name} ({resp.code})")
                     if entry.get("type") == "directory":
@@ -857,6 +1110,8 @@ class ConnectionUploadHandler(_Base):
         sent: list[str] = []
 
         try:
+            # Protected peer? trade the stored password for an unlock token
+            auth_headers = await self._peer_auth_headers(conn)
             for rel in paths:
                 if not _is_safe_relative(rel):
                     return self.write_error_json(400, f"Unsafe path: {rel}")
@@ -877,13 +1132,19 @@ class ConnectionUploadHandler(_Base):
                                 rel_name.replace(os.sep, "/"),
                                 data,
                                 validate_cert=self.verify_peer_tls,
+                                headers=auth_headers,
                             )
                             sent.append(rel_name)
                 else:
                     with open(src, "rb") as f:
                         data = f.read()
                     await _post_file(
-                        client, upload_url, src.name, data, validate_cert=self.verify_peer_tls
+                        client,
+                        upload_url,
+                        src.name,
+                        data,
+                        validate_cert=self.verify_peer_tls,
+                        headers=auth_headers,
                     )
                     sent.append(src.name)
         except PeerUnavailable as exc:
@@ -893,7 +1154,12 @@ class ConnectionUploadHandler(_Base):
 
 
 async def _post_file(
-    client, url: str, filename: str, data: bytes, validate_cert: bool = True
+    client,
+    url: str,
+    filename: str,
+    data: bytes,
+    validate_cert: bool = True,
+    headers: dict | None = None,
 ) -> None:
     """Send a single file as multipart/form-data POST."""
     boundary = "----shareFilesBoundary" + os.urandom(8).hex()
@@ -909,7 +1175,10 @@ async def _post_file(
         resp = await client.fetch(
             url,
             method="POST",
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                **(headers or {}),
+            },
             body=body,
             raise_error=False,
             validate_cert=validate_cert,
@@ -986,6 +1255,7 @@ class PublicSharePageHandler(_PublicBase):
             "kind": "share",
             "id": id_,
             "api_base": url_path_join(base_url, EXTENSION_NAMESPACE, "public"),
+            "password_required": bool(self.share_store.get_password(id_)),
         })
         html = html.replace("__CONTEXT__", ctx)
         self.set_header("Content-Type", "text/html")
@@ -1007,6 +1277,7 @@ class PublicRequestPageHandler(_PublicBase):
             "kind": "request",
             "id": id_,
             "api_base": url_path_join(base_url, EXTENSION_NAMESPACE, "public"),
+            "password_required": bool(self.request_store.get_password(id_)),
         })
         html = html.replace("__CONTEXT__", ctx)
         self.set_header("Content-Type", "text/html")
@@ -1015,6 +1286,8 @@ class PublicRequestPageHandler(_PublicBase):
 
 class PublicShareManifestHandler(_PublicBase):
     def get(self, id_):
+        if not _password_gate(self, self.share_store, id_):
+            return
         try:
             manifest = self.share_store.get(id_)
         except NotFoundError:
@@ -1028,6 +1301,8 @@ class PublicShareManifestHandler(_PublicBase):
 
 class PublicRequestManifestHandler(_PublicBase):
     def get(self, id_):
+        if not _password_gate(self, self.request_store, id_):
+            return
         try:
             manifest = self.request_store.get(id_)
         except NotFoundError:
@@ -1043,6 +1318,8 @@ class PublicRequestManifestHandler(_PublicBase):
 
 class PublicShareDownloadHandler(_PublicBase):
     def get(self, id_, sub_path):
+        if not _password_gate(self, self.share_store, id_):
+            return
         try:
             target = self.share_store.resolve_data_path(id_, sub_path)
         except (NotFoundError, StorageError):
@@ -1080,6 +1357,8 @@ class PublicShareDownloadHandler(_PublicBase):
 
 class PublicShareDownloadAllHandler(_PublicBase):
     def get(self, id_):
+        if not _password_gate(self, self.share_store, id_):
+            return
         try:
             data_dir = self.share_store.resolve_data_path(id_)
             manifest = self.share_store.get(id_)
@@ -1102,6 +1381,8 @@ class PublicShareDownloadAllHandler(_PublicBase):
 
 class PublicRequestUploadHandler(_PublicBase):
     def post(self, id_):
+        if not _password_gate(self, self.request_store, id_):
+            return
         if not self.request_store.exists(id_):
             self.set_status(404)
             self.finish(json.dumps({"error": "not found"}))
@@ -1148,6 +1429,10 @@ def setup_route_handlers(web_app, config: ShareFilesConfig | None = None):
         (url_path_join(base_url, ns, "api", "tunnel"), TunnelHandler),
         (url_path_join(base_url, ns, "api", "tunnel", "setup"), TunnelSetupHandler),
         (url_path_join(base_url, ns, "api", "tunnel", "reset"), TunnelResetHandler),
+        # api/generate-password
+        (url_path_join(base_url, ns, "api", "generate-password"), GeneratePasswordHandler),
+        # api/<shares|requests>/<id>/password
+        (url_path_join(base_url, ns, "api", r"(shares|requests)", r"([A-Z2-7]{6,16})", "password"), PasswordHandler),
         # api/shares
         (url_path_join(base_url, ns, "api", "shares"), SharesListHandler),
         (url_path_join(base_url, ns, "api", "shares", r"([A-Z2-7]{6,16})"), ShareItemHandler),
@@ -1162,6 +1447,8 @@ def setup_route_handlers(web_app, config: ShareFilesConfig | None = None):
         (url_path_join(base_url, ns, "api", "connections", r"([^/]+)", "save"), ConnectionSaveHandler),
         (url_path_join(base_url, ns, "api", "connections", r"([^/]+)", "upload"), ConnectionUploadHandler),
         (url_path_join(base_url, ns, "api", "connections", r"([^/]+)"), ConnectionItemHandler),
+        # public unlock (password attempt; rate limited)
+        (url_path_join(base_url, ns, "public", r"(share|request)", r"([A-Z2-7]{6,16})", "unlock"), PublicUnlockHandler),
         # public/share
         (url_path_join(base_url, ns, "public", "share", r"([A-Z2-7]{6,16})"), PublicSharePageHandler),
         (url_path_join(base_url, ns, "public", "share", r"([A-Z2-7]{6,16})", "manifest"), PublicShareManifestHandler),

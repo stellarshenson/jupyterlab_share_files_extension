@@ -11,6 +11,7 @@ Layout under workspace root (.jupyterlab_shares/):
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import os
 import re
@@ -60,6 +61,36 @@ def generate_token() -> str:
     """Return an 8-char base32 random token."""
     raw = secrets.token_bytes(TOKEN_BYTES)
     return base64.b32encode(raw).decode("ascii").rstrip("=")
+
+
+def generate_password(numwords: int = 4) -> str:
+    """Return an xkcd-style passphrase (e.g. ``correct-horse-battery-staple``).
+
+    Uses the ``xkcdpass`` library so owners get a memorable, copy-pasteable
+    password without inventing one. Raises RuntimeError if xkcdpass is not
+    installed so the caller can surface a clear message.
+    """
+    try:
+        from xkcdpass import xkcd_password as xp
+    except ImportError as exc:  # pragma: no cover - xkcdpass is a hard dep
+        raise RuntimeError(
+            "password generation needs the 'xkcdpass' package"
+        ) from exc
+    wordfile = xp.locate_wordfile()
+    words = xp.generate_wordlist(wordfile=wordfile, min_length=4, max_length=8)
+    return xp.generate_xkcdpassword(words, numwords=numwords, delimiter="-")
+
+
+def verify_password(stored: str, attempt: str) -> bool:
+    """Constant-time comparison of an unlock attempt against the stored value.
+
+    Empty ``stored`` means no password is set - callers gate on that before
+    reaching here, so an empty stored value never grants access via an empty
+    attempt by accident.
+    """
+    if not stored:
+        return False
+    return hmac.compare_digest(stored, attempt or "")
 
 
 def _safe_name(name: str) -> str:
@@ -326,10 +357,33 @@ class BaseStore:
                 continue
             try:
                 with open(child, "r", encoding="utf-8") as f:
-                    result.append(json.load(f))
+                    manifest = json.load(f)
             except (OSError, json.JSONDecodeError):
                 continue
+            # never leak the plaintext password through the raw summary
+            manifest["has_password"] = bool(manifest.get("password"))
+            manifest.pop("password", None)
+            result.append(manifest)
         return result
+
+    def get_password(self, id_: str) -> str:
+        """Return the stored plaintext password, or '' if none. Owner-only -
+        callers must be authenticated; never expose this on public routes."""
+        try:
+            manifest = self._read_manifest(id_)
+        except NotFoundError:
+            return ""
+        return manifest.get("password") or ""
+
+    def set_password(self, id_: str, password: str) -> dict[str, Any]:
+        """Set, change, or clear (empty string) the resource password."""
+        manifest = self._read_manifest(id_)
+        if password:
+            manifest["password"] = password
+        else:
+            manifest.pop("password", None)
+        self._write_manifest(id_, manifest)
+        return self.get(id_)
 
     def delete(self, id_: str) -> None:
         """Remove both the content directory and the sidecar manifest."""
@@ -373,6 +427,12 @@ class BaseStore:
             manifest["path"] = str(content_dir.resolve().relative_to(self.workspace_root)).replace(os.sep, "/")
         except ValueError:
             pass
+        # The plaintext password is owner-only - expose only its presence,
+        # never the value, in any enriched (client-facing) manifest. The
+        # owner retrieves the value through the authenticated password
+        # endpoint; public handlers use get()/list() which run through here.
+        manifest["has_password"] = bool(manifest.get("password"))
+        manifest.pop("password", None)
         return manifest
 
 
@@ -408,11 +468,13 @@ class ShareStore(BaseStore):
             result.append(manifest)
         return result
 
-    def create(self, name: str, source_paths: list[str]) -> dict[str, Any]:
+    def create(
+        self, name: str, source_paths: list[str], password: str = ""
+    ) -> dict[str, Any]:
         """Create a share, copying source_paths (relative to workspace) into it.
 
-        Persists the minimal `{id, name}` manifest; everything else is
-        derived on read.
+        Persists the minimal `{id, name}` manifest (plus an optional
+        `password`); everything else is derived on read.
         """
         id_ = generate_token()
         share_dir = self._new_path(name, id_)
@@ -426,7 +488,10 @@ class ShareStore(BaseStore):
                 raise NotFoundError(f"Source not found: {rel}")
             _copy_into(source, share_dir)
 
-        self._write_manifest(id_, {"id": id_, "name": name})
+        manifest: dict[str, Any] = {"id": id_, "name": name}
+        if password:
+            manifest["password"] = password
+        self._write_manifest(id_, manifest)
         return self.get(id_)
 
     def get(self, id_: str) -> dict[str, Any]:
@@ -478,14 +543,17 @@ class ShareStore(BaseStore):
 class RequestStore(BaseStore):
     subdir = "requests"
 
-    def create(self, name: str) -> dict[str, Any]:
+    def create(self, name: str, password: str = "") -> dict[str, Any]:
         id_ = generate_token()
         request_dir = self._new_path(name, id_)
         request_dir.mkdir(parents=True, exist_ok=True)
         # Stored manifest is minimal - only the irreducible state. Everything
         # else (slug, kind, created_at, upload counts, last_upload_at) is
         # derived from disk in `get()`.
-        self._write_manifest(id_, {"id": id_, "name": name, "last_seen_upload_at": 0})
+        manifest: dict[str, Any] = {"id": id_, "name": name, "last_seen_upload_at": 0}
+        if password:
+            manifest["password"] = password
+        self._write_manifest(id_, manifest)
         return self.get(id_)
 
     def get(self, id_: str) -> dict[str, Any]:
@@ -637,6 +705,7 @@ class ConnectionStore:
         name: str = "",
         owner: str = "",
         link: str = "",
+        password: str = "",
     ) -> dict[str, Any]:
         if kind not in ("share", "request"):
             raise StorageError(f"Invalid kind: {kind}")
@@ -647,8 +716,16 @@ class ConnectionStore:
                 # Backfill the full link on re-add - older entries persisted
                 # before links were stored reconstructed a base_path-less URL
                 # that JupyterHub bounces to /hub/ (404). Reconnecting repairs.
+                changed = False
                 if link and not existing.get("link"):
                     existing["link"] = link
+                    changed = True
+                # Re-connecting with a (new) password updates the stored one -
+                # the owner may have changed it since the first connect.
+                if password and existing.get("password") != password:
+                    existing["password"] = password
+                    changed = True
+                if changed:
                     self._save(items)
                 return existing
         entry = {
@@ -665,6 +742,10 @@ class ConnectionStore:
             "link": link,
             "added_at": _now(),
         }
+        if password:
+            # Peer password for a protected remote share/request - used by the
+            # server (and panel) to unlock before manifest/download/upload.
+            entry["password"] = password
         items.append(entry)
         self._save(items)
         return entry

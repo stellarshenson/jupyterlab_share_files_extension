@@ -151,9 +151,10 @@ export function listShares(
 export function createShare(
   s: ServerConnection.ISettings,
   name: string,
-  paths: string[]
+  paths: string[],
+  password = ''
 ): Promise<IShare> {
-  return requestAPI('api/shares', s, jsonBody({ name, paths }));
+  return requestAPI('api/shares', s, jsonBody({ name, paths, password }));
 }
 
 export function getShare(
@@ -200,9 +201,10 @@ export function listRequests(
 
 export function createRequest(
   s: ServerConnection.ISettings,
-  name: string
+  name: string,
+  password = ''
 ): Promise<IRequest> {
-  return requestAPI('api/requests', s, jsonBody({ name }));
+  return requestAPI('api/requests', s, jsonBody({ name, password }));
 }
 
 export function getRequest(
@@ -242,6 +244,61 @@ export function markRequestSeen(
 }
 
 // --------------------------------------------------------------------------- //
+// Passwords
+// --------------------------------------------------------------------------- //
+
+/** Owner-side: read the stored plaintext password ('' when none is set). */
+export function getPassword(
+  s: ServerConnection.ISettings,
+  kind: 'share' | 'request',
+  id: string
+): Promise<{ id: string; password: string }> {
+  const plural = kind === 'share' ? 'shares' : 'requests';
+  return requestAPI(`api/${plural}/${id}/password`, s);
+}
+
+/** Owner-side: set, change, or clear (empty string) the password. */
+export function setPassword(
+  s: ServerConnection.ISettings,
+  kind: 'share' | 'request',
+  id: string,
+  password: string
+): Promise<IShare | IRequest> {
+  const plural = kind === 'share' ? 'shares' : 'requests';
+  return requestAPI(`api/${plural}/${id}/password`, s, jsonBody({ password }));
+}
+
+/** Generate an xkcd-style passphrase (server-side, via xkcdpass). */
+export function generatePassword(
+  s: ServerConnection.ISettings
+): Promise<{ password: string }> {
+  return requestAPI('api/generate-password', s);
+}
+
+/** Public: trade a password for an unlock token on a remote (or own) link.
+ * Throws on a wrong password (401) or rate limit (429). */
+export async function unlockRemote(
+  link: string,
+  password: string
+): Promise<string> {
+  const url = link.replace(/\/$/, '') + '/unlock';
+  const r = await fetch(url, {
+    method: 'POST',
+    credentials: 'omit',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password })
+  });
+  if (r.status === 429) {
+    throw new Error('Too many password attempts - wait before retrying');
+  }
+  if (!r.ok) {
+    throw new Error('Wrong password');
+  }
+  const data = await r.json();
+  return data.token || '';
+}
+
+// --------------------------------------------------------------------------- //
 // Connections
 // --------------------------------------------------------------------------- //
 
@@ -253,9 +310,10 @@ export function listConnections(
 
 export function addConnection(
   s: ServerConnection.ISettings,
-  link: string
+  link: string,
+  password = ''
 ): Promise<IConnection> {
-  return requestAPI('api/connections', s, jsonBody({ link }));
+  return requestAPI('api/connections', s, jsonBody({ link, password }));
 }
 
 export function removeConnection(
@@ -311,10 +369,17 @@ export function uploadToConnection(
 // Cross-peer (direct fetch of remote manifests / downloads / uploads)
 // --------------------------------------------------------------------------- //
 
-/** Fetch a remote share's manifest directly from the source server. */
-export async function fetchRemoteShare(link: string): Promise<IRemoteShare> {
+/** Fetch a remote share's manifest directly from the source server.
+ * `token` is the unlock token for password-protected resources. */
+export async function fetchRemoteShare(
+  link: string,
+  token = ''
+): Promise<IRemoteShare> {
   const url = link.replace(/\/$/, '') + '/manifest';
-  const r = await fetch(url, { credentials: 'omit' });
+  const r = await fetch(url, {
+    credentials: 'omit',
+    headers: token ? { 'X-Share-Token': token } : undefined
+  });
   if (!r.ok) {
     throw new Error(`Could not load share (status ${r.status})`);
   }
@@ -322,21 +387,33 @@ export async function fetchRemoteShare(link: string): Promise<IRemoteShare> {
 }
 
 export async function fetchRemoteRequest(
-  link: string
+  link: string,
+  token = ''
 ): Promise<IRemoteRequest> {
   const url = link.replace(/\/$/, '') + '/manifest';
-  const r = await fetch(url, { credentials: 'omit' });
+  const r = await fetch(url, {
+    credentials: 'omit',
+    headers: token ? { 'X-Share-Token': token } : undefined
+  });
   if (!r.ok) {
     throw new Error(`Could not load request (status ${r.status})`);
   }
   return r.json();
 }
 
-/** Build a direct download URL for a remote share entry. */
-export function remoteDownloadUrl(link: string, entryName: string): string {
-  return link.replace(/\/$/, '') + '/download/' + encodeURIComponent(entryName);
+/** Build a direct download URL for a remote share entry. `token` (unlock
+ * token) rides as `?t=` - download links cannot carry headers. */
+export function remoteDownloadUrl(
+  link: string,
+  entryName: string,
+  token = ''
+): string {
+  const base =
+    link.replace(/\/$/, '') + '/download/' + encodeURIComponent(entryName);
+  return token ? base + '?t=' + encodeURIComponent(token) : base;
 }
 
-export function remoteDownloadAllUrl(link: string): string {
-  return link.replace(/\/$/, '') + '/download-all';
+export function remoteDownloadAllUrl(link: string, token = ''): string {
+  const base = link.replace(/\/$/, '') + '/download-all';
+  return token ? base + '?t=' + encodeURIComponent(token) : base;
 }

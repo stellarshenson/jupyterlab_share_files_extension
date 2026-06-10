@@ -20,6 +20,7 @@ Peer-to-peer file sharing for JupyterLab. Create a **share** (file drop) or **re
 - **Open files directly** - double-click a file in the panel, JupyterLab opens it with the right viewer
 - **Copy/paste** between the panel and the file browser
 - **Right-click context menu** - in the file browser ("Share Files...") and on panel rows ("Copy to Current Folder", "Show in File Browser")
+- **Optional password protection** - set a password when creating a share or request (or later via right-click → Set Password); recipients must enter it before they can see or access anything. Generate a memorable passphrase (xkcdpass) with one click; the link dialog shows the password with its own copy button. Attempts are rate limited server-side
 - **Hidden files visible by default** - dotfiles like `.env`, `.gitignore` are shareable; toggle in Settings
 - **Standalone HTML page** - link works in any browser, no JupyterLab needed
 - **QR code** in the share-link dialog for scanning from a phone
@@ -58,12 +59,15 @@ Optional, in `jupyter_server_config.py`:
 c.ShareFilesConfig.shares_dir = "uploads"        # default - relative to the notebook root
 c.ShareFilesConfig.use_trash = True              # default: True
 c.ShareFilesConfig.verify_peer_tls = True        # default: True
+c.ShareFilesConfig.password_max_attempts_per_minute = 30   # default: 30
+c.ShareFilesConfig.password_attempt_cooldown_seconds = 1   # default: 1
 ```
 
 - **`shares_dir`** - where shares/requests/connections are stored; relative paths resolve against the notebook root (the server's `root_dir`), created on demand<br>
   Must resolve **inside** the notebook root - the extension refuses to start with a `StorageError` otherwise (shares outside the root are unreachable from the file browser and Contents API)
 - **`use_trash`** - `False` deletes permanently instead of moving to the OS trash
 - **`verify_peer_tls`** - set `False` when peers (e.g. a JupyterHub) use a self-signed certificate; server-side saves/uploads to such peers otherwise fail with a 502
+- **`password_max_attempts_per_minute`** / **`password_attempt_cooldown_seconds`** - rate limiting of password attempts against a protected share/request (per resource, via the `limits` library). Defaults are deliberately generous (30/minute, 1s between attempts); lower the cap or raise the cooldown to harden against brute force
 - **`pollIntervalSeconds`** - panel refresh interval, in Settings Editor under **Share Files** (default 15, minimum 2); one tick refreshes all shares, requests and connections
 - **`tunnelAutostart`** - Settings Editor under **Share Files** (default on); bring the Cloudflare tunnel up at server startup when one is configured
 
@@ -80,8 +84,10 @@ Environment variables:
 
 ```bash
 jupyterlab_share_files list-items
-jupyterlab_share_files create-share <name> [paths...]
-jupyterlab_share_files create-request <name>
+jupyterlab_share_files create-share <name> [paths...] [--password PW | --generate-password]
+jupyterlab_share_files create-request <name> [--password PW | --generate-password]
+jupyterlab_share_files set-password <share|request> <id> [PW] [--generate] [--clear]
+jupyterlab_share_files generate-password
 jupyterlab_share_files connect <link>
 jupyterlab_share_files disconnect <key>
 jupyterlab_share_files close-share <id>
@@ -93,7 +99,7 @@ jupyterlab_share_files list-request-uploads <id>
 
 ## Cloudflare tunnel sharing
 
-The `cloudflare` command exposes share/request links beyond the hub or local network through a Cloudflare tunnel. Six orthogonal subcommands cover the lifecycle; `cloudflare --help` carries the full reference with examples. Policy and configuration guide: [docs/cloudflare_setup.md](docs/cloudflare_setup.md).
+The `cloudflare` command exposes share/request links beyond the hub or local network through a Cloudflare tunnel. Cloudflare was chosen for security reasons: the tunnel is outbound-only (no inbound port is opened on your network), traffic terminates at the Cloudflare edge with enforced HTTPS, and path-restricted ingress means only the extension's `/public/...` endpoints are routable - the hub login, authenticated APIs and the rest of the private network answer 404 at the edge before any packet reaches your server. Six orthogonal subcommands cover the lifecycle; `cloudflare --help` carries the full reference with examples. Policy and configuration guide: [docs/cloudflare_setup.md](docs/cloudflare_setup.md).
 
 - **`setup --token <T> --account-id <A> --hostname <H> --private-base-url <URL>`** - save credentials (chmod-600 config file) and provision end to end: create/reuse the user's own tunnel (named `share-files-<sluggified private base URL>` - deterministic, so repeated setups reuse it; unique per user/server on a shared account), route the hostname to the server URL, add a proxied CNAME, enforce HTTPS, save `public_base_url`, start the connector daemon<br>
   `--private-base-url` is required - the URL the `cloudflared` connector reaches the server at; explicit, never inferred; must be `https` (error with guidance otherwise; `localhost` is fine if served over https)
@@ -126,9 +132,12 @@ jupyterlab_share_files cloudflare reset
 
 ## Security
 
-- The link is the credential (40 bits of entropy); no expiry, no PIN - share over trusted channels (Slack, email)
+- The link is the credential (40 bits of entropy); no expiry - share over trusted channels (Slack, email)
+- **Optional password** as a second factor: set it at creation or later (right-click → Set Password), recipients unlock before any access. The unlock token is bound to the password, so changing the password instantly locks out everyone who held the old one
+- **Brute-force protection**: password attempts are rate limited per resource (`limits` library, in-memory) - a per-minute cap plus a mandatory cooldown between attempts, both tunable in config (generous defaults: 30/minute, 1s)
 - HTTPS is inherited from your JupyterHub/Jupyter proxy
-- With Cloudflare sharing active, links are reachable from the whole internet - HTTPS only, and only the `/public/...` capability endpoints; everything else stays unreachable
+- With Cloudflare sharing active, links are reachable from the whole internet - HTTPS only, and only the `/public/...` capability endpoints; everything else stays unreachable (a security property of the tunnel design - see above)
+- The `cloudflared` connector receives its token via the `TUNNEL_TOKEN` environment variable, never on the command line, so it cannot leak through `ps`/`/proc` on shared hosts
 
 ## Releases
 

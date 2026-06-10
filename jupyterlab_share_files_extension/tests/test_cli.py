@@ -41,13 +41,13 @@ def test_list_items_dispatches(monkeypatch, capsys):
 def test_create_share_passes_name_and_paths(monkeypatch, capsys):
     captured = {}
 
-    def fake(name, paths):
-        captured["args"] = (name, paths)
+    def fake(name, paths, password=""):
+        captured["args"] = (name, paths, password)
         return {"id": "X"}
 
     monkeypatch.setattr(cli, "create_share", fake)
     assert cli.main(["create-share", "demo", "a.txt", "b/c.txt"]) == 0
-    assert captured["args"] == ("demo", ["a.txt", "b/c.txt"])
+    assert captured["args"] == ("demo", ["a.txt", "b/c.txt"], "")
 
 
 def test_pick_up_names_default_to_all(monkeypatch, capsys):

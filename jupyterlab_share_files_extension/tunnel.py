@@ -450,14 +450,19 @@ def ensure_connector(retries: int = 3, logger: Optional[logging.Logger] = None) 
     if _connector_running():
         log.info("cloudflared connector already running")
         return True
+    # Pass the connector token via the environment (TUNNEL_TOKEN), never on
+    # the command line - argv is world-readable in `ps` / `/proc/<pid>/cmdline`
+    # and would leak the token to any other local user on the host.
+    run_env = dict(os.environ, TUNNEL_TOKEN=token)
     for attempt in range(1, retries + 1):
         try:
             with open(CONNECTOR_LOG, "ab") as logfile:
                 proc = subprocess.Popen(
-                    ["cloudflared", "tunnel", "run", "--token", token],
+                    ["cloudflared", "tunnel", "run"],
                     stdout=logfile,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
+                    env=run_env,
                 )
         except OSError as exc:
             log.error(

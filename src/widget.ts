@@ -25,7 +25,9 @@ import {
   deleteShare,
   fetchRemoteRequest,
   fetchRemoteShare,
+  generatePassword,
   getInfo,
+  getPassword,
   IExtensionInfo,
   listConnections,
   listRequests,
@@ -35,8 +37,10 @@ import {
   removeShareItems,
   resetTunnel,
   saveFromConnection,
+  setPassword,
   setTunnel,
   setupTunnel,
+  unlockRemote,
   uploadToConnection
 } from './api';
 import { clearClip, getClip, setClip } from './clipboard';
@@ -192,10 +196,14 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     const suggested = this._suggestName(paths);
-    const name = await this._promptForName('Create new share', suggested);
-    if (!name) {
+    const spec = await this._promptForNameAndPassword(
+      'Create new share',
+      suggested
+    );
+    if (!spec) {
       return;
     }
+    const { name, password } = spec;
     const tempKey = '__pending_share';
     this._state.busyKeys.add(tempKey);
     this._render();
@@ -208,7 +216,12 @@ export class ShareFilesPanel extends Widget {
       }
     );
     try {
-      const share = await createShare(this._serverSettings, name, paths);
+      const share = await createShare(
+        this._serverSettings,
+        name,
+        paths,
+        password
+      );
       await this._copyLinkToClipboard(share.link);
       Notification.update({
         id: pending,
@@ -237,17 +250,21 @@ export class ShareFilesPanel extends Widget {
       );
       return;
     }
-    const name = await this._promptForName('Create new file request', '');
-    if (!name) {
+    const spec = await this._promptForNameAndPassword(
+      'Create new file request',
+      ''
+    );
+    if (!spec) {
       return;
     }
+    const { name, password } = spec;
     const pending = Notification.emit(
       `Creating request "${name}"...`,
       'in-progress',
       { autoClose: false }
     );
     try {
-      const req = await createRequest(this._serverSettings, name);
+      const req = await createRequest(this._serverSettings, name, password);
       await this._copyLinkToClipboard(req.link);
       Notification.update({
         id: pending,
@@ -383,13 +400,54 @@ export class ShareFilesPanel extends Widget {
     } catch {
       // malformed URL - let the backend handle the error message
     }
-    try {
-      await addConnection(this._serverSettings, link);
-    } catch (err: any) {
-      Notification.error(`Could not connect: ${err.message || err}`);
-      return;
+    // Protected resources answer 401 password_required on connect - prompt
+    // and retry with the password. A wrong password comes back as another
+    // 401 so the prompt repeats until cancel (rate limited server-side).
+    let password = '';
+    for (;;) {
+      try {
+        await addConnection(this._serverSettings, link, password);
+        break;
+      } catch (err: any) {
+        const status = err?.response?.status;
+        if (status === 401) {
+          const entered = await this._promptForConnectPassword(
+            password
+              ? 'Wrong password - try again'
+              : 'This link is password protected'
+          );
+          if (entered === null) {
+            return; // cancelled
+          }
+          password = entered;
+          continue;
+        }
+        Notification.error(`Could not connect: ${err.message || err}`);
+        return;
+      }
     }
     await this.refresh();
+  }
+
+  /** Prompt for the password of a protected link being connected to. */
+  private async _promptForConnectPassword(
+    title: string
+  ): Promise<string | null> {
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.placeholder = 'Password';
+    input.autocomplete = 'off';
+    input.style.cssText = 'width: 100%; padding: 6px 8px; font-size: 14px;';
+    const widget = new Widget({ node: input });
+    const result = await showDialog({
+      title,
+      body: widget,
+      buttons: [Dialog.cancelButton(), Dialog.okButton({ label: 'Connect' })]
+    });
+    if (!result.button.accept) {
+      return null;
+    }
+    return input.value;
   }
 
   // ------------------------------------------------------------------ //
@@ -1137,6 +1195,10 @@ export class ShareFilesPanel extends Widget {
       return list;
     }
     const baseLink = (share.link || '').replace(/\/$/, '');
+    // Protected share: ride the unlock token on download URLs (?t=) - plain
+    // <a>/fetch downloads cannot carry headers.
+    const token = this._unlockTokens.get(conn.key) || '';
+    const tokenQs = token ? '?t=' + encodeURIComponent(token) : '';
     for (const entry of share.entries) {
       const row = document.createElement('div');
       row.className = 'jp-ShareFilesPanel-entry jp-mod-clickable';
@@ -1156,7 +1218,8 @@ export class ShareFilesPanel extends Widget {
       size.className = 'jp-ShareFilesPanel-entrySize';
       size.textContent = this._formatSize(entry.size);
       row.appendChild(size);
-      const url = baseLink + '/download/' + encodeURIComponent(entry.name);
+      const url =
+        baseLink + '/download/' + encodeURIComponent(entry.name) + tokenQs;
       row.title =
         entry.type === 'directory'
           ? 'Double-click to save folder here; drag into the file browser to save; right-click to download'
@@ -1624,6 +1687,17 @@ export class ShareFilesPanel extends Widget {
           });
         }
       });
+      c.addCommand('share-files-panel:set-password', {
+        label: args =>
+          args.hasPassword ? 'Change Password...' : 'Set Password...',
+        execute: args => {
+          const kind = String(args.kind || 'share') as 'share' | 'request';
+          const id = String(args.id || '');
+          if (id) {
+            void this._changePasswordFlow(kind, id);
+          }
+        }
+      });
       c.addCommand('share-files-panel:delete-share', {
         label: 'Delete Share',
         execute: args => {
@@ -1884,6 +1958,11 @@ export class ShareFilesPanel extends Widget {
     }
     menu.addItem({ type: 'separator' });
     menu.addItem({
+      command: 'share-files-panel:set-password',
+      args: { kind: 'share', id: share.id, hasPassword: !!share.has_password }
+    });
+    menu.addItem({ type: 'separator' });
+    menu.addItem({
       command: 'share-files-panel:delete-share',
       args: { id: share.id }
     });
@@ -1906,6 +1985,11 @@ export class ShareFilesPanel extends Widget {
         args: { path: req.path, type: 'directory' }
       });
     }
+    menu.addItem({ type: 'separator' });
+    menu.addItem({
+      command: 'share-files-panel:set-password',
+      args: { kind: 'request', id: req.id, hasPassword: !!req.has_password }
+    });
     menu.addItem({ type: 'separator' });
     menu.addItem({
       command: 'share-files-panel:delete-request',
@@ -2055,16 +2139,42 @@ export class ShareFilesPanel extends Widget {
     }
     const link = conn.link || this._linkFor(conn);
     try {
+      const token = await this._tokenFor(conn, link);
       let data: IRemoteShare | IRemoteRequest;
       if (conn.kind === 'share') {
-        data = await fetchRemoteShare(link);
+        data = await fetchRemoteShare(link, token);
       } else {
-        data = await fetchRemoteRequest(link);
+        data = await fetchRemoteRequest(link, token);
       }
       this._state.connectionData.set(conn.key, data);
       this._state.offlineKeys.delete(conn.key);
     } catch {
+      // a stale unlock token (expiry / password change) also lands here -
+      // drop it so the next poll re-unlocks with the stored password
+      this._unlockTokens.delete(conn.key);
       this._state.offlineKeys.add(conn.key);
+    }
+  }
+
+  /** Unlock token for a password-protected connection ('' when none needed).
+   * Tokens are cached per connection and re-fetched when the cached one
+   * stops working (expiry, password change on the owner's side). */
+  private async _tokenFor(conn: IConnection, link: string): Promise<string> {
+    if (!conn.password) {
+      return '';
+    }
+    const cached = this._unlockTokens.get(conn.key);
+    if (cached) {
+      return cached;
+    }
+    try {
+      const token = await unlockRemote(link, conn.password);
+      this._unlockTokens.set(conn.key, token);
+      return token;
+    } catch {
+      // wrong/changed password or rate limit - fetches will 401 and the
+      // connection shows offline; reconnecting with the new password repairs
+      return '';
     }
   }
 
@@ -2204,16 +2314,69 @@ export class ShareFilesPanel extends Widget {
     return 'shared-files';
   }
 
-  private async _promptForName(
+  /** Build a password input row with a "Generate" button (xkcdpass-style
+   * passphrase from the server). Returns the row and the input element. */
+  private _passwordRow(initial = ''): {
+    row: HTMLElement;
+    input: HTMLInputElement;
+  } {
+    const row = document.createElement('div');
+    row.style.cssText = 'display: flex; gap: 6px;';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = initial;
+    input.placeholder = 'Password (optional)';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.style.cssText =
+      'flex: 1; padding: 6px 8px; font-size: 14px;' +
+      ' font-family: var(--jp-code-font-family, monospace);';
+    const gen = document.createElement('button');
+    gen.type = 'button';
+    gen.textContent = 'Generate';
+    gen.title = 'Generate a memorable passphrase';
+    gen.className = 'jp-Dialog-button jp-mod-styled';
+    gen.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      void generatePassword(this._serverSettings)
+        .then(r => {
+          input.value = r.password || '';
+        })
+        .catch((err: any) => {
+          Notification.error(
+            `Could not generate a password: ${err?.message || err}`
+          );
+        });
+    });
+    row.appendChild(input);
+    row.appendChild(gen);
+    return { row, input };
+  }
+
+  private async _promptForNameAndPassword(
     title: string,
     suggested: string
-  ): Promise<string | null> {
+  ): Promise<{ name: string; password: string } | null> {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
     const input = document.createElement('input');
     input.type = 'text';
     input.value = suggested;
     input.placeholder = 'Name';
     input.style.cssText = 'width: 100%; padding: 6px 8px; font-size: 14px;';
-    const widget = new Widget({ node: input });
+    wrap.appendChild(input);
+    const { row: pwRow, input: pwInput } = this._passwordRow();
+    wrap.appendChild(pwRow);
+    const hint = document.createElement('div');
+    hint.textContent =
+      'With a password set, recipients must enter it before they can ' +
+      'see or access the files.';
+    hint.style.cssText =
+      'font-size: var(--jp-ui-font-size0);' +
+      ' color: var(--jp-ui-font-color2);';
+    wrap.appendChild(hint);
+    const widget = new Widget({ node: wrap });
     const result = await showDialog({
       title,
       body: widget,
@@ -2222,7 +2385,56 @@ export class ShareFilesPanel extends Widget {
     if (!result.button.accept) {
       return null;
     }
-    return input.value.trim() || null;
+    const name = input.value.trim();
+    if (!name) {
+      return null;
+    }
+    return { name, password: pwInput.value.trim() };
+  }
+
+  /** Set / change / clear the password of an existing share or request
+   * (context menu). Pre-filled with the current password. */
+  private async _changePasswordFlow(
+    kind: 'share' | 'request',
+    id: string
+  ): Promise<void> {
+    let current = '';
+    try {
+      current = (await getPassword(this._serverSettings, kind, id)).password;
+    } catch {
+      // resource may have vanished; the save below will surface the error
+    }
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+    const { row: pwRow, input: pwInput } = this._passwordRow(current);
+    wrap.appendChild(pwRow);
+    const hint = document.createElement('div');
+    hint.textContent =
+      'Leave empty to remove the password. Changing it invalidates ' +
+      'everyone who already unlocked with the old one.';
+    hint.style.cssText =
+      'font-size: var(--jp-ui-font-size0);' +
+      ' color: var(--jp-ui-font-color2);';
+    wrap.appendChild(hint);
+    const widget = new Widget({ node: wrap });
+    const result = await showDialog({
+      title: current ? 'Change password' : 'Set password',
+      body: widget,
+      buttons: [Dialog.cancelButton(), Dialog.okButton({ label: 'Save' })]
+    });
+    if (!result.button.accept) {
+      return;
+    }
+    const password = pwInput.value.trim();
+    try {
+      await setPassword(this._serverSettings, kind, id, password);
+      Notification.success(password ? 'Password set' : 'Password removed', {
+        autoClose: 4000
+      });
+    } catch (err: any) {
+      Notification.error(`Could not save password: ${err.message || err}`);
+    }
+    await this.refresh();
   }
 
   private async _copyLinkToClipboard(link: string): Promise<boolean> {
@@ -2322,13 +2534,70 @@ export class ShareFilesPanel extends Widget {
       wrap.appendChild(status);
     }
 
+    const m = link.match(/\/public\/(share|request)\/([A-Z2-7]{6,16})$/);
+
+    // Password: protected resources show the password next to the link (the
+    // owner hands both to the recipient) with its own copy button. Fetched
+    // owner-side; appears only when one is set.
+    if (m) {
+      void getPassword(
+        this._serverSettings,
+        m[1] as 'share' | 'request',
+        m[2]
+      ).then(
+        res => {
+          if (!res.password) {
+            return;
+          }
+          const pwLine = statusLine('--jp-warn-color1');
+          pwLine.style.fontStyle = 'normal';
+          const label = document.createElement('span');
+          label.textContent = 'Password:';
+          pwLine.appendChild(label);
+          const value = document.createElement('code');
+          value.textContent = res.password;
+          value.style.cssText =
+            'font-family: var(--jp-code-font-family, monospace);' +
+            ' color: var(--jp-ui-font-color1);' +
+            ' user-select: all;';
+          pwLine.appendChild(value);
+          const copyBtn = document.createElement('button');
+          copyBtn.type = 'button';
+          copyBtn.textContent = 'Copy';
+          copyBtn.className = 'jp-Dialog-button jp-mod-styled';
+          copyBtn.style.cssText = 'margin-left: auto; padding: 2px 10px;';
+          copyBtn.addEventListener('click', evt => {
+            evt.preventDefault();
+            void this._copyLinkToClipboard(res.password).then(ok => {
+              copyBtn.textContent = ok ? 'Copied' : 'Copy failed';
+              window.setTimeout(() => {
+                copyBtn.textContent = 'Copy';
+              }, 1200);
+            });
+          });
+          pwLine.appendChild(copyBtn);
+          // keep ordering: link, copied-status, password, reachability, QR -
+          // insert before the reachability line when it is already there
+          const reachEl = wrap.querySelector('[data-reach]');
+          if (reachEl) {
+            wrap.insertBefore(pwLine, reachEl);
+          } else {
+            wrap.appendChild(pwLine);
+          }
+        },
+        () => {
+          /* not the owner or gone - no password line */
+        }
+      );
+    }
+
     // Reachability: the server probes its own public link (a frontend fetch
     // would be blocked by CORS). Kind and id come from the link itself, so
     // every caller gets the check without extra plumbing. A spinner runs
     // while the probe is in flight.
-    const m = link.match(/\/public\/(share|request)\/([A-Z2-7]{6,16})$/);
     if (m) {
       const reach = statusLine('--jp-border-color2');
+      reach.setAttribute('data-reach', '1');
       reach.appendChild(this._spinnerNode());
       reach.appendChild(document.createTextNode('Checking link reachability…'));
       wrap.appendChild(reach);
@@ -2752,4 +3021,6 @@ export class ShareFilesPanel extends Widget {
   private _filterText = '';
   private _filterVisible = false;
   private _pollHandle: number | null = null;
+  /** Unlock tokens for password-protected connections, keyed by conn.key. */
+  private _unlockTokens = new Map<string, string>();
 }

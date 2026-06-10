@@ -2,6 +2,26 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.20] - 2026-06-10
+
+Optional password protection for shares and requests, brute-force rate limiting, connector-token hardening.
+
+### Added
+
+- Optional password on shares and requests: set it in the create dialog (or `--password` / `--generate-password` on the CLI), change or clear it later via right-click → "Set Password..." / "Change Password..." or `set-password`; with a password set, the standalone page, manifest, downloads and uploads all require unlocking first
+- Passphrase generation via `xkcdpass` - "Generate" buttons in the dialogs, `generate-password` CLI command and `api/generate-password`
+- The share-link popup shows the password (when set) next to the link with its own Copy button
+- Password attempts are rate limited per resource via the `limits` library: a per-minute cap plus a mandatory cooldown between attempts, generous by default (30/minute, 1s) and tunable via `c.ShareFilesConfig.password_max_attempts_per_minute` / `password_attempt_cooldown_seconds`
+- Connecting to a password-protected link prompts for the password, verifies it against the peer at connect time and stores it with the connection - manifest refresh, pick-up, send-to-request and panel downloads unlock automatically from then on
+- README documents the security rationale for choosing Cloudflare (outbound-only tunnel, edge HTTPS, path-restricted ingress) and the new hardening features; acceptance criteria AC-CF26-AC-CF31
+
+### Changed
+
+- The `cloudflared` connector receives its token via the `TUNNEL_TOKEN` environment variable instead of the command line, so it can no longer leak through `ps` / `/proc/<pid>/cmdline` on shared hosts
+- Unlock tokens are HMAC-bound to the password and expire after 6 hours - changing the password instantly invalidates everyone who unlocked with the old one
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.19] - 2026-06-10
 
 Reset from the link dialog, icon colour, own-link TLS fix.
@@ -18,8 +38,6 @@ Reset from the link dialog, icon colour, own-link TLS fix.
 ### Fixed
 
 - Link reachability check no longer fails with "TLS verification failed" behind a self-signed hub certificate: the probed URL is the server's own, so the probe skips certificate validation - the question is reachability, not trust
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.15] - 2026-06-10
 

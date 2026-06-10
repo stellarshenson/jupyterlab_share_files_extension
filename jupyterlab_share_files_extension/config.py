@@ -91,3 +91,26 @@ class ShareFilesConfig(Configurable):
             "fetches fail with a certificate verification error."
         ),
     )
+
+    password_max_attempts_per_minute = Int(
+        30,
+        config=True,
+        help=(
+            "Maximum password attempts per minute against a single "
+            "password-protected share/request (the public unlock endpoint). "
+            "The default (30) is deliberately generous; lower it to harden "
+            "against brute force. Counted per resource id."
+        ),
+    )
+
+    password_attempt_cooldown_seconds = Int(
+        1,
+        config=True,
+        help=(
+            "Minimum seconds between consecutive password attempts against a "
+            "single password-protected share/request. The default (1) is "
+            "generous; raise it to slow brute force further. Set to 0 to "
+            "disable the per-attempt cooldown (the per-minute cap still "
+            "applies). Counted per resource id."
+        ),
+    )

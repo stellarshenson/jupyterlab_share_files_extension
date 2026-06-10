@@ -20,6 +20,8 @@ export interface IShare {
   link: string;
   /** Workspace-relative path of the share's data directory */
   path?: string;
+  /** Public access requires a password */
+  has_password?: boolean;
 }
 
 export interface IUploaderEntry {
@@ -40,6 +42,8 @@ export interface IRequest {
   link: string;
   /** Workspace-relative path of the request's uploads directory */
   path?: string;
+  /** Public access requires a password */
+  has_password?: boolean;
 }
 
 export interface IConnection {
@@ -51,6 +55,8 @@ export interface IConnection {
   owner: string;
   added_at: number;
   link?: string;
+  /** Stored password for a protected remote resource (owner-side only) */
+  password?: string;
 }
 
 /** Remote share manifest as returned by /public/share/<id>/manifest */
