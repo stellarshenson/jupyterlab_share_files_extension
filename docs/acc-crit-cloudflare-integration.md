@@ -23,7 +23,7 @@ Criteria for the Cloudflare tunnel integration exposing share/request links beyo
 
 **AC-CF8 - a verified token yields a working public URL.** `cloudflare setup --hostname H --private-base-url URL` provisions everything; generated links then carry the Cloudflare hostname and the public share/request endpoints are reachable from outside the hub exactly as hub-local links are.
 
-- **Tunnel** - creates or reuses tunnel `share-files`; repeated setup is idempotent
+- **Tunnel** - creates or reuses tunnel `share-files-<sluggified private base URL>` (e.g. `share-files-hub-example-com-user-alice`); deterministic → repeated setup is idempotent, unique per user/server on a shared account
 - **`--private-base-url` MANDATORY** - the server address the connector forwards to; explicit, never inferred; must be `https` (error with guidance otherwise; `localhost` acceptable only as an explicit https value)
 - **Ingress path-restricted** - only `^(/user/[^/]+)?/jupyterlab-share-files-extension/public/.*` routes to the origin, catch-all 404; hub login, authenticated `/api/*` and the private network NOT reachable through the tunnel
 - **Host/SNI override** - origin's own hostname sent as Host header and TLS SNI (`httpHostHeader`/`originServerName`) so a reverse proxy in front of the hub routes the requests; `noTLSVerify` for https origins

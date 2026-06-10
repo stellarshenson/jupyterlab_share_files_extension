@@ -2278,21 +2278,8 @@ export class ShareFilesPanel extends Widget {
       ' gap: 8px;' +
       ' min-width: min(720px, 90vw);';
 
-    if (alreadyCopied) {
-      const status = document.createElement('div');
-      status.style.cssText =
-        'padding: 6px 12px;' +
-        ' background: var(--jp-layout-color2);' +
-        ' color: var(--jp-ui-font-color2);' +
-        ' border-left: 2px solid var(--jp-success-color1);' +
-        ' border-radius: 2px;' +
-        ' font-size: var(--jp-ui-font-size1);' +
-        ' font-family: var(--jp-ui-font-family);' +
-        ' font-style: italic;';
-      status.textContent = '✓  Link copied to clipboard';
-      wrap.appendChild(status);
-    }
-
+    // Order: the link itself first, then the copy confirmation, then the
+    // reachability outcome.
     const input = document.createElement('input');
     input.type = 'text';
     input.value = link;
@@ -2310,22 +2297,38 @@ export class ShareFilesPanel extends Widget {
     input.addEventListener('focus', () => input.select());
     wrap.appendChild(input);
 
-    // Reachability: the server probes its own public link (a frontend fetch
-    // would be blocked by CORS). Kind and id come from the link itself, so
-    // every caller gets the check without extra plumbing.
-    const m = link.match(/\/public\/(share|request)\/([A-Z2-7]{6,16})$/);
-    if (m) {
-      const reach = document.createElement('div');
-      reach.style.cssText =
-        'padding: 6px 12px;' +
+    const statusLine = (borderVar: string): HTMLElement => {
+      const el = document.createElement('div');
+      el.style.cssText =
+        'display: flex;' +
+        ' align-items: center;' +
+        ' gap: 6px;' +
+        ' padding: 6px 12px;' +
         ' background: var(--jp-layout-color2);' +
         ' color: var(--jp-ui-font-color2);' +
-        ' border-left: 2px solid var(--jp-border-color2);' +
+        ` border-left: 2px solid var(${borderVar});` +
         ' border-radius: 2px;' +
         ' font-size: var(--jp-ui-font-size1);' +
         ' font-family: var(--jp-ui-font-family);' +
         ' font-style: italic;';
-      reach.textContent = 'Checking link reachability…';
+      return el;
+    };
+
+    if (alreadyCopied) {
+      const status = statusLine('--jp-success-color1');
+      status.textContent = '✓  Link copied to clipboard';
+      wrap.appendChild(status);
+    }
+
+    // Reachability: the server probes its own public link (a frontend fetch
+    // would be blocked by CORS). Kind and id come from the link itself, so
+    // every caller gets the check without extra plumbing. A spinner runs
+    // while the probe is in flight.
+    const m = link.match(/\/public\/(share|request)\/([A-Z2-7]{6,16})$/);
+    if (m) {
+      const reach = statusLine('--jp-border-color2');
+      reach.appendChild(this._spinnerNode());
+      reach.appendChild(document.createTextNode('Checking link reachability…'));
       wrap.appendChild(reach);
       void checkLink(
         this._serverSettings,

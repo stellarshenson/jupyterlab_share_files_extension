@@ -258,7 +258,7 @@ def test_cloudflare_setup_reuses_existing_tunnel(config_home, monkeypatch):
             calls.append((method, endpoint, body))
             return {
                 "success": True,
-                "result": [{"id": "tun-1", "name": "share-files", "status": "inactive"}],
+                "result": [{"id": "tun-1", "name": "share-files-hub-example-com", "status": "inactive"}],
             }
         return base(method, endpoint, token, body)
 
@@ -545,3 +545,21 @@ def test_cloudflare_validate_reports_cloudflared_binary(
     out = json.loads(capsys.readouterr().out)["validate"]
     assert out["cloudflared_available"] is False
     assert "NOT FOUND" in out["cloudflared_path"]
+
+
+def test_tunnel_name_is_deterministic_slug_of_private_url():
+    """Tunnel name = extension prefix + sluggified private base URL - the
+    same URL always yields the same name (reuse), different users/servers
+    never collide on a shared account."""
+    assert (
+        cli.tunnel_name("https://hub.example.com/user/alice/")
+        == "share-files-hub-example-com-user-alice"
+    )
+    assert (
+        cli.tunnel_name("https://hub.example.com/user/alice/")
+        == cli.tunnel_name("https://hub.example.com/user/alice")
+    )
+    assert cli.tunnel_name("https://hub.example.com/user/alice/") != cli.tunnel_name(
+        "https://hub.example.com/user/bob/"
+    )
+    assert cli.tunnel_name("https://myhost.example.com") == "share-files-myhost-example-com"

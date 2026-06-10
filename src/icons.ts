@@ -98,10 +98,12 @@ export const disconnectIcon = new LabIcon({
   name: 'share-files:disconnect',
   svgstr: disconnectSvg
 });
-// same cloud silhouette as cloudSvg, but a dashed outline - shown when the
-// tunnel is configured yet switched off (links are private)
-const cloudOffSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1 -1 26 26" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 2" class="jp-icon3">
-<path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/>
+// same cloud silhouette as cloudSvg, but outline only (NO fill) - shown when
+// the tunnel is configured yet switched off (links are private). fill/stroke
+// live on the path and the themed jp-icon3 class is deliberately absent -
+// JupyterLab's .jp-icon3[fill] CSS would otherwise re-fill the silhouette.
+const cloudOffSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1 -1 26 26">
+<path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="4 3"/>
 </svg>`;
 
 export const cloudIcon = new LabIcon({

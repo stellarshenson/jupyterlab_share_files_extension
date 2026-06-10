@@ -1,6 +1,8 @@
 {
   "title": "Share Files",
   "description": "Settings for the Share Files extension. Toggles take effect immediately - no reload required.",
+  "jupyter.lab.setting-icon": "share-files:share",
+  "jupyter.lab.setting-icon-label": "Share Files",
   "type": "object",
   "properties": {
     "enableShares": {

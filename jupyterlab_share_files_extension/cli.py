@@ -41,6 +41,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -432,7 +433,22 @@ def cloudflare_verify(token: str, account_id: str = "") -> dict:
     return result
 
 
-DEFAULT_TUNNEL_NAME = "share-files"
+TUNNEL_NAME_PREFIX = "share-files"
+
+
+def tunnel_name(private_base_url: str) -> str:
+    """Tunnel name: extension prefix + sluggified private base URL.
+
+    Deterministic and reproducible - the same ``--private-base-url`` always
+    maps to the same tunnel, so repeated setups reuse it (idempotency), while
+    different users/servers on the same Cloudflare account never collide on
+    a shared name. E.g. ``https://hub.example.com/user/alice/`` ->
+    ``share-files-hub-example-com-user-alice``.
+    """
+    parsed = urllib.parse.urlsplit(private_base_url)
+    raw = (parsed.netloc + parsed.path).lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    return f"{TUNNEL_NAME_PREFIX}-{slug}"
 
 
 def _origin_from_base_url(base_url: str) -> str:
@@ -478,7 +494,9 @@ def cloudflare_setup(
 ) -> dict:
     """Provision a Cloudflare tunnel + DNS route and record the public base.
 
-    Creates (or reuses) a tunnel named ``share-files``, points its ingress at
+    Creates (or reuses) a tunnel named per ``tunnel_name`` (extension prefix
+    + sluggified private base URL - unique per user/server, reproducible
+    across runs), points its ingress at
     the origin derived from ``private_base_url`` (the server's own URL - see
     ``_origin_from_base_url``) restricted to the extension's ``/public/``
     endpoints, routes ``hostname`` to it with a proxied CNAME, enforces HTTPS
@@ -496,9 +514,12 @@ def cloudflare_setup(
         )
     account_id = verify["account_id"]
 
-    # 1. Reuse the share-files tunnel if it exists, else create it.
+    # 1. Reuse this server's tunnel if it exists, else create it. The name
+    # is derived from the private base URL, so it is stable across setups
+    # and unique per user/server on a shared account.
+    name = tunnel_name(private_base_url)
     tunnel = next(
-        (t for t in verify["existing_tunnels"] if t.get("name") == DEFAULT_TUNNEL_NAME),
+        (t for t in verify["existing_tunnels"] if t.get("name") == name),
         None,
     )
     if tunnel is None:
@@ -506,7 +527,7 @@ def cloudflare_setup(
             "POST",
             f"accounts/{account_id}/cfd_tunnel",
             token,
-            {"name": DEFAULT_TUNNEL_NAME, "config_src": "cloudflare"},
+            {"name": name, "config_src": "cloudflare"},
         )
         if not created.get("success"):
             raise RuntimeError("cloudflare setup: tunnel create failed: " + _cf_errors(created))
@@ -602,6 +623,7 @@ def cloudflare_setup(
         cloudflare_account_id=account_id,
         cloudflare_tunnel_id=tunnel_id,
         cloudflare_hostname=hostname,
+        cloudflare_tunnel_name=name,
         cloudflare_tunnel_token=tunnel_token,
         private_base_url=private_base_url,
         public_base_url=public_base_url,
@@ -611,7 +633,7 @@ def cloudflare_setup(
 
     return {
         "tunnel_id": tunnel_id,
-        "tunnel_name": DEFAULT_TUNNEL_NAME,
+        "tunnel_name": name,
         "hostname": hostname,
         "origin": origin,
         "private_base_url": private_base_url,
@@ -651,6 +673,14 @@ def stop_connector() -> bool:
                 stopped = True
             except (OSError, ValueError):
                 pass
+    # Wait for the processes to actually exit - callers (e.g. setup with a
+    # changed tunnel token) start a replacement right after, and a dying
+    # daemon still visible in ps would make ensure_connector a no-op.
+    if stopped:
+        for _ in range(20):
+            if not _connector_running():
+                break
+            time.sleep(0.25)
     return stopped
 
 
@@ -762,6 +792,7 @@ def _cmd_cloudflare(args: argparse.Namespace) -> Any:
             "cloudflare_token": _mask_secret(cfg.get("cloudflare_token", "")),
             "cloudflare_account_id": account_id,
             "cloudflare_tunnel_id": tunnel_id,
+            "cloudflare_tunnel_name": cfg.get("cloudflare_tunnel_name", ""),
             "cloudflare_hostname": cfg.get("cloudflare_hostname", ""),
             "cloudflare_tunnel_token": _mask_secret(
                 cfg.get("cloudflare_tunnel_token", "")
@@ -808,9 +839,17 @@ def _cmd_cloudflare(args: argparse.Namespace) -> Any:
             "cloudflare setup: no token given or saved; pass --token"
         )
     account_id = args.account_id or cfg.get("cloudflare_account_id") or ""
+    prev_tunnel_token = cfg.get("cloudflare_tunnel_token", "")
     out["setup"] = cloudflare_setup(
         token, account_id, args.hostname, args.private_base_url
     )
+    # The tunnel (and so its connector token) may have changed - a daemon
+    # still serving the OLD tunnel would leave the new hostname dead.
+    if (
+        _load_config().get("cloudflare_tunnel_token", "") != prev_tunnel_token
+        and _connector_running()
+    ):
+        stop_connector()
     out["setup"]["daemon_running"] = ensure_connector()
     out["setup"]["connector_log"] = CONNECTOR_LOG
     return out

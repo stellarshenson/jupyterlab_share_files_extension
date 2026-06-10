@@ -87,7 +87,10 @@ it, so a policy gap shows up here and not halfway through setup - and
 connector itself; a binary missing from the server's PATH means the tunnel
 can never come up).
 
-`setup` creates or reuses a tunnel named `share-files`, routes the hostname
+`setup` creates or reuses a tunnel named `share-files-<sluggified
+private base URL>` (e.g. `share-files-hub-example-com-user-alice` -
+deterministic so repeated setups reuse it, unique per user/server on a
+shared account), routes the hostname
 to the origin, upserts a proxied CNAME `<hostname> → <tunnel>.cfargotunnel.com`,
 switches the zone's **Always Use HTTPS** on (plain `http` requests are
 301-redirected at the Cloudflare edge - only secure connections reach a

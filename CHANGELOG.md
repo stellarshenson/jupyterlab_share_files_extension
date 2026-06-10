@@ -2,6 +2,29 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.13] - 2026-06-10
+
+Per-user tunnel names, link dialog polish, UI consistency.
+
+### Added
+
+- Tunnel name derived from the private base URL (`share-files-<sluggified URL>`, e.g. `share-files-hub-example-com-user-alice`) - deterministic so repeated setups reuse the same tunnel, unique per user/server on a shared Cloudflare account; saved to config and shown by `cloudflare info`
+- Spinner in the link dialog while the reachability probe is in flight
+- Settings Editor entry carries the panel's share icon (`jupyter.lab.setting-icon`)
+
+### Changed
+
+- Link dialog order: the link itself first, then the copy confirmation, then the reachability outcome
+- Cloud-off icon is a true unfilled silhouette (fill/stroke moved onto the path - JupyterLab's `.jp-icon3[fill]` CSS re-filled it); thicker stroke, sparser dashes
+- Drop zone and filter input use the same themed input background (`--neutral-fill-input-rest`) as the connect input
+
+### Fixed
+
+- Setup restarts the connector when the tunnel token changed - a daemon still serving the old tunnel left the new hostname dead (edge 530)
+- `stop_connector` waits for the processes to actually exit, so `ensure_connector` no longer races a dying daemon and skips the relaunch
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.6] - 2026-06-10
 
 Public/private link toggle for the Cloudflare tunnel, link reachability check in the dialog, CLI ergonomics.
@@ -22,8 +45,6 @@ Public/private link toggle for the Cloudflare tunnel, link reachability check in
 - Refresh icon spins only on an explicit click - background polls run without icon feedback
 - Connect input background prefers `--neutral-fill-input-rest`
 - `docs/acc-crit-cloudflare-integration.md` rewritten in terse technical-documentation style (AC-CF18-AC-CF22 added)
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.3] - 2026-06-10
 
