@@ -2335,12 +2335,15 @@ export class ShareFilesPanel extends Widget {
     gen.type = 'button';
     gen.textContent = 'Generate';
     gen.title = 'Generate a memorable passphrase';
-    gen.className = 'jp-Dialog-button jp-mod-styled';
-    // The dialog button class carries large padding/min-width that crops the
-    // button inside the flex row - force a compact size.
+    // Plain compact button - the jp-Dialog-button class carries large
+    // padding/min-width that crops it inside the flex row.
     gen.style.cssText =
-      'flex: 0 0 auto; min-width: 0; height: auto;' +
-      ' padding: 2px 10px; font-size: var(--jp-ui-font-size1);';
+      'flex: 0 0 auto; align-self: stretch; padding: 0 10px;' +
+      ' font-size: var(--jp-ui-font-size1);' +
+      ' color: var(--jp-ui-font-color1);' +
+      ' background: var(--jp-layout-color2);' +
+      ' border: 1px solid var(--jp-border-color1);' +
+      ' border-radius: 2px; cursor: pointer;';
     gen.addEventListener('click', evt => {
       evt.preventDefault();
       evt.stopPropagation();
@@ -2569,8 +2572,15 @@ export class ShareFilesPanel extends Widget {
           const copyBtn = document.createElement('button');
           copyBtn.type = 'button';
           copyBtn.textContent = 'Copy';
-          copyBtn.className = 'jp-Dialog-button jp-mod-styled';
-          copyBtn.style.cssText = 'margin-left: auto; padding: 2px 10px;';
+          // Plain small button - jp-Dialog-button is dialog-action sized and
+          // dwarfs an inline status row.
+          copyBtn.style.cssText =
+            'margin-left: auto; flex: 0 0 auto; padding: 1px 8px;' +
+            ' font-size: var(--jp-ui-font-size0);' +
+            ' color: var(--jp-ui-font-color1);' +
+            ' background: var(--jp-layout-color2);' +
+            ' border: 1px solid var(--jp-border-color1);' +
+            ' border-radius: 2px; cursor: pointer;';
           copyBtn.addEventListener('click', evt => {
             evt.preventDefault();
             void this._copyLinkToClipboard(res.password).then(ok => {

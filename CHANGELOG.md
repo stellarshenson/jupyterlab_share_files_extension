@@ -2,6 +2,17 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.26] - 2026-06-10
+
+Plain compact dialog buttons.
+
+### Changed
+
+- "Generate" button in the create-share and Set/Change-password dialogs is now a plain compact button matching the input height, instead of a full-size JupyterLab dialog-action button that got cropped
+- Password "Copy" button on the share-link dialog reduced to a small inline text button
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.24] - 2026-06-10
 
 Standalone page themes, dialog polish, README diagram and screenshots.
@@ -16,8 +27,6 @@ Standalone page themes, dialog polish, README diagram and screenshots.
 - "Generate" password button sized compactly so it no longer gets cropped in the create/change-password dialogs
 - Link dialog shows the password directly below the link (was between the copied-confirmation and reachability lines)
 - README rewritten in terse technical-documentation style - overview sentences plus factual bullets; screenshots before the feature list, flow diagram after it
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.22] - 2026-06-10
 
