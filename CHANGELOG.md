@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.30] - 2026-06-11
+
+Zip-build spinner on the standalone page.
+
+### Added
+
+- Standalone download page shows a "Compressing to ZIP..." spinner overlay while the server builds the archive, for both "Download All as ZIP" and per-folder "Download ZIP" (single-file downloads are unaffected)
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.29] - 2026-06-10
 
 CLI file manipulation subcommands.
