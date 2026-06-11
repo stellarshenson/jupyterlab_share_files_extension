@@ -2,6 +2,17 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.31] - 2026-06-11
+
+Bundled Claude skill and installer.
+
+### Added
+
+- `install-claude-skill` CLI command - installs the bundled `jupyterlab_share_files` Claude skill (a usage guide for this CLI) into `~/.claude/skills/`, asking for confirmation before writing
+- The Claude skill now ships inside the package as a resource
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.30] - 2026-06-11
 
 Zip-build spinner on the standalone page.

@@ -7,6 +7,8 @@ description: Operate the Share Files JupyterLab extension from the command line 
 
 The `jupyterlab_share_files` command is a thin authenticated client over the extension's HTTP API - every panel operation is a subcommand. Use it for scripts, automation, and agent-driven sharing. Human-readable output by default; `--json` (placed before the subcommand) for machine-readable output.
 
+This skill ships inside the package. Install it into your own `~/.claude/skills/` with `jupyterlab_share_files install-claude-skill` - it asks for confirmation before writing.
+
 ## Setup
 
 The CLI needs the server URL and an API token, taken from environment variables.

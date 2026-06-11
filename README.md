@@ -112,7 +112,10 @@ jupyterlab_share_files close-request <id>
 jupyterlab_share_files pick-up <key> [names...] [--target-dir DIR]
 jupyterlab_share_files send-to-request <key> <paths...> [--uploader NAME]
 jupyterlab_share_files list-request-uploads <id>
+jupyterlab_share_files install-claude-skill
 ```
+
+`install-claude-skill` installs the bundled Claude skill (a usage guide for this CLI) into `~/.claude/skills/jupyterlab_share_files/`, asking for confirmation before writing.
 
 ## Cloudflare tunnel sharing
 

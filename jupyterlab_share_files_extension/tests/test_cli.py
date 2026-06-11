@@ -118,6 +118,38 @@ def test_remove_files_encodes_names_as_query(monkeypatch):
     assert body is None
 
 
+def test_install_claude_skill_dispatches(monkeypatch):
+    called = {}
+    monkeypatch.setattr(
+        cli, "install_claude_skill", lambda: called.setdefault("hit", True) or {"installed": True}
+    )
+    assert cli.main(["install-claude-skill"]) == 0
+    assert called.get("hit") is True
+
+
+def test_install_claude_skill_writes_on_yes(tmp_path, monkeypatch):
+    import io
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("sys.stdin", io.StringIO("y\n"))
+    result = cli.install_claude_skill()
+    dest = tmp_path / ".claude" / "skills" / "jupyterlab_share_files" / "SKILL.md"
+    assert result["installed"] is True
+    assert dest.exists()
+    assert "name: jupyterlab_share_files" in dest.read_text(encoding="utf-8")
+
+
+def test_install_claude_skill_declines_on_no(tmp_path, monkeypatch):
+    import io
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("sys.stdin", io.StringIO("n\n"))
+    result = cli.install_claude_skill()
+    dest = tmp_path / ".claude" / "skills" / "jupyterlab_share_files" / "SKILL.md"
+    assert result["installed"] is False
+    assert not dest.exists()
+
+
 def test_runtime_error_prints_to_stderr_and_exits_1(monkeypatch, capsys):
     def boom():
         raise RuntimeError("no server")

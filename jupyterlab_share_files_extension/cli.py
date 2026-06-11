@@ -290,6 +290,43 @@ def remove_upload(request_id: str, uploader: str, name: str) -> dict:
     return _request("DELETE", f"api/requests/{request_id}/uploads?{query}")
 
 
+def install_claude_skill() -> dict:
+    """Install the bundled Claude skill (this CLI's usage guide) into the
+    user's ``~/.claude/skills/`` directory. Asks for confirmation before
+    writing, since it touches files outside the project."""
+    src = os.path.join(
+        os.path.dirname(__file__),
+        "resources",
+        "skills",
+        "jupyterlab_share_files",
+        "SKILL.md",
+    )
+    if not os.path.exists(src):
+        raise RuntimeError(f"Bundled skill resource not found: {src}")
+    dest = os.path.join(
+        os.path.expanduser("~"),
+        ".claude",
+        "skills",
+        "jupyterlab_share_files",
+        "SKILL.md",
+    )
+    note = " (overwrites the existing file)" if os.path.exists(dest) else ""
+    sys.stderr.write(
+        f"Install the Share Files Claude skill to {dest}{note}? [y/N] "
+    )
+    sys.stderr.flush()
+    answer = sys.stdin.readline().strip().lower()
+    if answer not in ("y", "yes"):
+        return {"installed": False, "dest": dest, "note": "declined by user"}
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(src, "r", encoding="utf-8") as fsrc:
+        content = fsrc.read()
+    overwritten = os.path.exists(dest)
+    with open(dest, "w", encoding="utf-8") as fdst:
+        fdst.write(content)
+    return {"installed": True, "dest": dest, "overwritten": overwritten}
+
+
 def pick_up(
     key: str, names: Optional[list[str]] = None, target_dir: str = ""
 ) -> dict:
@@ -384,6 +421,7 @@ _HANDLERS = {
     "add-files": lambda a: add_files(a.id, a.paths),
     "remove-files": lambda a: remove_files(a.id, a.names),
     "remove-upload": lambda a: remove_upload(a.id, a.uploader, a.name),
+    "install-claude-skill": lambda a: install_claude_skill(),
     "pick-up": lambda a: pick_up(a.key, a.names or None, a.target_dir),
     "send-to-request": lambda a: send_to_request(a.key, a.paths, a.uploader),
     "list-request-uploads": lambda a: list_request_uploads(a.id),
@@ -466,6 +504,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id")
     p.add_argument("uploader")
     p.add_argument("name")
+
+    sub.add_parser(
+        "install-claude-skill",
+        help="install the bundled Claude skill into ~/.claude/skills "
+        "(asks for confirmation first)",
+    )
 
     p = sub.add_parser("pick-up", help="save files from a connected share")
     p.add_argument("key")
