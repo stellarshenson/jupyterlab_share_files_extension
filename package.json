@@ -1,6 +1,6 @@
 {
     "name": "jupyterlab_share_files_extension",
-    "version": "1.2.29",
+    "version": "1.2.30",
     "description": "Peer-to-peer file sharing for JupyterLab - create named shares (drops) or requests (inboxes), get a link, share it. Files served directly from your server; recipients can use a JupyterLab panel or a plain browser.",
     "keywords": [
         "jupyter",
