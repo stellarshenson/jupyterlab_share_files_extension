@@ -2,6 +2,20 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.36] - 2026-06-12
+
+QR native context menu fix and PNG rendering.
+
+### Changed
+
+- The QR code now renders as PNG (canvas-drawn) instead of the GIF data URL from `createDataURL` - "Copy Image" yields a PNG that pastes cleanly everywhere
+
+### Fixed
+
+- Right-click over the QR code now actually opens the browser's native menu in Chrome - JupyterLab's Dialog kills `contextmenu` with a capture-phase handler on the dialog node, so the 1.2.35 img-level workaround never fired; a document-level capture listener now lets the event through for the QR image only
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.35] - 2026-06-12
 
 QR copy menu and tunnel-aware link dialog.
@@ -14,8 +28,6 @@ QR copy menu and tunnel-aware link dialog.
 ### Changed
 
 - The link reachability check appears only when Cloudflare sharing is configured and active - without a public link there is nothing to probe
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.34] - 2026-06-12
 

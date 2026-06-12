@@ -2685,8 +2685,29 @@ export class ShareFilesPanel extends Widget {
     const qr = qrcode(0, 'M');
     qr.addData(link);
     qr.make();
+    // Render to a canvas and export PNG - createDataURL() emits GIF, which
+    // pastes poorly from the browser's "Copy Image"; PNG is lossless and
+    // universally accepted by paste targets.
+    const cell = 4;
+    const margin = 8;
+    const count = qr.getModuleCount();
+    const size = count * cell + margin * 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx2d = canvas.getContext('2d')!;
+    ctx2d.fillStyle = '#fff';
+    ctx2d.fillRect(0, 0, size, size);
+    ctx2d.fillStyle = '#000';
+    for (let r = 0; r < count; r++) {
+      for (let c = 0; c < count; c++) {
+        if (qr.isDark(r, c)) {
+          ctx2d.fillRect(margin + c * cell, margin + r * cell, cell, cell);
+        }
+      }
+    }
     const qrImg = document.createElement('img');
-    qrImg.src = qr.createDataURL(4, 8);
+    qrImg.src = canvas.toDataURL('image/png');
     qrImg.alt = 'QR code for the link';
     qrImg.style.cssText =
       'align-self: center;' +
@@ -2697,11 +2718,17 @@ export class ShareFilesPanel extends Widget {
       ' padding: 8px;' +
       ' border-radius: 2px;';
     // Let the browser's native context menu (Copy Image etc.) work on the
-    // QR code - JupyterLab's global contextmenu handler would otherwise
-    // swallow the event and show the Lumino menu instead.
-    qrImg.addEventListener('contextmenu', evt => {
-      evt.stopPropagation();
-    });
+    // QR code. JupyterLab's Dialog registers a capture-phase contextmenu
+    // listener on its own node that calls preventDefault + stopPropagation
+    // unconditionally, so a listener on the img fires too late - intercept
+    // at document capture (runs before the dialog node's capture handler)
+    // and stop propagation so the event reaches the browser untouched.
+    const allowNativeMenu = (evt: MouseEvent) => {
+      if (evt.target === qrImg) {
+        evt.stopPropagation();
+      }
+    };
+    document.addEventListener('contextmenu', allowNativeMenu, true);
     wrap.appendChild(qrImg);
 
     const widget = new Widget({ node: wrap });
@@ -2766,7 +2793,11 @@ export class ShareFilesPanel extends Widget {
       wrap.appendChild(reset);
     }
 
-    await dialog.launch();
+    try {
+      await dialog.launch();
+    } finally {
+      document.removeEventListener('contextmenu', allowNativeMenu, true);
+    }
   }
 
   private _detectNewUploads(): void {
