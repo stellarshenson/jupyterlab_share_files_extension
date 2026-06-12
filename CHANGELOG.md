@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.33] - 2026-06-12
+
+Copy button on the link dialog.
+
+### Added
+
+- The Share-link dialog shows a compact Copy button next to the link itself (same style as the password Copy) - the auto-copy at creation is lost as soon as anything else hits the clipboard, so the dialog now offers the link again on demand
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.32] - 2026-06-12
 
 Per-uploader identity on request pages.

@@ -630,3 +630,22 @@
 .jp-Dialog-content button.jp-ShareFiles-miniBtn:focus {
   outline-offset: -2px;
 }
+
+/* Inline copy button in the link dialog - matches the password Copy button
+ * (which escapes jp-mod-styled by being added async). Buttons present at
+ * dialog build time get jp-mod-styled's 32px line-height and min-width, so
+ * this class must outrank it with the same specificity trick as miniBtn. */
+.jp-Dialog-content button.jp-ShareFiles-inlineCopy {
+  flex: 0 0 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 1px 8px;
+  line-height: normal;
+  height: auto;
+  font-size: var(--jp-ui-font-size0);
+  color: var(--jp-ui-font-color1);
+  background: var(--jp-layout-color2);
+  border: 1px solid var(--jp-border-color1);
+  border-radius: 2px;
+  cursor: pointer;
+}

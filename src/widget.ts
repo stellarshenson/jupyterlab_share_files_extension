@@ -2513,7 +2513,32 @@ export class ShareFilesPanel extends Widget {
       ' border-radius: 2px;' +
       ' box-sizing: border-box;';
     input.addEventListener('focus', () => input.select());
-    wrap.appendChild(input);
+    // Link row: input + its own Copy button - the auto-copy at creation time
+    // is lost as soon as the user copies anything else, so the dialog must
+    // offer the link again on demand (same style as the password Copy).
+    const linkRow = document.createElement('div');
+    linkRow.style.cssText =
+      'display: flex; align-items: center; gap: 6px; width: 100%;';
+    input.style.flex = '1 1 auto';
+    linkRow.appendChild(input);
+    const linkCopyBtn = document.createElement('button');
+    linkCopyBtn.type = 'button';
+    linkCopyBtn.textContent = 'Copy';
+    // CSS class, not inline styles - the dialog auto-applies jp-mod-styled
+    // (32px line-height, min-width) to buttons present at build time; see
+    // .jp-ShareFiles-inlineCopy in style/base.css
+    linkCopyBtn.className = 'jp-ShareFiles-inlineCopy';
+    linkCopyBtn.addEventListener('click', evt => {
+      evt.preventDefault();
+      void this._copyLinkToClipboard(link).then(ok => {
+        linkCopyBtn.textContent = ok ? 'Copied' : 'Copy failed';
+        window.setTimeout(() => {
+          linkCopyBtn.textContent = 'Copy';
+        }, 1200);
+      });
+    });
+    linkRow.appendChild(linkCopyBtn);
+    wrap.appendChild(linkRow);
 
     const statusLine = (borderVar: string): HTMLElement => {
       const el = document.createElement('div');
@@ -2588,8 +2613,8 @@ export class ShareFilesPanel extends Widget {
           });
           pwLine.appendChild(copyBtn);
           // ordering: link, password, copied-status, reachability, QR -
-          // the password sits directly below the link itself
-          wrap.insertBefore(pwLine, input.nextSibling);
+          // the password sits directly below the link row itself
+          wrap.insertBefore(pwLine, linkRow.nextSibling);
         },
         () => {
           /* not the owner or gone - no password line */
