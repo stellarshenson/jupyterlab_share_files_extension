@@ -2,6 +2,21 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.35] - 2026-06-12
+
+QR copy menu and tunnel-aware link dialog.
+
+### Added
+
+- The QR code in the link dialog answers the browser's native context menu (right-click -> Copy Image) instead of the JupyterLab menu
+- The link dialog shows "Cloudflare sharing is not running - link works on this network only" when a tunnel is configured but switched off
+
+### Changed
+
+- The link reachability check appears only when Cloudflare sharing is configured and active - without a public link there is nothing to probe
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.34] - 2026-06-12
 
 Embedded copy icon in the link dialog.
@@ -9,8 +24,6 @@ Embedded copy icon in the link dialog.
 ### Changed
 
 - The link-dialog Copy control is now a copy icon embedded inside the link input at its right edge (browser-URL-bar style) instead of the detached button shipped in 1.2.33 - no button chrome, subtle hover highlight, glyph flips to a green check for 1.2 s after copying (red on failure); design language documented in `docs/acc-crit-link-dialog-copy.md`
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.33] - 2026-06-12
 

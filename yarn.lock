@@ -4076,10 +4076,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"abbrev@npm:^4.0.0":
-  version: 4.0.0
-  resolution: "abbrev@npm:4.0.0"
-  checksum: d0344b63d28e763f259b4898c41bdc92c08e9d06d0da5617d0bbe4d78244e46daea88c510a2f9472af59b031d9060ec1a999653144e793fd029a59dae2f56dc8
+"abbrev@npm:^5.0.0":
+  version: 5.0.0
+  resolution: "abbrev@npm:5.0.0"
+  checksum: 40526a57545197f1ee0a5cb369508acbd33dbb8a19967850d6d60d9bb392d4034fc56d2572ad863b6a8da810f32eb5553cd05d5af265ea829e168697d9963cde
   languageName: node
   linkType: hard
 
@@ -5552,14 +5552,14 @@ __metadata:
   linkType: hard
 
 "dompurify@npm:^3.3.1":
-  version: 3.4.9
-  resolution: "dompurify@npm:3.4.9"
+  version: 3.4.10
+  resolution: "dompurify@npm:3.4.10"
   dependencies:
     "@types/trusted-types": ^2.0.7
   dependenciesMeta:
     "@types/trusted-types":
       optional: true
-  checksum: d3c4c64aad2775c3f59ff199bc1782e8dbd24f86912ef1a6c4e29398b9c336afd8e480364c48197c44dbf9594431a5a8b538ae5aebc668908e3218568e714b42
+  checksum: 6a9ef22d8e7f0ceafdf2ca3ceceafecdc90f0cbb3780fb904ca3a0001d9b61d0d7b93b09db0ddaa9fb9a7da5a57fb2f8f0065d85c94bf027575b2000b90180fe
   languageName: node
   linkType: hard
 
@@ -8251,22 +8251,22 @@ __metadata:
   linkType: hard
 
 "node-gyp@npm:latest":
-  version: 12.4.0
-  resolution: "node-gyp@npm:12.4.0"
+  version: 13.0.0
+  resolution: "node-gyp@npm:13.0.0"
   dependencies:
     env-paths: ^2.2.0
     exponential-backoff: ^3.1.1
     graceful-fs: ^4.2.6
-    nopt: ^9.0.0
-    proc-log: ^6.0.0
+    nopt: ^10.0.0
+    proc-log: ^7.0.0
     semver: ^7.3.5
     tar: ^7.5.4
     tinyglobby: ^0.2.12
     undici: ^6.25.0
-    which: ^6.0.0
+    which: ^7.0.0
   bin:
     node-gyp: bin/node-gyp.js
-  checksum: a696e8bf74e83126569b2b7a4deec1065e24dc8c6af84fe77e4211712dddf5b3052c1c98b01013fefda73f0191d1ab87bc2171c832edd34a0fcc6d111dc6f176
+  checksum: 73368e5ea0b5f66ab6ab7ce8d9a2ff60486c24dbcd20997f2f38e845a7c9ff21b8763e187242a99063ca2f0344f65f511d3e60da90acb1240403ec1b8ab97d05
   languageName: node
   linkType: hard
 
@@ -8284,14 +8284,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nopt@npm:^9.0.0":
-  version: 9.0.0
-  resolution: "nopt@npm:9.0.0"
+"nopt@npm:^10.0.0":
+  version: 10.0.1
+  resolution: "nopt@npm:10.0.1"
   dependencies:
-    abbrev: ^4.0.0
+    abbrev: ^5.0.0
   bin:
     nopt: bin/nopt.js
-  checksum: 7a5d9ab0629eaec1944a95438cc4efa6418ed2834aa8eb21a1bea579a7d8ac3e30120131855376a96ef59ab0e23ad8e0bc94d3349770a95e5cb7119339f7c7fb
+  checksum: c2903b9171a3293b731189ace4eaeacc2ed8191bb8f8f74ebfb61babc0de2ff158d97a215fd561070ed0dac567f3b8741955f81a534009e57eb37fdc419d5d4e
   languageName: node
   linkType: hard
 
@@ -8747,10 +8747,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"proc-log@npm:^6.0.0":
-  version: 6.1.0
-  resolution: "proc-log@npm:6.1.0"
-  checksum: ac450ff8244e95b0c9935b52d629fef92ae69b7e39aea19972a8234259614d644402dd62ce9cb094f4a637d8a4514cba90c1456ad785a40ad5b64d502875a817
+"proc-log@npm:^7.0.0":
+  version: 7.0.0
+  resolution: "proc-log@npm:7.0.0"
+  checksum: ded2e976dbfa428777496158db93efdd27523ce17cf7eae0e87c6dbba0f30bb46bbe6409ccdcf5ecea7bdea864ed409afc3b5c60b79f008d42dff79fdd481c27
   languageName: node
   linkType: hard
 
@@ -10437,14 +10437,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"which@npm:^6.0.0":
-  version: 6.0.1
-  resolution: "which@npm:6.0.1"
+"which@npm:^7.0.0":
+  version: 7.0.0
+  resolution: "which@npm:7.0.0"
   dependencies:
     isexe: ^4.0.0
   bin:
     node-which: bin/which.js
-  checksum: dbea77c7d3058bf6c78bf9659d2dce4d2b57d39a15b826b2af6ac2e5a219b99dc8a831b79fdbc453c0598adb4f3f84cf9c2491fd52beb9f5d2dececcad117f68
+  checksum: 913a43ac10df37602ba9795a004dd7ab12ba7dd592aca1f08ec333be1fdd6a49bbf119a88c3f8d0ea70eeb6251726e77069251424d73000299a0a840ed000732
   languageName: node
   linkType: hard
 

@@ -40,7 +40,7 @@ The standalone page recipients see in any browser - download view, upload view (
 - **Optional password protection** - set at creation or later (right-click → Set Password); recipients unlock before any access; one-click xkcdpass passphrase generation; link dialog shows the password with a copy button; attempts rate limited server-side
 - **Hidden files visible by default** - dotfiles like `.env`, `.gitignore` are shareable; toggle in Settings
 - **Standalone HTML page** - link works in any browser, no JupyterLab needed; Light / Dark / Auto theme
-- **QR code** in the share-link dialog for scanning from a phone, plus a copy icon embedded in the link field to grab the link again on demand
+- **QR code** in the share-link dialog for scanning from a phone (right-click copies the image), plus a copy icon embedded in the link field to grab the link again on demand
 - **Live upload notifications** when someone uploads to your request
 - **Self-connect guard** - pasting your own link shows a "you already own this" dialog
 - **Symlink-friendly** - sharing `@shared/...` and similar works
@@ -129,7 +129,7 @@ The `cloudflare` command exposes share/request links beyond the hub or local net
 - **`reset`** - clear the saved token and derived state; links revert to the local/hub address; Cloudflare-side resources untouched
 - **Connector supervision** - the extension keeps `cloudflared tunnel run` alive, retrying up to `c.ShareFilesConfig.cloudflared_retries` times (default 3); autostart is a user setting (default off)
 - **Cloud icon** - panel header, always visible: green filled = tunnel on (public links), dim dashed = off/unconfigured (private links), blinking blue = connecting; click toggles, or opens the setup popup when unconfigured
-- **Reachability check** - the link dialog probes the public link server-side (`api/link-check`; a frontend fetch would be blocked by CORS) and shows reachable/not reachable
+- **Reachability check** - when the tunnel is active, the link dialog probes the public link server-side (`api/link-check`; a frontend fetch would be blocked by CORS) and shows reachable/not reachable; configured-but-off shows "Cloudflare sharing is not running" instead
 - **Link rewrite** - the server reads `public_base_url` and the toggle per request and rewrites only scheme+host; the path stays auto-detected; without config, links keep the browser's host
 - **Token policies required** - `Account → Cloudflare Tunnel → Edit` plus zone-scoped `DNS → Edit` for the hostname's domain
 

@@ -2631,11 +2631,25 @@ export class ShareFilesPanel extends Widget {
       );
     }
 
+    const tunnelConfigured = !!this._state.info?.tunnel_configured;
+    const tunnelActive = !!this._state.info?.tunnel_active;
+
+    // Cloudflare configured but switched off: the link is private-only -
+    // say so instead of probing reachability (which only makes sense for
+    // a public Cloudflare link).
+    if (tunnelConfigured && !tunnelActive) {
+      const offLine = statusLine('--jp-warn-color1');
+      offLine.textContent =
+        'Cloudflare sharing is not running - link works on this network only';
+      wrap.appendChild(offLine);
+    }
+
     // Reachability: the server probes its own public link (a frontend fetch
     // would be blocked by CORS). Kind and id come from the link itself, so
     // every caller gets the check without extra plumbing. A spinner runs
-    // while the probe is in flight.
-    if (m) {
+    // while the probe is in flight. Only meaningful for Cloudflare sharing -
+    // without an active tunnel there is no public link to probe.
+    if (m && tunnelConfigured && tunnelActive) {
       const reach = statusLine('--jp-border-color2');
       reach.setAttribute('data-reach', '1');
       reach.appendChild(this._spinnerNode());
@@ -2682,6 +2696,12 @@ export class ShareFilesPanel extends Widget {
       ' background: #fff;' +
       ' padding: 8px;' +
       ' border-radius: 2px;';
+    // Let the browser's native context menu (Copy Image etc.) work on the
+    // QR code - JupyterLab's global contextmenu handler would otherwise
+    // swallow the event and show the Lumino menu instead.
+    qrImg.addEventListener('contextmenu', evt => {
+      evt.stopPropagation();
+    });
     wrap.appendChild(qrImg);
 
     const widget = new Widget({ node: wrap });
