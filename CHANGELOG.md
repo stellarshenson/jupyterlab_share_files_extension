@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.34] - 2026-06-12
+
+Embedded copy icon in the link dialog.
+
+### Changed
+
+- The link-dialog Copy control is now a copy icon embedded inside the link input at its right edge (browser-URL-bar style) instead of the detached button shipped in 1.2.33 - no button chrome, subtle hover highlight, glyph flips to a green check for 1.2 s after copying (red on failure); design language documented in `docs/acc-crit-link-dialog-copy.md`
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.33] - 2026-06-12
 
 Copy button on the link dialog.
@@ -9,8 +19,6 @@ Copy button on the link dialog.
 ### Added
 
 - The Share-link dialog shows a compact Copy button next to the link itself (same style as the password Copy) - the auto-copy at creation is lost as soon as anything else hits the clipboard, so the dialog now offers the link again on demand
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.32] - 2026-06-12
 

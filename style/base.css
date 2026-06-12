@@ -631,21 +631,39 @@
   outline-offset: -2px;
 }
 
-/* Inline copy button in the link dialog - matches the password Copy button
- * (which escapes jp-mod-styled by being added async). Buttons present at
- * dialog build time get jp-mod-styled's 32px line-height and min-width, so
- * this class must outrank it with the same specificity trick as miniBtn. */
-.jp-Dialog-content button.jp-ShareFiles-inlineCopy {
-  flex: 0 0 auto;
+/* Copy icon embedded inside the link-dialog input (browser-URL-bar style).
+ * Buttons present at dialog build time get jp-mod-styled's 32px line-height
+ * and min-width, so this class must outrank it with the same specificity
+ * trick as miniBtn. */
+.jp-Dialog-content button.jp-ShareFiles-copyEmbed {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   min-width: 0;
+  padding: 0;
   margin: 0;
-  padding: 1px 8px;
-  line-height: normal;
-  height: auto;
-  font-size: var(--jp-ui-font-size0);
-  color: var(--jp-ui-font-color1);
-  background: var(--jp-layout-color2);
-  border: 1px solid var(--jp-border-color1);
+  line-height: 0;
+  background: transparent;
+  border: none;
   border-radius: 2px;
   cursor: pointer;
+}
+
+.jp-Dialog-content button.jp-ShareFiles-copyEmbed:hover {
+  background: var(--jp-layout-color2);
+}
+
+.jp-Dialog-content button.jp-ShareFiles-copyEmbed span {
+  display: flex;
+}
+
+.jp-Dialog-content button.jp-ShareFiles-copyEmbed svg {
+  width: 16px;
+  height: 16px;
 }

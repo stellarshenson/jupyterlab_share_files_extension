@@ -8,7 +8,7 @@
 import { Dialog, Notification, showDialog } from '@jupyterlab/apputils';
 import { IDocumentManager } from '@jupyterlab/docmanager';
 import { Contents, ServerConnection } from '@jupyterlab/services';
-import { filterIcon } from '@jupyterlab/ui-components';
+import { checkIcon, copyIcon, filterIcon } from '@jupyterlab/ui-components';
 import { CommandRegistry } from '@lumino/commands';
 import { MimeData } from '@lumino/coreutils';
 import { Drag } from '@lumino/dragdrop';
@@ -2504,7 +2504,7 @@ export class ShareFilesPanel extends Widget {
     input.readOnly = true;
     input.style.cssText =
       'width: 100%;' +
-      ' padding: 8px 10px;' +
+      ' padding: 8px 34px 8px 10px;' +
       ' font-family: var(--jp-code-font-family, monospace);' +
       ' font-size: var(--jp-ui-font-size1);' +
       ' color: var(--jp-ui-font-color1);' +
@@ -2513,27 +2513,36 @@ export class ShareFilesPanel extends Widget {
       ' border-radius: 2px;' +
       ' box-sizing: border-box;';
     input.addEventListener('focus', () => input.select());
-    // Link row: input + its own Copy button - the auto-copy at creation time
-    // is lost as soon as the user copies anything else, so the dialog must
-    // offer the link again on demand (same style as the password Copy).
+    // Link row: the input with a copy icon embedded at its right edge
+    // (browser-URL-bar style) - the auto-copy at creation time is lost as
+    // soon as the user copies anything else, so the dialog must offer the
+    // link again on demand.
     const linkRow = document.createElement('div');
-    linkRow.style.cssText =
-      'display: flex; align-items: center; gap: 6px; width: 100%;';
-    input.style.flex = '1 1 auto';
+    linkRow.style.cssText = 'position: relative; width: 100%;';
     linkRow.appendChild(input);
     const linkCopyBtn = document.createElement('button');
     linkCopyBtn.type = 'button';
-    linkCopyBtn.textContent = 'Copy';
+    linkCopyBtn.title = 'Copy link';
     // CSS class, not inline styles - the dialog auto-applies jp-mod-styled
     // (32px line-height, min-width) to buttons present at build time; see
-    // .jp-ShareFiles-inlineCopy in style/base.css
-    linkCopyBtn.className = 'jp-ShareFiles-inlineCopy';
+    // .jp-ShareFiles-copyEmbed in style/base.css
+    linkCopyBtn.className = 'jp-ShareFiles-copyEmbed';
+    linkCopyBtn.appendChild(this._svgNode(copyIcon.svgstr));
     linkCopyBtn.addEventListener('click', evt => {
       evt.preventDefault();
       void this._copyLinkToClipboard(link).then(ok => {
-        linkCopyBtn.textContent = ok ? 'Copied' : 'Copy failed';
+        const feedback = this._svgNode(ok ? checkIcon.svgstr : copyIcon.svgstr);
+        // JupyterLab icon paths carry fill attributes (jp-icon* classes),
+        // not currentColor - recolor them directly for the feedback flash
+        feedback.querySelectorAll('[fill]').forEach(el => {
+          el.setAttribute(
+            'fill',
+            ok ? 'var(--jp-success-color1)' : 'var(--jp-error-color1)'
+          );
+        });
+        linkCopyBtn.replaceChildren(feedback);
         window.setTimeout(() => {
-          linkCopyBtn.textContent = 'Copy';
+          linkCopyBtn.replaceChildren(this._svgNode(copyIcon.svgstr));
         }, 1200);
       });
     });
