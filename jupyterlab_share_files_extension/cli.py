@@ -285,7 +285,7 @@ def remove_files(share_id: str, names: list[str]) -> dict:
 
 def remove_upload(request_id: str, uploader: str, name: str) -> dict:
     """Remove a single uploaded file from one of your requests, identified by
-    its uploader and file name (both shown by list-request-uploads)."""
+    its uploader hash and file name (both shown by list-request-uploads)."""
     query = urllib.parse.urlencode({"uploader": uploader, "name": name})
     return _request("DELETE", f"api/requests/{request_id}/uploads?{query}")
 
@@ -360,6 +360,7 @@ def list_request_uploads(request_id: str) -> dict:
         "path": r.get("path"),
         "uploaders": [
             {
+                "hash": u.get("hash"),
                 "name": u.get("name"),
                 "files": [
                     {"name": e.get("name"), "path": e.get("path"), "type": e.get("type")}
@@ -502,7 +503,7 @@ def build_parser() -> argparse.ArgumentParser:
         "remove-upload", help="remove an uploaded file from one of your requests"
     )
     p.add_argument("id")
-    p.add_argument("uploader")
+    p.add_argument("uploader", help="uploader hash (see list-request-uploads)")
     p.add_argument("name")
 
     sub.add_parser(

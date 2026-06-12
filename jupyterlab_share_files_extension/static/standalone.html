@@ -542,6 +542,10 @@
     const uploaderInput = document.createElement('input');
     uploaderInput.type = 'text';
     uploaderInput.placeholder = 'anonymous';
+    // identity is the server-set cookie; the name is just a relabelable label
+    if (m.me && m.me.name) {
+      uploaderInput.value = m.me.name;
+    }
     uploaderInput.style.cssText = 'width:100%;padding:8px 12px;border:1px solid var(--input-border);border-radius:6px;font-size:14px;background:var(--panel);color:var(--fg);';
     uploaderRow.appendChild(uploaderInput);
     wrap.appendChild(uploaderRow);
@@ -563,12 +567,86 @@
     const progressContainer = document.createElement('div');
     wrap.appendChild(progressContainer);
 
+    // "Your uploads" - only the caller's own pool (scoped by the identity
+    // cookie server-side); lets the uploader review and remove their files
+    const mineSection = document.createElement('div');
+    mineSection.style.marginTop = '20px';
+    const mineTitle = document.createElement('div');
+    mineTitle.textContent = 'Your uploads';
+    mineTitle.style.cssText = 'font-size:13px;color:var(--muted);margin-bottom:6px;';
+    mineSection.appendChild(mineTitle);
+    const mineList = document.createElement('div');
+    mineSection.appendChild(mineList);
+    wrap.appendChild(mineSection);
+
+    function renderMine(manifest) {
+      mineList.innerHTML = '';
+      const mine = (manifest.uploaders && manifest.uploaders[0]) || null;
+      const entries = mine ? mine.entries : [];
+      if (!entries.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'font-size:13px;color:var(--faint);';
+        empty.textContent = 'Nothing uploaded yet from this browser.';
+        mineList.appendChild(empty);
+        return;
+      }
+      const list = document.createElement('div');
+      list.className = 'list';
+      for (const entry of entries) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = entry.name;
+        row.appendChild(name);
+        const size = document.createElement('span');
+        size.className = 'size';
+        size.textContent = fmtSize(entry.size);
+        row.appendChild(size);
+        const rm = document.createElement('button');
+        rm.className = 'btn secondary';
+        rm.textContent = 'Remove';
+        rm.addEventListener('click', async () => {
+          rm.disabled = true;
+          try {
+            const r = await fetch(api('/upload?name=' + encodeURIComponent(entry.name)), {
+              method: 'DELETE',
+              headers: authHeaders()
+            });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+          } catch (err) {
+            alert('Could not remove ' + entry.name + ': ' + (err.message || err));
+          }
+          await refreshMine();
+        });
+        row.appendChild(rm);
+        list.appendChild(row);
+      }
+      mineList.appendChild(list);
+    }
+
+    async function refreshMine() {
+      try {
+        const r = await fetch(api('/manifest'), { headers: authHeaders() });
+        if (!r.ok) return;
+        const fresh = await r.json();
+        if (fresh.me && fresh.me.name && !uploaderInput.value) {
+          uploaderInput.value = fresh.me.name;
+        }
+        renderMine(fresh);
+      } catch (err) {
+        /* transient - keep the current list */
+      }
+    }
+
+    renderMine(m);
+
     browseBtn.addEventListener('click', (e) => {
       e.preventDefault();
       fileInput.click();
     });
     fileInput.addEventListener('change', () => {
-      handleFiles(Array.from(fileInput.files), uploaderInput.value || 'anonymous', progressContainer);
+      handleFiles(Array.from(fileInput.files), uploaderInput.value || 'anonymous', progressContainer, refreshMine);
       fileInput.value = '';
     });
     dropzone.addEventListener('dragover', (e) => {
@@ -592,15 +670,18 @@
       } else {
         for (const f of e.dataTransfer.files) files.push(f);
       }
-      handleFiles(files, uploaderInput.value || 'anonymous', progressContainer);
+      handleFiles(files, uploaderInput.value || 'anonymous', progressContainer, refreshMine);
     });
 
     contentEl.appendChild(wrap);
   }
 
-  async function handleFiles(files, uploader, container) {
+  async function handleFiles(files, uploader, container, onDone) {
     for (const file of files) {
       await uploadOne(file, uploader, container);
+    }
+    if (onDone) {
+      await onDone();
     }
   }
 

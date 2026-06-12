@@ -309,68 +309,124 @@ class TestRequestStore:
     def test_add_upload_creates_uploader_folder(self, tmp_path):
         store = RequestStore(str(tmp_path))
         req = store.create("submissions")
-        result = store.add_upload(req["id"], "alice", "answer.py", b"print(1)")
+        result = store.add_upload(req["id"], "HASH01", "alice", "answer.py", b"print(1)")
         assert result["upload_count"] == 1
         uploaders = result["uploaders"]
         assert len(uploaders) == 1
+        assert uploaders[0]["hash"] == "HASH01"
         assert uploaders[0]["name"] == "alice"
         assert uploaders[0]["entries"][0]["name"] == "answer.py"
 
-    def test_add_upload_anonymises_empty_uploader(self, tmp_path):
+    def test_add_upload_anonymises_empty_name(self, tmp_path):
         store = RequestStore(str(tmp_path))
         req = store.create("inbox")
-        result = store.add_upload(req["id"], "", "f.txt", b"data")
+        result = store.add_upload(req["id"], "HASH01", "", "f.txt", b"data")
         assert result["uploaders"][0]["name"] == "anonymous"
+
+    def test_add_upload_rename_relabels_same_pool(self, tmp_path):
+        """Identity is the hash - a new name relabels, never forks the pool."""
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        store.add_upload(req["id"], "HASH01", "anonymous", "a.txt", b"a")
+        result = store.add_upload(req["id"], "HASH01", "alice", "b.txt", b"b")
+        assert len(result["uploaders"]) == 1
+        assert result["uploaders"][0]["name"] == "alice"
+        names = {e["name"] for e in result["uploaders"][0]["entries"]}
+        assert names == {"a.txt", "b.txt"}
+
+    def test_same_name_different_hash_stay_distinct(self, tmp_path):
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        store.add_upload(req["id"], "HASH01", "anonymous", "a.txt", b"a")
+        result = store.add_upload(req["id"], "HASH02", "anonymous", "b.txt", b"b")
+        assert len(result["uploaders"]) == 2
+        assert {u["name"] for u in result["uploaders"]} == {"anonymous"}
+        assert {u["hash"] for u in result["uploaders"]} == {"HASH01", "HASH02"}
+
+    def test_sidecar_not_listed_as_entry(self, tmp_path):
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        result = store.add_upload(req["id"], "HASH01", "alice", "f.txt", b"x")
+        names = {e["name"] for e in result["uploaders"][0]["entries"]}
+        assert names == {"f.txt"}
+        assert result["upload_count"] == 1
+
+    def test_legacy_name_keyed_dir_falls_back(self, tmp_path):
+        """Pre-identity uploads (dir keyed by name, no sidecar) stay visible."""
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        requests_dir = tmp_path / SHARES_DIR_NAME / "requests"
+        req_folder = next(c for c in requests_dir.iterdir() if c.is_dir())
+        legacy = req_folder / "bob"
+        legacy.mkdir()
+        (legacy / "old.txt").write_bytes(b"x")
+        result = store.get(req["id"])
+        assert result["uploaders"][0]["hash"] == "bob"
+        assert result["uploaders"][0]["name"] == "bob"
+        # and the owner can still remove it keyed by the dir name
+        result = store.remove_upload(req["id"], "bob", "old.txt")
+        assert result["uploaders"] == []
 
     def test_add_upload_supports_nested_paths(self, tmp_path):
         """Uploading a file with folder components preserves structure."""
         store = RequestStore(str(tmp_path))
         req = store.create("project-uploads")
-        store.add_upload(req["id"], "bob", "results/output.csv", b"x")
+        store.add_upload(req["id"], "HASH01", "bob", "results/output.csv", b"x")
         requests_dir = tmp_path / SHARES_DIR_NAME / "requests"
         req_folder = next(c for c in requests_dir.iterdir() if c.is_dir())
-        assert (req_folder / "bob" / "results" / "output.csv").exists()
+        assert (req_folder / "HASH01" / "results" / "output.csv").exists()
 
     def test_add_upload_rejects_traversal_filename(self, tmp_path):
         store = RequestStore(str(tmp_path))
         req = store.create("inbox")
         # `..` components are stripped; remaining parts become nested folders.
-        # `../../etc/passwd` collapses to `etc/passwd`, landing under bob/etc/
-        store.add_upload(req["id"], "bob", "../../etc/passwd", b"x")
+        # `../../etc/passwd` collapses to `etc/passwd`, landing under the pool
+        store.add_upload(req["id"], "HASH01", "bob", "../../etc/passwd", b"x")
         # nothing escaped the workspace
         assert not (tmp_path / "etc").exists()
         # the upload sits under the uploader folder, never above it
         requests_dir = tmp_path / SHARES_DIR_NAME / "requests"
         req_folder = next(c for c in requests_dir.iterdir() if c.is_dir())
-        assert (req_folder / "bob" / "etc" / "passwd").exists()
+        assert (req_folder / "HASH01" / "etc" / "passwd").exists()
 
     def test_remove_upload(self, tmp_path):
         store = RequestStore(str(tmp_path))
         req = store.create("inbox")
-        store.add_upload(req["id"], "bob", "a.txt", b"a")
-        store.add_upload(req["id"], "bob", "b.txt", b"b")
-        result = store.remove_upload(req["id"], "bob", "a.txt")
+        store.add_upload(req["id"], "HASH01", "bob", "a.txt", b"a")
+        store.add_upload(req["id"], "HASH01", "bob", "b.txt", b"b")
+        result = store.remove_upload(req["id"], "HASH01", "a.txt")
         names = {e["name"] for e in result["uploaders"][0]["entries"]}
         assert names == {"b.txt"}
 
     def test_remove_upload_cleans_empty_uploader(self, tmp_path):
+        """Last file removed -> sidecar and pool dir cleaned up too."""
         store = RequestStore(str(tmp_path))
         req = store.create("inbox")
-        store.add_upload(req["id"], "alice", "only.txt", b"x")
-        result = store.remove_upload(req["id"], "alice", "only.txt")
+        store.add_upload(req["id"], "HASH01", "alice", "only.txt", b"x")
+        result = store.remove_upload(req["id"], "HASH01", "only.txt")
         assert result["uploaders"] == []
+        requests_dir = tmp_path / SHARES_DIR_NAME / "requests"
+        req_folder = next(c for c in requests_dir.iterdir() if c.is_dir())
+        assert not (req_folder / "HASH01").exists()
 
     def test_remove_upload_rejects_invalid_name(self, tmp_path):
         store = RequestStore(str(tmp_path))
         req = store.create("inbox")
-        store.add_upload(req["id"], "bob", "a.txt", b"a")
+        store.add_upload(req["id"], "HASH01", "bob", "a.txt", b"a")
         with pytest.raises(StorageError):
-            store.remove_upload(req["id"], "bob", "../a.txt")
+            store.remove_upload(req["id"], "HASH01", "../a.txt")
+
+    def test_remove_upload_rejects_sidecar(self, tmp_path):
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        store.add_upload(req["id"], "HASH01", "bob", "a.txt", b"a")
+        with pytest.raises(StorageError):
+            store.remove_upload(req["id"], "HASH01", ".uploader.json")
 
     def test_mark_seen_updates_manifest(self, tmp_path):
         store = RequestStore(str(tmp_path))
         req = store.create("inbox")
-        store.add_upload(req["id"], "bob", "f.txt", b"x")
+        store.add_upload(req["id"], "HASH01", "bob", "f.txt", b"x")
         before = store.get(req["id"])
         assert before["last_seen_upload_at"] != before["last_upload_at"]
         store.mark_seen(req["id"])
@@ -414,6 +470,20 @@ class TestConnectionStore:
         store = ConnectionStore(str(tmp_path))
         with pytest.raises(NotFoundError):
             store.get("nothing")
+
+    def test_set_uploader_hash_persists(self, tmp_path):
+        """The peer-minted uploader identity survives across instances so
+        every later upload through the connection reuses the same pool."""
+        store = ConnectionStore(str(tmp_path))
+        entry = store.add("request", "STUVWXYZ", "https://other.test")
+        store.set_uploader_hash(entry["key"], "HASH01")
+        fresh = ConnectionStore(str(tmp_path)).get(entry["key"])
+        assert fresh["uploader_hash"] == "HASH01"
+
+    def test_set_uploader_hash_missing_key(self, tmp_path):
+        store = ConnectionStore(str(tmp_path))
+        with pytest.raises(NotFoundError):
+            store.set_uploader_hash("nothing", "HASH01")
 
     def test_invalid_kind_rejected(self, tmp_path):
         store = ConnectionStore(str(tmp_path))
@@ -581,8 +651,8 @@ class TestUseTrash:
         )
         store = RequestStore(str(tmp_path), use_trash=True)
         req = store.create("inbox")
-        store.add_upload(req["id"], "alice", "note.txt", b"hi")
-        store.remove_upload(req["id"], "alice", "note.txt")
+        store.add_upload(req["id"], "HASH01", "alice", "note.txt", b"hi")
+        store.remove_upload(req["id"], "HASH01", "note.txt")
         assert called and called[0].endswith("note.txt")
 
     def test_store_default_use_trash_is_false(self, tmp_path):
@@ -644,8 +714,8 @@ class TestMinimalManifest:
         req = store.create("inbox")
         assert req["upload_count"] == 0
         assert req["last_upload_at"] == 0
-        store.add_upload(req["id"], "alice", "a.txt", b"x")
-        store.add_upload(req["id"], "alice", "b.txt", b"y")
+        store.add_upload(req["id"], "HASH01", "alice", "a.txt", b"x")
+        store.add_upload(req["id"], "HASH01", "alice", "b.txt", b"y")
         fresh = store.get(req["id"])
         assert fresh["upload_count"] == 2
         assert fresh["last_upload_at"] > 0
@@ -686,7 +756,7 @@ class TestMinimalManifest:
     def test_mark_seen_writes_last_upload_at_from_disk(self, tmp_path):
         store = RequestStore(str(tmp_path))
         req = store.create("inbox")
-        store.add_upload(req["id"], "alice", "f.txt", b"x")
+        store.add_upload(req["id"], "HASH01", "alice", "f.txt", b"x")
         store.mark_seen(req["id"])
         # mark_seen wrote the current last_upload_at into the manifest;
         # next get() reports the cursor caught up
@@ -716,7 +786,7 @@ class TestConcurrentUploads:
 
         def upload(payload: bytes) -> None:
             try:
-                store.add_upload(req["id"], "alice", "f.txt", payload)
+                store.add_upload(req["id"], "HASH01", "alice", "f.txt", payload)
             except Exception as e:
                 errors.append(e)
 
@@ -732,8 +802,10 @@ class TestConcurrentUploads:
             c
             for c in (tmp_path / SHARES_DIR_NAME / "requests").iterdir()
             if c.is_dir()
-        ) / "alice"
-        files = sorted(alice_dir.iterdir())
+        ) / "HASH01"
+        files = sorted(
+            f for f in alice_dir.iterdir() if f.name != ".uploader.json"
+        )
         assert len(files) == len(bodies)
         # Every payload is preserved on disk
         on_disk = {f.read_bytes() for f in files}
@@ -746,7 +818,7 @@ class TestConcurrentUploads:
         req = store.create("inbox")
 
         def upload(i: int) -> None:
-            store.add_upload(req["id"], "bob", f"file-{i}.txt", str(i).encode())
+            store.add_upload(req["id"], "HASH01", "bob", f"file-{i}.txt", str(i).encode())
 
         threads = [threading.Thread(target=upload, args=(i,)) for i in range(20)]
         for t in threads:
@@ -758,8 +830,10 @@ class TestConcurrentUploads:
             c
             for c in (tmp_path / SHARES_DIR_NAME / "requests").iterdir()
             if c.is_dir()
-        ) / "bob"
-        names = sorted(p.name for p in bob_dir.iterdir())
+        ) / "HASH01"
+        names = sorted(
+            p.name for p in bob_dir.iterdir() if p.name != ".uploader.json"
+        )
         assert names == sorted(f"file-{i}.txt" for i in range(20))
 
     def test_manifest_write_is_atomic(self, tmp_path, monkeypatch):

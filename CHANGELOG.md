@@ -2,6 +2,30 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.32] - 2026-06-12
+
+Per-uploader identity on request pages.
+
+### Added
+
+- Request uploaders get a stable server-issued short hash stored in an httpOnly cookie (`sf_uploader_<id>`); the standalone page shows a "Your uploads" list scoped to that identity, with per-file Remove buttons and name prefill
+- `DELETE public/request/<id>/upload?name=...` - uploaders remove their own files; identity comes from the cookie only, so nobody can touch another uploader's pool
+- Panel/CLI uploads to a connected request persist and replay the peer-minted uploader hash, so folder batches and repeat sends land under one identity
+- Acceptance criteria document `docs/acc-crit-request-uploader-identity.md`
+
+### Changed
+
+- The uploader's typed name is now a relabelable display label (stored in a `.uploader.json` sidecar); identity is the hash, so many uploaders may share a name and renaming keeps the same pool
+- Owner panel shows request uploaders as `name (hash)` to distinguish same-named uploaders; pre-identity uploads remain visible and removable
+- `remove-upload` CLI command takes the uploader hash (shown by `list-request-uploads`) instead of the name
+- Removed the "Request created - link copied" success toast; the link still lands on the clipboard and the new row is the feedback
+
+### Fixed
+
+- Concurrent uploads to the same pool no longer race on the sidecar write (unique temp file + atomic rename)
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.31] - 2026-06-11
 
 Bundled Claude skill and installer.
@@ -10,8 +34,6 @@ Bundled Claude skill and installer.
 
 - `install-claude-skill` CLI command - installs the bundled `jupyterlab_share_files` Claude skill (a usage guide for this CLI) into `~/.claude/skills/`, asking for confirmation before writing
 - The Claude skill now ships inside the package as a resource
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.30] - 2026-06-11
 

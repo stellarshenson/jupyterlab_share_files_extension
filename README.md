@@ -30,6 +30,7 @@ The standalone page recipients see in any browser - download view, upload view (
 
 - **Shares** - read-only drops of files and folders; recipients download
 - **Requests** - inboxes; recipients upload, organised per uploader
+- **Per-uploader identity** - request uploaders get a server-issued short hash in a browser cookie; the page shows only their own uploads with add/remove control; the owner panel shows `name (hash)` so several "anonymous" uploaders stay distinct
 - **Connections** - paste someone's link to subscribe to their share or upload to their request
 - **Drag-and-drop** from the file browser - drop zone (new share), share row (add files), request row (upload)
 - **Browse inside a share** - double-click a folder to drill in; the `..` row goes back up
@@ -102,7 +103,7 @@ jupyterlab_share_files create-share <name> [paths...] [--password PW | --generat
 jupyterlab_share_files create-request <name> [--password PW | --generate-password]
 jupyterlab_share_files add-files <share-id> <paths...>
 jupyterlab_share_files remove-files <share-id> <names...>
-jupyterlab_share_files remove-upload <request-id> <uploader> <name>
+jupyterlab_share_files remove-upload <request-id> <uploader-hash> <name>
 jupyterlab_share_files set-password <share|request> <id> [PW] [--generate] [--clear]
 jupyterlab_share_files generate-password
 jupyterlab_share_files connect <link>

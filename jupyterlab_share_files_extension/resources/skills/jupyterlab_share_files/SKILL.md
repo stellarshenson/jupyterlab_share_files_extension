@@ -56,13 +56,13 @@ jupyterlab_share_files create-request submissions
 
 - **`add-files <share-id> <paths...>`** - copy more workspace paths into an existing share (same isolated-pool copy as create)
 - **`remove-files <share-id> <names...>`** - remove top-level entries from a share by **name** (the names shown in the manifest / `list-items`, not workspace paths)
-- **`remove-upload <request-id> <uploader> <name>`** - remove a single uploaded file from one of your requests (uploader + file name come from `list-request-uploads`)
+- **`remove-upload <request-id> <uploader-hash> <name>`** - remove a single uploaded file from one of your requests (uploader hash + file name come from `list-request-uploads`; uploaders are keyed by a server-issued hash, the display name is just a label)
 
 ```bash
 jupyterlab_share_files add-files AB23CD45 extra/diagram.png changelog.md
 jupyterlab_share_files remove-files AB23CD45 diagram.png
 jupyterlab_share_files list-request-uploads RQ77ZZ12
-jupyterlab_share_files remove-upload RQ77ZZ12 alice draft.pdf
+jupyterlab_share_files remove-upload RQ77ZZ12 K3J5H2 draft.pdf
 ```
 
 ## Passwords

@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,15 @@ def generate_token() -> str:
     """Return an 8-char base32 random token."""
     raw = secrets.token_bytes(TOKEN_BYTES)
     return base64.b32encode(raw).decode("ascii").rstrip("=")
+
+
+def mint_uploader_hash() -> str:
+    """Return a 6-char base32 identity hash for a request uploader.
+
+    Short on purpose - it is shown next to the uploader's name in the owner
+    panel and only needs to be unique within a single request.
+    """
+    return generate_token()[:6]
 
 
 def generate_password(numwords: int = 4) -> str:
@@ -540,6 +550,9 @@ class ShareStore(BaseStore):
         return target
 
 
+UPLOADER_SIDECAR = ".uploader.json"
+
+
 class RequestStore(BaseStore):
     subdir = "requests"
 
@@ -568,7 +581,12 @@ class RequestStore(BaseStore):
             for child in sorted(content_dir.iterdir()):
                 if not child.is_dir():
                     continue
-                entries = _list_entries(child, self.workspace_root)
+                # the sidecar carries the display label; entries must not list it
+                entries = [
+                    e for e in _list_entries(child, self.workspace_root)
+                    # also hides crashed sidecar temp files (.uploader.json.*.tmp)
+                    if not e["name"].startswith(UPLOADER_SIDECAR)
+                ]
                 upload_count += len(entries)
                 # derive last_upload_at from the most recent file mtime so
                 # the manifest does not have to be touched on every upload
@@ -579,8 +597,17 @@ class RequestStore(BaseStore):
                             last_upload_at = mtime
                     except OSError:
                         pass
+                # pre-identity dirs have no sidecar - fall back to the dir
+                # name for both hash and label so legacy uploads stay visible
+                display_name = child.name
+                try:
+                    with open(child / UPLOADER_SIDECAR, encoding="utf-8") as f:
+                        display_name = json.load(f).get("name") or child.name
+                except (OSError, ValueError):
+                    pass
                 uploaders.append({
-                    "name": child.name,
+                    "hash": child.name,
+                    "name": display_name,
                     "entries": entries,
                 })
         manifest["uploaders"] = uploaders
@@ -588,12 +615,21 @@ class RequestStore(BaseStore):
         manifest["last_upload_at"] = last_upload_at
         return manifest
 
-    def add_upload(self, id_: str, uploader: str, filename: str, data: bytes) -> dict[str, Any]:
+    def add_upload(
+        self,
+        id_: str,
+        uploader_hash: str,
+        uploader_name: str,
+        filename: str,
+        data: bytes,
+    ) -> dict[str, Any]:
         if not self.exists(id_):
             raise NotFoundError(f"Request not found: {id_}")
-        # default to "anonymous" when uploader is empty rather than going
-        # through _safe_name (which returns "unnamed" for empty input)
-        uploader_slug = _safe_name(uploader) if uploader.strip() else "anonymous"
+        # the hash is the identity - the directory key; the name is only a
+        # display label persisted in the sidecar (last write wins, so an
+        # uploader renaming themselves relabels their existing pool)
+        uploader_slug = _safe_name(uploader_hash)
+        display_name = uploader_name.strip() or "anonymous"
         # filename may include path components (folder uploads) - keep them but sanitise each
         filename = filename.replace("\\", "/")
         parts = [p for p in filename.split("/") if p and p not in (".", "..")]
@@ -603,6 +639,15 @@ class RequestStore(BaseStore):
         target_dir = self._path_for(id_) / uploader_slug
         # mkdir(parents=True, exist_ok=True) is safe under concurrent calls
         target_dir.mkdir(parents=True, exist_ok=True)
+        # atomic sidecar write with a UNIQUE temp name - concurrent uploads to
+        # the same pool each get their own temp file, so the os.replace of one
+        # cannot yank the other's away (a fixed `.tmp` name would race)
+        fd, tmp = tempfile.mkstemp(
+            prefix=UPLOADER_SIDECAR + ".", suffix=".tmp", dir=target_dir
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"name": display_name}, f)
+        os.replace(tmp, target_dir / UPLOADER_SIDECAR)
         # nested folders for path-bearing filenames
         nested_dir = target_dir.joinpath(*safe_parts[:-1]) if len(safe_parts) > 1 else target_dir
         nested_dir.mkdir(parents=True, exist_ok=True)
@@ -620,15 +665,22 @@ class RequestStore(BaseStore):
             raise StorageError(f"Invalid uploader: {uploader}")
         if not item_name or "/" in item_name or "\\" in item_name or item_name in (".", ".."):
             raise StorageError(f"Invalid item: {item_name}")
+        if item_name == UPLOADER_SIDECAR:
+            raise StorageError(f"Invalid item: {item_name}")
         target = self._path_for(id_) / uploader / item_name
         if not target.exists():
             raise NotFoundError(f"Upload not found")
         _remove(target, self.use_trash)
-        # remove empty uploader dirs
+        # remove the uploader dir once only the sidecar (or nothing) is left
         uploader_dir = target.parent
         try:
-            if uploader_dir.exists() and not any(uploader_dir.iterdir()):
-                uploader_dir.rmdir()
+            if uploader_dir.exists():
+                leftovers = [p.name for p in uploader_dir.iterdir()]
+                if leftovers == [UPLOADER_SIDECAR]:
+                    (uploader_dir / UPLOADER_SIDECAR).unlink()
+                    leftovers = []
+                if not leftovers:
+                    uploader_dir.rmdir()
         except OSError:
             pass
         return self.get(id_)
@@ -753,6 +805,21 @@ class ConnectionStore:
     def remove(self, key: str) -> None:
         items = [e for e in self._load() if e.get("key") != key]
         self._save(items)
+
+    def set_uploader_hash(self, key: str, uploader_hash: str) -> None:
+        """Persist the server-issued uploader identity for a request connection.
+
+        Server-to-server uploads have no browser cookie jar - the hash minted
+        by the peer on the first upload is stored here and replayed as a
+        Cookie header so every later upload lands in the same pool.
+        """
+        items = self._load()
+        for entry in items:
+            if entry.get("key") == key:
+                entry["uploader_hash"] = uploader_hash
+                self._save(items)
+                return
+        raise NotFoundError(f"Connection not found: {key}")
 
     def get(self, key: str) -> dict[str, Any]:
         for entry in self._load():

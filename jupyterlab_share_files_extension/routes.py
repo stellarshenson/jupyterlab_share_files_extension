@@ -43,6 +43,7 @@ from .storage import (
     _resolve_unique_target,
     _safe_name,
     generate_password,
+    mint_uploader_hash,
     resolve_shares_dir,
     verify_password,
 )
@@ -195,7 +196,7 @@ class _PublicBase(tornado.web.RequestHandler):
         # Allow cross-origin GETs of manifests and downloads so other peers'
         # JupyterLab panels can fetch directly from this server.
         self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.set_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.set_header(
             "Access-Control-Allow-Headers", "Content-Type, X-Share-Token"
         )
@@ -1112,6 +1113,37 @@ class ConnectionUploadHandler(_Base):
         try:
             # Protected peer? trade the stored password for an unlock token
             auth_headers = await self._peer_auth_headers(conn)
+            # Server-to-server uploads have no browser cookie jar. Replay the
+            # connection's persisted uploader identity as a Cookie header so
+            # every upload (and every file of a folder batch) lands in ONE
+            # pool on the peer; the hash the peer mints on the first upload
+            # is captured from the response and persisted for next time.
+            uploader_hash = conn.get("uploader_hash") or ""
+
+            async def post_one(filename: str, data: bytes) -> None:
+                nonlocal uploader_hash
+                headers = dict(auth_headers or {})
+                if uploader_hash:
+                    headers["Cookie"] = (
+                        f"sf_uploader_{request_id}={uploader_hash}"
+                    )
+                resp_body = await _post_file(
+                    client,
+                    upload_url,
+                    filename,
+                    data,
+                    validate_cert=self.verify_peer_tls,
+                    headers=headers,
+                )
+                if not uploader_hash:
+                    try:
+                        minted = (json.loads(resp_body) or {}).get("me", {}).get("hash", "")
+                    except (ValueError, AttributeError):
+                        minted = ""
+                    if minted:
+                        uploader_hash = minted
+                        self.connection_store.set_uploader_hash(key, minted)
+
             for rel in paths:
                 if not _is_safe_relative(rel):
                     return self.write_error_json(400, f"Unsafe path: {rel}")
@@ -1126,26 +1158,12 @@ class ConnectionUploadHandler(_Base):
                             rel_name = os.path.join(src.name, os.path.relpath(abs_path, src))
                             with open(abs_path, "rb") as f:
                                 data = f.read()
-                            await _post_file(
-                                client,
-                                upload_url,
-                                rel_name.replace(os.sep, "/"),
-                                data,
-                                validate_cert=self.verify_peer_tls,
-                                headers=auth_headers,
-                            )
+                            await post_one(rel_name.replace(os.sep, "/"), data)
                             sent.append(rel_name)
                 else:
                     with open(src, "rb") as f:
                         data = f.read()
-                    await _post_file(
-                        client,
-                        upload_url,
-                        src.name,
-                        data,
-                        validate_cert=self.verify_peer_tls,
-                        headers=auth_headers,
-                    )
+                    await post_one(src.name, data)
                     sent.append(src.name)
         except PeerUnavailable as exc:
             return self.write_error_json(502, str(exc))
@@ -1160,8 +1178,8 @@ async def _post_file(
     data: bytes,
     validate_cert: bool = True,
     headers: dict | None = None,
-) -> None:
-    """Send a single file as multipart/form-data POST."""
+) -> bytes:
+    """Send a single file as multipart/form-data POST. Returns the response body."""
     boundary = "----shareFilesBoundary" + os.urandom(8).hex()
     body_parts = [
         f"--{boundary}\r\n".encode(),
@@ -1193,6 +1211,7 @@ async def _post_file(
         raise PeerUnavailable(f"Could not reach the peer: {exc}") from None
     if resp.code >= 400:
         raise PeerUnavailable(f"Upload failed: {resp.code}")
+    return resp.body or b""
 
 
 def _parse_share_link(link: str) -> dict[str, str]:
@@ -1310,8 +1329,16 @@ class PublicRequestManifestHandler(_PublicBase):
             self.finish(json.dumps({"error": "not found"}))
             return
         manifest["link"] = _public_request_url(self, id_)
-        # don't expose upload contents publicly; keep counts but strip names
-        manifest["uploaders"] = []
+        # never expose other people's uploads publicly - only the caller's
+        # own pool, identified by the uploader cookie, is returned
+        uploader_hash = _uploader_hash_from_cookie(self, id_)
+        mine = [
+            u for u in manifest.get("uploaders", [])
+            if uploader_hash and u.get("hash") == uploader_hash
+        ]
+        manifest["uploaders"] = mine
+        if mine:
+            manifest["me"] = {"hash": uploader_hash, "name": mine[0].get("name")}
         self.set_header("Content-Type", "application/json")
         self.finish(json.dumps(manifest))
 
@@ -1379,6 +1406,19 @@ class PublicShareDownloadAllHandler(_PublicBase):
         self.finish(buf.getvalue())
 
 
+def _uploader_cookie_name(id_: str) -> str:
+    return f"sf_uploader_{id_}"
+
+
+def _uploader_hash_from_cookie(handler, id_: str) -> str:
+    """Read and sanity-check the uploader identity cookie. '' when absent."""
+    raw = handler.get_cookie(_uploader_cookie_name(id_), "") or ""
+    # hashes are short base32 - reject anything else (forged / corrupted)
+    if not re.fullmatch(r"[A-Z2-7]{4,16}", raw):
+        return ""
+    return raw
+
+
 class PublicRequestUploadHandler(_PublicBase):
     def post(self, id_):
         if not _password_gate(self, self.request_store, id_):
@@ -1387,7 +1427,19 @@ class PublicRequestUploadHandler(_PublicBase):
             self.set_status(404)
             self.finish(json.dumps({"error": "not found"}))
             return
-        uploader = self.get_argument("uploader", default="anonymous")
+        uploader_name = self.get_argument("uploader", default="anonymous")
+        # identity comes from the cookie, never from the client's parameters;
+        # first upload mints a hash and sets the cookie on the response
+        uploader_hash = _uploader_hash_from_cookie(self, id_)
+        if not uploader_hash:
+            uploader_hash = mint_uploader_hash()
+            self.set_cookie(
+                _uploader_cookie_name(id_),
+                uploader_hash,
+                httponly=True,
+                expires_days=365,
+                samesite="Lax",
+            )
         files = self.request.files.get("file") or self.request.files.get("files") or []
         if not files:
             self.set_status(400)
@@ -1397,13 +1449,46 @@ class PublicRequestUploadHandler(_PublicBase):
             filename = f.get("filename") or "upload.bin"
             data = f.get("body") or b""
             try:
-                self.request_store.add_upload(id_, uploader, filename, data)
+                self.request_store.add_upload(
+                    id_, uploader_hash, uploader_name, filename, data
+                )
             except StorageError as exc:
                 self.set_status(400)
                 self.finish(json.dumps({"error": str(exc)}))
                 return
         self.set_header("Content-Type", "application/json")
-        self.finish(json.dumps({"ok": True, "count": len(files)}))
+        self.finish(json.dumps({
+            "ok": True,
+            "count": len(files),
+            "me": {"hash": uploader_hash, "name": uploader_name},
+        }))
+
+    def delete(self, id_):
+        """Remove one of the caller's own uploads - identity from the cookie only."""
+        if not _password_gate(self, self.request_store, id_):
+            return
+        uploader_hash = _uploader_hash_from_cookie(self, id_)
+        if not uploader_hash:
+            self.set_status(403)
+            self.finish(json.dumps({"error": "no uploader identity"}))
+            return
+        name = self.get_argument("name", default="")
+        if not name:
+            self.set_status(400)
+            self.finish(json.dumps({"error": "Missing ?name=..."}))
+            return
+        try:
+            self.request_store.remove_upload(id_, uploader_hash, name)
+        except NotFoundError:
+            self.set_status(404)
+            self.finish(json.dumps({"error": "not found"}))
+            return
+        except StorageError as exc:
+            self.set_status(400)
+            self.finish(json.dumps({"error": str(exc)}))
+            return
+        self.set_header("Content-Type", "application/json")
+        self.finish(json.dumps({"ok": True}))
 
 
 # --------------------------------------------------------------------------- #

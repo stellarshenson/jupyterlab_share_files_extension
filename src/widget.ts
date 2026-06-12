@@ -258,25 +258,13 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     const { name, password } = spec;
-    const pending = Notification.emit(
-      `Creating request "${name}"...`,
-      'in-progress',
-      { autoClose: false }
-    );
     try {
       const req = await createRequest(this._serverSettings, name, password);
+      // no success toast - the new row appearing in the panel is feedback
+      // enough and the link lands on the clipboard silently
       await this._copyLinkToClipboard(req.link);
-      Notification.update({
-        id: pending,
-        message: `Request "${req.name}" created - link copied`,
-        type: 'success',
-        autoClose: 5000
-      });
     } catch (err: any) {
-      Notification.update({
-        id: pending,
-        message: `Could not create request: ${err.message || err}`,
-        type: 'error',
+      Notification.error(`Could not create request: ${err.message || err}`, {
         autoClose: 5000
       });
     } finally {
@@ -1058,7 +1046,12 @@ export class ShareFilesPanel extends Widget {
       groupRow.appendChild(iconNode);
       const nameNode = document.createElement('span');
       nameNode.className = 'jp-ShareFilesPanel-uploaderName';
-      nameNode.textContent = uploader.name;
+      // identity is the hash; show a short suffix so several uploaders with
+      // the same display name (multiple "anonymous") stay distinguishable
+      nameNode.textContent =
+        uploader.hash && uploader.hash !== uploader.name
+          ? `${uploader.name} (${uploader.hash.slice(0, 4).toLowerCase()})`
+          : uploader.name;
       groupRow.appendChild(nameNode);
       list.appendChild(groupRow);
 
@@ -1066,7 +1059,11 @@ export class ShareFilesPanel extends Widget {
         const row = this._renderEntryRow(
           entry,
           () => {
-            void this._removeUpload(req.id, uploader.name, entry.name);
+            void this._removeUpload(
+              req.id,
+              uploader.hash || uploader.name,
+              entry.name
+            );
           },
           1
         );

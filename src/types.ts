@@ -25,6 +25,9 @@ export interface IShare {
 }
 
 export interface IUploaderEntry {
+  /** Server-issued identity hash - the stable key for this uploader's pool */
+  hash: string;
+  /** Display label the uploader typed; many uploaders may share a name */
   name: string;
   entries: IShareEntry[];
 }
