@@ -131,23 +131,27 @@ def _is_safe_relative(path: str) -> bool:
 
 
 def _list_entries(directory: Path, workspace_root: Path | None = None) -> list[dict[str, Any]]:
-    """Return [{name, type, size, path?}] for the top-level items in directory.
+    """Return [{name, type, size, mtime, path?}] for the top-level items in directory.
 
     When `workspace_root` is provided and the entry lies inside it, the
     workspace-relative `path` is added so the frontend can pass it to
-    JupyterLab's Contents API (e.g. for copy-to-file-browser).
+    JupyterLab's Contents API (e.g. for copy-to-file-browser). `mtime` is the
+    filesystem modification time (unix seconds) shown in the panel's hover
+    tooltip.
     """
     if not directory.exists():
         return []
     entries = []
     for child in sorted(directory.iterdir()):
         entry: dict[str, Any] = {"name": child.name}
+        st = child.stat()
+        entry["mtime"] = int(st.st_mtime)
         if child.is_dir():
             entry["type"] = "directory"
             entry["size"] = _dir_size(child)
         else:
             entry["type"] = "file"
-            entry["size"] = child.stat().st_size
+            entry["size"] = st.st_size
         if workspace_root is not None:
             try:
                 rel = child.resolve().relative_to(workspace_root)

@@ -35,6 +35,7 @@ The standalone page recipients see in any browser - download view, upload view (
 - **Drag-and-drop** from the file browser - drop zone (new share), share row (add files), request row (upload)
 - **Browse inside a share** - double-click a folder to drill in; the `..` row goes back up
 - **Open files directly** - double-click a file in the panel, JupyterLab opens it with the right viewer
+- **Hover for details** - hovering a file or folder row shows a tooltip with its full name, path, size and modified date
 - **Copy/paste** between the panel and the file browser
 - **Right-click context menu** - file browser ("Share Files...") and panel rows ("Copy to Current Folder", "Show in File Browser")
 - **Optional password protection** - set at creation or later (right-click → Set Password); recipients unlock before any access; one-click xkcdpass passphrase generation; link dialog shows the password with a copy button; attempts rate limited server-side

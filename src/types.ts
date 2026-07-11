@@ -8,6 +8,8 @@ export interface IShareEntry {
   size: number;
   /** Workspace-relative path of the entry on disk (when within workspace) */
   path?: string;
+  /** Filesystem modification time in unix seconds (for the hover tooltip) */
+  mtime?: number;
 }
 
 export interface IShare {

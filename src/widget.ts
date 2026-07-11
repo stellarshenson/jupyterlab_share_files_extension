@@ -1217,10 +1217,7 @@ export class ShareFilesPanel extends Widget {
       row.appendChild(size);
       const url =
         baseLink + '/download/' + encodeURIComponent(entry.name) + tokenQs;
-      row.title =
-        entry.type === 'directory'
-          ? 'Double-click to save folder here; drag into the file browser to save; right-click to download'
-          : 'Double-click to open; drag into the file browser to save; right-click to download';
+      row.title = this._entryTooltip(entry, false);
       row.classList.add('jp-mod-clickable');
       row.addEventListener('dblclick', evt => {
         evt.preventDefault();
@@ -1464,6 +1461,7 @@ export class ShareFilesPanel extends Widget {
     size.className = 'jp-ShareFilesPanel-entrySize';
     size.textContent = this._formatSize(entry.size);
     row.appendChild(size);
+    row.title = this._entryTooltip(entry);
     if (onRemove) {
       const btn = document.createElement('button');
       btn.className = 'jp-ShareFilesPanel-entryRemove';
@@ -1476,10 +1474,6 @@ export class ShareFilesPanel extends Widget {
       row.appendChild(btn);
     }
     if (entry.path) {
-      row.title =
-        entry.type === 'directory'
-          ? 'Double-click to open folder; drag into the file browser to copy; right-click for actions'
-          : 'Double-click to open file; drag into the file browser to copy or onto a tab to open; right-click for actions';
       row.classList.add('jp-mod-clickable');
       row.addEventListener('contextmenu', evt => {
         evt.preventDefault();
@@ -2815,6 +2809,23 @@ export class ShareFilesPanel extends Widget {
         this._state.lastSeenUploads.set(req.id, last);
       }
     }
+  }
+
+  /**
+   * Hover tooltip for a file/folder row: full name, path, size and date.
+   * `includePath` is off for connected (peer) shares so a remote server's
+   * workspace path is not surfaced to the recipient.
+   */
+  private _entryTooltip(entry: IShareEntry, includePath = true): string {
+    const lines = [entry.name];
+    if (includePath && entry.path) {
+      lines.push('Path: ' + entry.path);
+    }
+    lines.push('Size: ' + this._formatSize(entry.size));
+    if (typeof entry.mtime === 'number' && entry.mtime > 0) {
+      lines.push('Modified: ' + new Date(entry.mtime * 1000).toLocaleString());
+    }
+    return lines.join('\n');
   }
 
   private _formatSize(bytes: number): string {

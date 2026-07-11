@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.37] - 2026-07-11
+
+File hover tooltip.
+
+### Added
+
+- Hovering a file or folder row in a share or request shows a tooltip with its full name, path, size and modified date; on connected peer shares the remote path is omitted
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.36] - 2026-06-12
 
 QR native context menu fix and PNG rendering.
@@ -13,8 +23,6 @@ QR native context menu fix and PNG rendering.
 ### Fixed
 
 - Right-click over the QR code now actually opens the browser's native menu in Chrome - JupyterLab's Dialog kills `contextmenu` with a capture-phase handler on the dialog node, so the 1.2.35 img-level workaround never fired; a document-level capture listener now lets the event through for the QR image only
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.35] - 2026-06-12
 
