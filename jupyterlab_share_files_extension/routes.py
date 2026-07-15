@@ -351,6 +351,23 @@ def _public_request_url(handler: tornado.web.RequestHandler, id_: str) -> str:
     return _public_origin(handler) + path
 
 
+def _strip_owner_fields(manifest: dict) -> dict:
+    """Remove owner-only filesystem metadata before a manifest crosses the
+    public boundary. The stores stamp `path` (the owner's workspace-relative
+    path) and `mtime` on entries for the authenticated owner panel; a public
+    recipient must never see the owner's on-disk layout or file timestamps.
+    Mutates and returns the freshly built, per-request manifest in place."""
+    manifest.pop("path", None)
+    for entry in manifest.get("entries", []):
+        entry.pop("path", None)
+        entry.pop("mtime", None)
+    for uploader in manifest.get("uploaders", []):
+        for entry in uploader.get("entries", []):
+            entry.pop("path", None)
+            entry.pop("mtime", None)
+    return manifest
+
+
 # --------------------------------------------------------------------------- #
 # Password protection: rate-limited unlock + capability token
 # --------------------------------------------------------------------------- #
@@ -1313,6 +1330,7 @@ class PublicShareManifestHandler(_PublicBase):
             self.set_status(404)
             self.finish(json.dumps({"error": "not found"}))
             return
+        _strip_owner_fields(manifest)
         manifest["link"] = _public_share_url(self, id_)
         self.set_header("Content-Type", "application/json")
         self.finish(json.dumps(manifest))
@@ -1339,6 +1357,7 @@ class PublicRequestManifestHandler(_PublicBase):
         manifest["uploaders"] = mine
         if mine:
             manifest["me"] = {"hash": uploader_hash, "name": mine[0].get("name")}
+        _strip_owner_fields(manifest)
         self.set_header("Content-Type", "application/json")
         self.finish(json.dumps(manifest))
 

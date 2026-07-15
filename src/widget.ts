@@ -344,8 +344,30 @@ export class ShareFilesPanel extends Widget {
         await Promise.all(
           this._state.connections.map(conn => this._refreshConnection(conn))
         );
+        if (this._networkOffline) {
+          this._networkOffline = false;
+          console.debug('Share Files: server reachable again');
+        }
       } catch (err: any) {
-        console.error('Share Files: refresh failed', err);
+        // A dropped fetch (offline, tab suspended, server restarting) throws
+        // ServerConnection.NetworkError - a TypeError subclass - whereas a real
+        // HTTP error is a ServerConnection.ResponseError (extends Error). Ride
+        // out the transient case quietly: the last-good lists are still in
+        // `_state` (only assigned on success above), so the panel keeps showing
+        // them and the next poll recovers. Log once per offline streak, not
+        // every tick, and reserve console.error for genuine failures.
+        if (this._isTransientNetworkError(err)) {
+          if (!this._networkOffline) {
+            this._networkOffline = true;
+            console.debug(
+              'Share Files: server unreachable, keeping last view; will retry'
+            );
+          }
+        } else {
+          // A real error means the server answered - we are not offline.
+          this._networkOffline = false;
+          console.error('Share Files: refresh failed', err);
+        }
       }
       this._render();
     })();
@@ -353,6 +375,17 @@ export class ShareFilesPanel extends Widget {
     if (spin && this._refreshBtn) {
       this._refreshBtn.classList.remove('jp-mod-spinning');
     }
+  }
+
+  /** True for a transient loss of connectivity (offline, tab suspended, server
+   * restarting) as opposed to a real server error. The API layer wraps a failed
+   * fetch in ServerConnection.NetworkError; a real HTTP error is a
+   * ServerConnection.ResponseError (extends Error), which must still surface.
+   * Key on the wrapper type only - matching the whole TypeError hierarchy would
+   * swallow ordinary code bugs, and `!navigator.onLine` would misclassify a real
+   * error whenever the browser reports the WAN down (e.g. a localhost 500). */
+  private _isTransientNetworkError(err: any): boolean {
+    return err instanceof ServerConnection.NetworkError;
   }
 
   /** Submit a link to connect to. Used by the connect input. */
@@ -919,7 +952,11 @@ export class ShareFilesPanel extends Widget {
             name: c.name,
             type: c.type === 'directory' ? 'directory' : 'file',
             size: typeof c.size === 'number' ? c.size : 0,
-            path: c.path
+            path: c.path,
+            // Contents API gives an ISO string; the tooltip wants unix seconds
+            mtime: c.last_modified
+              ? Math.floor(new Date(c.last_modified).getTime() / 1000)
+              : undefined
           })
         )
         .sort((a: IShareEntry, b: IShareEntry) => {
@@ -1209,7 +1246,7 @@ export class ShareFilesPanel extends Widget {
       row.appendChild(iconNode);
       const name = document.createElement('span');
       name.className = 'jp-ShareFilesPanel-entryName';
-      name.textContent = entry.name;
+      name.textContent = entry.name + (entry.type === 'directory' ? '/' : '');
       row.appendChild(name);
       const size = document.createElement('span');
       size.className = 'jp-ShareFilesPanel-entrySize';
@@ -2241,7 +2278,7 @@ export class ShareFilesPanel extends Widget {
         }
         return null;
       } catch (err) {
-        console.warn('[share-files] getPaths error', err);
+        console.warn('Share Files: getPaths error', err);
         return null;
       }
     };
@@ -2279,7 +2316,6 @@ export class ShareFilesPanel extends Widget {
     });
     node.addEventListener('lm-drop', (event: any) => {
       const paths = getPaths(event);
-      console.log(`[share-files] lm-drop on ${label}, paths:`, paths);
       if (!paths || paths.length === 0) {
         return;
       }
@@ -3123,6 +3159,9 @@ export class ShareFilesPanel extends Widget {
   private _filterText = '';
   private _filterVisible = false;
   private _pollHandle: number | null = null;
+  /** True while the server is unreachable (offline / suspended / restarting),
+   * so a poll storm is logged once instead of every tick. */
+  private _networkOffline = false;
   /** Unlock tokens for password-protected connections, keyed by conn.key. */
   private _unlockTokens = new Map<string, string>();
 }

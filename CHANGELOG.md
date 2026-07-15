@@ -2,6 +2,20 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.38] - 2026-07-15
+
+Adversarial review fixes: public-manifest privacy and resilient panel refresh.
+
+### Fixed
+
+- Public share and request manifests no longer expose the owner's workspace path or file modification times - recipients see only each entry's name, type and size
+- Background panel refresh no longer misreports a real server error as an offline blip - only a genuine dropped connection keeps the last-good view quietly, while real HTTP errors and code bugs are logged
+- Hover tooltip now shows the Modified date on drilled-in sub-folder rows, matching top-level rows
+- Connected peer directory rows render with a trailing `/` like owned rows
+- Removed a debug log that fired on every drag-and-drop
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.37] - 2026-07-11
 
 File hover tooltip.
@@ -9,8 +23,6 @@ File hover tooltip.
 ### Added
 
 - Hovering a file or folder row in a share or request shows a tooltip with its full name, path, size and modified date; on connected peer shares the remote path is omitted
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.36] - 2026-06-12
 
