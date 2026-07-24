@@ -222,7 +222,7 @@ def _open_exclusive_for_write(target_dir: Path, name: str) -> tuple[Path, int]:
             counter += 1
 
 
-def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+def _atomic_write_json(path: Path, data: Any) -> None:
     """Write JSON via write-temp + atomic rename so readers never see a
     half-written manifest, and a crash mid-write does not corrupt it.
 
@@ -295,7 +295,11 @@ class BaseStore:
         self.workspace_root = Path(os.path.expanduser(workspace_root)).resolve()
         self.shares_base = resolve_shares_dir(workspace_root, shares_dir)
         self.root = self.shares_base / self.subdir
-        self.root.mkdir(parents=True, exist_ok=True)
+        # Deliberately NOT created here - a store is constructed on every
+        # request, so creating it eagerly would litter the workspace with an
+        # empty uploads/ tree for users who never share anything. The write
+        # paths (create, upload, _atomic_write_json, _copy_into) all mkdir
+        # with parents=True, and every read path guards on root.exists().
         self.use_trash = use_trash
 
     def _path_for(self, id_: str) -> Path:
@@ -490,22 +494,36 @@ class ShareStore(BaseStore):
         Persists the minimal `{id, name}` manifest (plus an optional
         `password`); everything else is derived on read.
         """
-        id_ = generate_token()
-        share_dir = self._new_path(name, id_)
-        share_dir.mkdir(parents=True, exist_ok=True)
-
+        # Validate every source BEFORE creating anything on disk - a share
+        # built from a stale file-browser selection (file renamed or deleted
+        # since the context menu opened) must not leave an empty storage tree
+        # and a manifest-less ghost folder behind when it fails.
+        sources: list[Path] = []
         for rel in source_paths:
             if not _is_safe_relative(rel):
                 raise StorageError(f"Unsafe path: {rel}")
             source = self.workspace_root / rel
             if not source.exists():
                 raise NotFoundError(f"Source not found: {rel}")
-            _copy_into(source, share_dir)
+            sources.append(source)
 
-        manifest: dict[str, Any] = {"id": id_, "name": name}
-        if password:
-            manifest["password"] = password
-        self._write_manifest(id_, manifest)
+        id_ = generate_token()
+        share_dir = self._new_path(name, id_)
+        share_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            for source in sources:
+                _copy_into(source, share_dir)
+            manifest: dict[str, Any] = {"id": id_, "name": name}
+            if password:
+                manifest["password"] = password
+            self._write_manifest(id_, manifest)
+        except Exception:
+            # A copy or the manifest write failed after the directory existed
+            # (source deleted mid-copy, permissions, disk full). Roll back so
+            # no manifest-less ghost folder is left - `list` only iterates
+            # `*.json`, so such a folder is invisible and never cleaned up.
+            shutil.rmtree(share_dir, ignore_errors=True)
+            raise
         return self.get(id_)
 
     def get(self, id_: str) -> dict[str, Any]:
@@ -727,7 +745,7 @@ class ConnectionStore:
     def __init__(self, workspace_root: str, shares_dir: str = ""):
         self.workspace_root = Path(os.path.expanduser(workspace_root)).resolve()
         self.root = resolve_shares_dir(workspace_root, shares_dir)
-        self.root.mkdir(parents=True, exist_ok=True)
+        # Created lazily by _save - see BaseStore.__init__
         self.path = self.root / "connections.json"
 
     def _load(self) -> list[dict[str, Any]]:
@@ -743,8 +761,11 @@ class ConnectionStore:
         return []
 
     def _save(self, items: list[dict[str, Any]]) -> None:
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(items, f, indent=2)
+        # Atomic temp+rename (and it mkdirs the parent, creating the storage
+        # dir on first write). A plain truncate-in-place could be interrupted
+        # mid-write and leave an unparseable file, which _load silently reads
+        # back as [] - losing every connection the user had.
+        _atomic_write_json(self.path, items)
 
     @staticmethod
     def _make_key(kind: str, id_: str, host: str) -> str:
@@ -807,8 +828,13 @@ class ConnectionStore:
         return entry
 
     def remove(self, key: str) -> None:
-        items = [e for e in self._load() if e.get("key") != key]
-        self._save(items)
+        items = self._load()
+        remaining = [e for e in items if e.get("key") != key]
+        if len(remaining) == len(items):
+            # Nothing matched - do not write (and so do not create the
+            # storage dir) for a no-op delete
+            return
+        self._save(remaining)
 
     def set_uploader_hash(self, key: str, uploader_hash: str) -> None:
         """Persist the server-issued uploader identity for a request connection.

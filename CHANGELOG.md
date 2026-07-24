@@ -2,6 +2,21 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.39] - 2026-07-25
+
+Storage folder created only when needed.
+
+### Changed
+
+- The storage folder (`uploads/` by default) is no longer created when the server starts - it appears only when you create your first share or request, or connect to a link, so a workspace that has never shared anything stays clean
+
+### Fixed
+
+- Creating a share from a stale file-browser selection (a file renamed or deleted since the menu opened) no longer leaves an empty storage tree and an invisible, never-cleaned-up folder behind; the share is rolled back if any part of it fails
+- `connections.json` is now written atomically - an interrupted write could previously leave an unreadable file that was silently treated as "no connections", losing every connection you had
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.38] - 2026-07-15
 
 Adversarial review fixes: public-manifest privacy and resilient panel refresh.
@@ -13,8 +28,6 @@ Adversarial review fixes: public-manifest privacy and resilient panel refresh.
 - Hover tooltip now shows the Modified date on drilled-in sub-folder rows, matching top-level rows
 - Connected peer directory rows render with a trailing `/` like owned rows
 - Removed a debug log that fired on every drag-and-drop
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.37] - 2026-07-11
 

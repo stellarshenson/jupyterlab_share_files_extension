@@ -83,7 +83,7 @@ c.ShareFilesConfig.password_max_attempts_per_minute = 30   # default: 30
 c.ShareFilesConfig.password_attempt_cooldown_seconds = 1   # default: 1
 ```
 
-- **`shares_dir`** - storage for shares/requests/connections; relative paths resolve against the notebook root, created on demand; must resolve **inside** the notebook root or the extension refuses to start with a `StorageError`
+- **`shares_dir`** - storage for shares/requests/connections; relative paths resolve against the notebook root; created only when you first create a share or request or connect to a link, so the folder never appears in a workspace that has not shared anything; must resolve **inside** the notebook root or the extension refuses to start with a `StorageError`
 - **`use_trash`** - `False` deletes permanently instead of moving to the OS trash
 - **`verify_peer_tls`** - set `False` for peers with self-signed certificates; otherwise server-side saves/uploads to them fail with a 502
 - **`password_max_attempts_per_minute`** / **`password_attempt_cooldown_seconds`** - per-resource rate limiting of password attempts (`limits` library); generous defaults (30/minute, 1s); lower the cap or raise the cooldown to harden

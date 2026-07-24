@@ -258,7 +258,8 @@ class TestShareStore:
         store = ShareStore(str(tmp_path))
         shares_dir = tmp_path / SHARES_DIR_NAME / "shares"
         content = shares_dir / "fixture-ABCDEF23"
-        content.mkdir()
+        # the store no longer creates its root eagerly - build the fixture tree
+        content.mkdir(parents=True)
         (content / "f.txt").write_text("hand-rolled")
         manifest = {
             "id": "ABCDEF23",
@@ -525,27 +526,146 @@ class TestConnectionStore:
 
 
 class TestConfigurableSharesDir:
-    def test_relative_path_creates_directory(self, tmp_path):
+    def test_relative_path_used_on_first_write(self, tmp_path):
+        (tmp_path / "f.txt").write_text("x")
         store = ShareStore(str(tmp_path), shares_dir="custom_drops")
+        # nothing on disk until there is something to share
+        assert not (tmp_path / "custom_drops").exists()
+        store.create(name="S", source_paths=["f.txt"])
         assert (tmp_path / "custom_drops" / "shares").is_dir()
 
     def test_absolute_path_outside_workspace(self, tmp_path):
+        (tmp_path / "f.txt").write_text("x")
         external = tmp_path / "elsewhere"
         store = ShareStore(str(tmp_path), shares_dir=str(external))
+        assert not external.exists()
+        store.create(name="S", source_paths=["f.txt"])
         assert (external / "shares").is_dir()
 
     def test_shares_request_connection_share_same_root(self, tmp_path):
-        ShareStore(str(tmp_path), shares_dir="shared_root")
-        RequestStore(str(tmp_path), shares_dir="shared_root")
+        (tmp_path / "f.txt").write_text("x")
+        share_store = ShareStore(str(tmp_path), shares_dir="shared_root")
+        request_store = RequestStore(str(tmp_path), shares_dir="shared_root")
         ConnectionStore(str(tmp_path), shares_dir="shared_root")
-        # all three should write under shared_root/
+        # constructing the stores must not litter the workspace
+        assert not (tmp_path / "shared_root").exists()
+        # all three write under shared_root/, each created on first write
+        share_store.create(name="S", source_paths=["f.txt"])
         assert (tmp_path / "shared_root" / "shares").is_dir()
+        request_store.create(name="R")
         assert (tmp_path / "shared_root" / "requests").is_dir()
-        # connections.json gets created lazily on first write
         ConnectionStore(str(tmp_path), shares_dir="shared_root").add(
             "share", "ABCDEFGH", "https://x"
         )
         assert (tmp_path / "shared_root" / "connections.json").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# Lazy storage-directory creation
+# --------------------------------------------------------------------------- #
+
+
+class TestLazyStorageDir:
+    """The storage dir must not appear until there is something to store.
+
+    Stores are constructed on every request, so eager creation would put an
+    empty `uploads/` tree in the workspace of every user who never shares
+    anything.
+
+    The `assert not ...exists()` lines are the ones that discriminate the
+    lazy behaviour from the old eager one - the "builds the tree" tests are
+    must-still-work guards and pass against either implementation.
+    """
+
+    def test_constructing_stores_creates_nothing(self, tmp_path):
+        ShareStore(str(tmp_path))
+        RequestStore(str(tmp_path))
+        ConnectionStore(str(tmp_path))
+        assert not (tmp_path / SHARES_DIR_NAME).exists()
+
+    def test_read_paths_create_nothing(self, tmp_path):
+        share_store = ShareStore(str(tmp_path))
+        request_store = RequestStore(str(tmp_path))
+        conn_store = ConnectionStore(str(tmp_path))
+        assert share_store.list() == []
+        assert request_store.list() == []
+        assert conn_store.list() == []
+        assert share_store.exists("ABCDEF23") is False
+        with pytest.raises(NotFoundError):
+            share_store.get("ABCDEF23")
+        assert not (tmp_path / SHARES_DIR_NAME).exists()
+
+    def test_noop_connection_remove_creates_nothing(self, tmp_path):
+        ConnectionStore(str(tmp_path)).remove("share:example.com:ABCDEF23")
+        assert not (tmp_path / SHARES_DIR_NAME).exists()
+
+    def test_creating_a_share_builds_the_tree(self, tmp_path):
+        (tmp_path / "f.txt").write_text("x")
+        store = ShareStore(str(tmp_path))
+        share = store.create(name="S", source_paths=["f.txt"])
+        assert (tmp_path / SHARES_DIR_NAME / "shares").is_dir()
+        assert store.get(share["id"])["entries"][0]["name"] == "f.txt"
+
+    def test_creating_a_request_builds_the_tree(self, tmp_path):
+        store = RequestStore(str(tmp_path))
+        request = store.create(name="R")
+        assert (tmp_path / SHARES_DIR_NAME / "requests").is_dir()
+        # round-trip: a create that mkdirs but fails to persist must not pass
+        assert store.get(request["id"])["name"] == "R"
+
+    def test_failed_share_create_leaves_nothing_behind(self, tmp_path):
+        """A stale file-browser selection must not litter the workspace."""
+        store = ShareStore(str(tmp_path))
+        with pytest.raises(NotFoundError):
+            store.create(name="S", source_paths=["gone.txt"])
+        assert not (tmp_path / SHARES_DIR_NAME).exists()
+        with pytest.raises(StorageError):
+            store.create(name="S", source_paths=["../escape.txt"])
+        assert not (tmp_path / SHARES_DIR_NAME).exists()
+
+    def test_partly_valid_share_create_leaves_nothing_behind(self, tmp_path):
+        """All sources are validated before anything is written."""
+        (tmp_path / "good.txt").write_text("x")
+        store = ShareStore(str(tmp_path))
+        with pytest.raises(NotFoundError):
+            store.create(name="S", source_paths=["good.txt", "gone.txt"])
+        assert not (tmp_path / SHARES_DIR_NAME).exists()
+        assert store.list() == []
+
+    def test_share_create_rolls_back_when_a_copy_fails(self, tmp_path, monkeypatch):
+        """A failure after the dir exists must not leave a ghost folder.
+
+        `list` only iterates `*.json`, so a manifest-less folder would be
+        invisible in the panel and never cleaned up.
+        """
+        (tmp_path / "f.txt").write_text("x")
+        store = ShareStore(str(tmp_path))
+
+        def boom(source, target_dir):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(storage_mod, "_copy_into", boom)
+        with pytest.raises(OSError):
+            store.create(name="S", source_paths=["f.txt"])
+        shares_root = tmp_path / SHARES_DIR_NAME / "shares"
+        assert not shares_root.exists() or list(shares_root.iterdir()) == []
+        assert store.list() == []
+
+    def test_upload_into_request_from_cold_start(self, tmp_path):
+        """The request-upload write path works with no storage tree present."""
+        store = RequestStore(str(tmp_path))
+        request = store.create(name="R")
+        store.add_upload(request["id"], "ABC123", "alice", "up.txt", b"payload")
+        fetched = store.get(request["id"])
+        assert fetched["upload_count"] == 1
+        names = [e["name"] for u in fetched["uploaders"] for e in u["entries"]]
+        assert "up.txt" in names
+
+    def test_adding_a_connection_builds_the_tree(self, tmp_path):
+        store = ConnectionStore(str(tmp_path))
+        store.add("share", "ABCDEF23", "peer.example", link="https://peer.example/x")
+        assert (tmp_path / SHARES_DIR_NAME / "connections.json").is_file()
+        assert len(store.list()) == 1
 
 
 # --------------------------------------------------------------------------- #
