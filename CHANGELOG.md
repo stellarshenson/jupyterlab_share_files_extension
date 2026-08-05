@@ -2,6 +2,21 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.40] - 2026-08-05
+
+Explain why a peer is offline, and stop caching public responses.
+
+### Changed
+
+- A connected peer shown as "offline" now says why - the badge carries the reason as a tooltip and the console logs it. Most often the peer's server is simply stopped: a share link is served by its owner's JupyterLab, so it only works while that server is running, and JupyterHub stops idle servers
+
+### Fixed
+
+- Public share and request manifests, and the recipient pages, are no longer stored by any cache. A request manifest shows only the caller's own uploads yet was cacheable with no `Vary`, so a shared cache could serve one uploader's file list to another; a cached page could also skip the password prompt after the owner set a password
+- The recipient page now shows the password prompt when a link turns out to be protected, instead of dead-ending on "Share unavailable" - including while the page is already open
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.39] - 2026-07-25
 
 Storage folder created only when needed.
@@ -14,8 +29,6 @@ Storage folder created only when needed.
 
 - Creating a share from a stale file-browser selection (a file renamed or deleted since the menu opened) no longer leaves an empty storage tree and an invisible, never-cleaned-up folder behind; the share is rolled back if any part of it fails
 - `connections.json` is now written atomically - an interrupted write could previously leave an unreadable file that was silently treated as "no connections", losing every connection you had
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.38] - 2026-07-15
 

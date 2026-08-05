@@ -7,6 +7,7 @@
  */
 
 import {
+  offlineReason,
   remoteDownloadUrl,
   remoteDownloadAllUrl,
   type IExtensionInfo
@@ -326,5 +327,44 @@ describe('share clipboard', () => {
     setClip({ kind: 'local', origin: 'panel', mode: 'copy', paths: ['x'] });
     clearClip();
     expect(getClip()).toBeNull();
+  });
+});
+
+describe('offline reason for a peer refresh failure', () => {
+  it('lists candidate causes for a bare TypeError without asserting one', () => {
+    const reason = offlineReason(new TypeError('Failed to fetch'));
+    expect(reason).toContain('Failed to fetch');
+    expect(reason).toContain("owner's server is running");
+    // must not assert a single cause - a wrong one misdirects the next reader
+    expect(reason).toContain('Most often');
+    expect(reason).toContain('this machine being offline');
+  });
+
+  it('blames local connectivity when our own server is unreachable too', () => {
+    const reason = offlineReason(new TypeError('Failed to fetch'), true);
+    expect(reason).toContain('local connectivity');
+    expect(reason).not.toContain('JupyterHub stops');
+  });
+
+  it('explains a 401 as a password problem, not unreachability', () => {
+    const reason = offlineReason(
+      new Error('Could not load share (status 401)')
+    );
+    expect(reason).toContain('rejected the stored password');
+  });
+
+  it('explains a 404 as a removed resource', () => {
+    const reason = offlineReason(
+      new Error('Could not load request (status 404)')
+    );
+    expect(reason).toContain('removed this share or request');
+  });
+
+  it('never surfaces a useless placeholder string', () => {
+    for (const bad of [undefined, null, {}, new Error('')]) {
+      const reason = offlineReason(bad);
+      expect(reason).not.toContain('undefined');
+      expect(reason).not.toContain('[object Object]');
+    }
   });
 });

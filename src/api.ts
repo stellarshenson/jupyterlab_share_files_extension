@@ -369,6 +369,60 @@ export function uploadToConnection(
 // Cross-peer (direct fetch of remote manifests / downloads / uploads)
 // --------------------------------------------------------------------------- //
 
+/** A peer's manifest changes whenever they add or remove a file, and an older
+ * peer serves it with an ETag and no `Cache-Control`, so the browser may reuse
+ * a stored copy under heuristic freshness - the panel would then show a file
+ * list that silently omits a file the peer has already shared. `no-store`
+ * keeps every poll a real network read. (This is about staleness, not about a
+ * 304: the browser consumes the 304 its own cache solicited and resolves the
+ * fetch with the stored 200.) Matches @jupyterlab/services, which already
+ * sends `cache: 'no-store'` on every ServerConnection request. */
+const MANIFEST_FETCH: RequestInit = { credentials: 'omit', cache: 'no-store' };
+
+/** Explain why a cross-peer fetch failed, for the panel's offline badge.
+ *
+ * A raw `fetch` rejects with a bare `TypeError` for every transport-level
+ * failure, so the type alone cannot name a cause: the peer's server being
+ * stopped, this machine being offline, a blocked origin and a malformed link
+ * are indistinguishable here. List the candidates rather than assert one - a
+ * confidently wrong reason sends the next person to the wrong subsystem,
+ * which is worse than no reason. The stopped-server case leads because a
+ * share link is served BY the owner's single-user server, JupyterHub stops
+ * idle servers, and the hub's reply carries no CORS headers so the browser
+ * never lets us read its status.
+ *
+ * `localOffline` is the panel's own view of this machine's connectivity: when
+ * our own server is unreachable too, the peer is not the suspect.
+ *
+ * An HTTP status did get through, so it is reported as fact.
+ */
+export function offlineReason(err: any, localOffline = false): string {
+  const message = typeof err?.message === 'string' ? err.message.trim() : '';
+  const raw =
+    message && message !== '[object Object]' && message !== 'undefined'
+      ? message
+      : '';
+  if (err instanceof TypeError) {
+    if (localOffline) {
+      return `${raw || 'the request failed'} - this machine cannot reach its own server either, so the fault is most likely local connectivity.`;
+    }
+    return (
+      `${raw || 'the request failed'} - the browser could not complete the ` +
+      "request. Most often the peer's server is stopped (JupyterHub stops " +
+      "idle servers, and a share link only works while its owner's server " +
+      'is running); it can also be this machine being offline, or the link ' +
+      'being blocked or malformed.'
+    );
+  }
+  if (/\b401\b/.test(raw)) {
+    return `${raw} - the peer rejected the stored password; reconnect the link with the current one.`;
+  }
+  if (/\b404\b/.test(raw)) {
+    return `${raw} - the owner has removed this share or request.`;
+  }
+  return raw;
+}
+
 /** Fetch a remote share's manifest directly from the source server.
  * `token` is the unlock token for password-protected resources. */
 export async function fetchRemoteShare(
@@ -377,7 +431,7 @@ export async function fetchRemoteShare(
 ): Promise<IRemoteShare> {
   const url = link.replace(/\/$/, '') + '/manifest';
   const r = await fetch(url, {
-    credentials: 'omit',
+    ...MANIFEST_FETCH,
     headers: token ? { 'X-Share-Token': token } : undefined
   });
   if (!r.ok) {
@@ -392,7 +446,7 @@ export async function fetchRemoteRequest(
 ): Promise<IRemoteRequest> {
   const url = link.replace(/\/$/, '') + '/manifest';
   const r = await fetch(url, {
-    credentials: 'omit',
+    ...MANIFEST_FETCH,
     headers: token ? { 'X-Share-Token': token } : undefined
   });
   if (!r.ok) {

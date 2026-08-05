@@ -11,5 +11,8 @@ The panel polls the server on a timer. A transient loss of connectivity (offline
   - log: 2026-07-15 fixed DEF-1, classifier keys on `ServerConnection.NetworkError` only
 - [x] **Flag reset on real error** - a real error clears `_networkOffline` so a later genuine offline streak logs its message again
 - [x] **Edge: WAN down, localhost reachable** - with `navigator.onLine === false` but the local server up, a real HTTP 500 still surfaces (not misclassified transient)
-- [x] **Edge: peer refresh errors isolated** - a connected-peer refresh failure is swallowed by `_refreshConnection` and never trips the panel-level offline logic
+- [x] **Edge: peer refresh errors isolated** - a connected-peer refresh failure is caught by `_refreshConnection` and never trips the panel-level offline logic
   - log: 2026-07-15 confirmed in Round-2 adversarial review
+  - log: 2026-08-05 corrected - "isolated" must not mean "unlogged". The bare `catch {}` made every peer failure (CORS, mixed content, DNS, edge challenge, expired token, 404) an unattributable "offline" badge and blocked diagnosis of DEF-14
+- [x] **Peer failure reason recorded** - a peer refresh failure logs the link and the error once per streak, and the offline badge carries the reason as its tooltip
+  - log: 2026-08-05 implemented, `offlineReasons` in the panel state

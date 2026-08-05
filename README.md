@@ -153,6 +153,14 @@ jupyterlab_share_files cloudflare reset
 - **Cloudflare exposure** is HTTPS-only and limited to the `/public/...` capability endpoints; the hub login, authenticated APIs and the private network stay unreachable
 - **Connector token** passed via the `TUNNEL_TOKEN` environment variable, never on the command line - cannot leak through `ps`/`/proc`
 
+## Availability of a link
+
+A link is served by the JupyterLab server that created it, so it works only while that server is running.
+
+- **Owner's server stopped** - the link stops answering; on JupyterHub the idle culler stops unused servers, so a link can go dead without anyone touching it
+- **In the panel** a connected peer then shows `offline`; hover the badge for the reason (the hub's reply carries no CORS headers, so the browser reports only a generic failure and the panel names the likely causes)
+- **For recipients** the page cannot load until the owner's server is back
+
 ## Releases
 
 Versioned releases ship to [npm](https://www.npmjs.com/package/jupyterlab_share_files_extension) and [PyPI](https://pypi.org/project/jupyterlab-share-files-extension/) together, tagged `RELEASE_v<version>` on the [GitHub releases page](https://github.com/stellarshenson/jupyterlab_share_files_extension/releases). Full delivered feature list: [RELEASE.md](RELEASE.md); per-version changes: [CHANGELOG.md](CHANGELOG.md).

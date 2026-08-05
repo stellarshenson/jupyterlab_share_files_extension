@@ -337,6 +337,14 @@
   function authHeaders() {
     return unlockToken ? { 'X-Share-Token': unlockToken } : {};
   }
+  // The manifest is re-read after every upload/removal, and it is per-caller
+  // (a request manifest shows only your own uploads), so it must never come
+  // from a cache. The server now sends no-store, but a browser that cached a
+  // manifest BEFORE the upgrade still holds that entry and may reuse it under
+  // heuristic freshness - showing a stale file list.
+  function manifestInit() {
+    return { headers: authHeaders(), cache: 'no-store' };
+  }
   function tokenQs() {
     return unlockToken ? '?t=' + encodeURIComponent(unlockToken) : '';
   }
@@ -438,7 +446,14 @@
 
   async function loadShare() {
     try {
-      const r = await fetch(api('/manifest'), { headers: authHeaders() });
+      const r = await fetch(api('/manifest'), manifestInit());
+      // 401 means the owner has (or has just added) a password. The page's
+      // embedded password_required flag can be stale - it is baked into the
+      // HTML at render time - so recover here instead of dead-ending.
+      if (r.status === 401) {
+        renderPasswordGate();
+        return;
+      }
       if (!r.ok) throw new Error('Share unavailable');
       const m = await r.json();
       titleEl.textContent = m.name;
@@ -521,7 +536,12 @@
 
   async function loadRequest() {
     try {
-      const r = await fetch(api('/manifest'), { headers: authHeaders() });
+      const r = await fetch(api('/manifest'), manifestInit());
+      // see loadShare - the embedded password_required flag can be stale
+      if (r.status === 401) {
+        renderPasswordGate();
+        return;
+      }
       if (!r.ok) throw new Error('Request unavailable');
       const m = await r.json();
       titleEl.textContent = m.name;
@@ -627,7 +647,14 @@
 
     async function refreshMine() {
       try {
-        const r = await fetch(api('/manifest'), { headers: authHeaders() });
+        const r = await fetch(api('/manifest'), manifestInit());
+        // This is the only path that runs while the page is open, so it is
+        // where a password added (or a token expired) AFTER load actually
+        // shows up. Without the gate the list silently stops updating.
+        if (r.status === 401) {
+          renderPasswordGate();
+          return;
+        }
         if (!r.ok) return;
         const fresh = await r.json();
         if (fresh.me && fresh.me.name && !uploaderInput.value) {

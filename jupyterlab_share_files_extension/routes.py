@@ -193,6 +193,13 @@ class _PublicBase(tornado.web.RequestHandler):
         return None
 
     def set_default_headers(self):
+        # Cooperative call so this class never terminates the chain. Note the
+        # invariant it does NOT provide: `_UncachedPublicMixin` must be listed
+        # FIRST in the bases (`class X(_UncachedPublicMixin, _PublicBase)`) -
+        # listed second it lands after RequestHandler in the MRO, which does
+        # not call super(), so its Cache-Control would silently never be set
+        # while CORS still worked. Pinned by test_mixin_precedes_public_base.
+        super().set_default_headers()
         # Allow cross-origin GETs of manifests and downloads so other peers'
         # JupyterLab panels can fetch directly from this server.
         self.set_header("Access-Control-Allow-Origin", "*")
@@ -1275,7 +1282,52 @@ def _parse_share_link(link: str) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 
 
-class PublicSharePageHandler(_PublicBase):
+class _UncachedPublicMixin:
+    """Serve the public pages and manifests uncached.
+
+    Applied to the two manifest endpoints and the two recipient-page
+    endpoints. Three concrete reasons, all about a *stored* response being
+    reused:
+
+    1. Privacy. `PublicRequestManifestHandler` varies its body by cookie - it
+       filters `uploaders` down to the caller's own pool. It carried an ETag,
+       no `Cache-Control` and no `Vary: Cookie`, so any shared cache keyed on
+       URL alone (a Cloudflare cache rule, a corporate proxy) could hand one
+       uploader's file list to another. `no-store` closes that.
+    2. Staleness. A manifest changes whenever a file is added or removed, and
+       with no `Cache-Control` a browser is free to reuse a stored copy under
+       heuristic freshness - showing a file list that silently omits the file
+       the recipient was told to download.
+    3. A stale gate. The recipient page bakes `password_required` into its
+       HTML at render time; a cached page from before the owner set a password
+       skips the prompt, so the manifest fetch 401s. (The page also recovers
+       from that on its own now - see `loadShare` in `static/standalone.html`.)
+
+    Not a reason: a `304` reaching JavaScript. A browser consumes the 304 its
+    own cache solicited and resolves the fetch with the stored 200; only a
+    request that sets `If-None-Match` itself sees a 304, and no client here
+    does. Suppressing the ETag simply keeps this endpoint out of caches
+    entirely, which is what both reasons above require.
+
+    `no-store` forbids storing; `no-cache` and `max-age=0` are belt-and-braces
+    for intermediaries that predate or ignore it (a Cloudflare tunnel sits in
+    this path for public links). Do not reduce this to `must-revalidate`,
+    which alone still permits serving a heuristically-fresh response without
+    revalidating - reason 2 above.
+    """
+
+    def compute_etag(self):
+        return None
+
+    def set_default_headers(self):
+        # Runs via RequestHandler.clear() on success AND error paths, so a 401
+        # from the password gate or a 404 is uncacheable too - a cached 401
+        # must not be replayed after the recipient unlocks.
+        super().set_default_headers()
+        self.set_header("Cache-Control", "no-store, no-cache, max-age=0")
+
+
+class PublicSharePageHandler(_UncachedPublicMixin, _PublicBase):
     def get(self, id_):
         if not self.share_store.exists(id_):
             self.set_status(404)
@@ -1298,7 +1350,7 @@ class PublicSharePageHandler(_PublicBase):
         self.finish(html)
 
 
-class PublicRequestPageHandler(_PublicBase):
+class PublicRequestPageHandler(_UncachedPublicMixin, _PublicBase):
     def get(self, id_):
         if not self.request_store.exists(id_):
             self.set_status(404)
@@ -1320,7 +1372,7 @@ class PublicRequestPageHandler(_PublicBase):
         self.finish(html)
 
 
-class PublicShareManifestHandler(_PublicBase):
+class PublicShareManifestHandler(_UncachedPublicMixin, _PublicBase):
     def get(self, id_):
         if not _password_gate(self, self.share_store, id_):
             return
@@ -1336,7 +1388,7 @@ class PublicShareManifestHandler(_PublicBase):
         self.finish(json.dumps(manifest))
 
 
-class PublicRequestManifestHandler(_PublicBase):
+class PublicRequestManifestHandler(_UncachedPublicMixin, _PublicBase):
     def get(self, id_):
         if not _password_gate(self, self.request_store, id_):
             return

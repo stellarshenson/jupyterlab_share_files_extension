@@ -32,6 +32,7 @@ import {
   listConnections,
   listRequests,
   listShares,
+  offlineReason,
   removeConnection,
   removeRequestUpload,
   removeShareItems,
@@ -85,6 +86,9 @@ interface IPanelState {
   connectionData: Map<string, IRemoteShare | IRemoteRequest | null>;
   busyKeys: Set<string>;
   offlineKeys: Set<string>;
+  /** Why a connection is offline, keyed by conn.key - shown in the badge
+   * tooltip so a user can report the actual cause, not just "offline". */
+  offlineReasons: Map<string, string>;
   expanded: { shares: boolean; requests: boolean; connected: boolean };
   expandedItems: Set<string>;
   lastSeenUploads: Map<string, number>;
@@ -141,6 +145,7 @@ export class ShareFilesPanel extends Widget {
       connectionData: new Map(),
       busyKeys: new Set(),
       offlineKeys: new Set(),
+      offlineReasons: new Map(),
       expanded: { shares: true, requests: true, connected: true },
       expandedItems: new Set(),
       lastSeenUploads: new Map(),
@@ -328,6 +333,21 @@ export class ShareFilesPanel extends Widget {
         this._state.shares = s.shares || [];
         this._state.requests = r.requests || [];
         this._state.connections = c.connections || [];
+        // Drop per-connection bookkeeping for connections that no longer
+        // exist, so a re-added peer never shows the previous one's failure.
+        const liveKeys = new Set(this._state.connections.map(x => x.key));
+        for (const m of [this._state.offlineReasons, this._loggedOfflineKeys]) {
+          for (const k of Array.from(m.keys())) {
+            if (!liveKeys.has(k)) {
+              m.delete(k);
+            }
+          }
+        }
+        for (const k of Array.from(this._state.offlineKeys)) {
+          if (!liveKeys.has(k)) {
+            this._state.offlineKeys.delete(k);
+          }
+        }
         // Drilled-in folder listings come from the Contents API and can go
         // stale after files are added/removed - drop the cache each refresh.
         this._state.subEntries.clear();
@@ -1155,6 +1175,12 @@ export class ShareFilesPanel extends Widget {
       const offline = document.createElement('span');
       offline.className = 'jp-ShareFilesPanel-offline';
       offline.textContent = 'offline';
+      const reason = this._state.offlineReasons.get(conn.key);
+      // "unavailable", not "could not reach" - a 401 or 404 means the peer
+      // answered fine and the fault is the password or a deleted resource.
+      offline.title = reason
+        ? `Peer unavailable: ${reason}`
+        : 'Peer unavailable';
       header.appendChild(offline);
     }
 
@@ -2163,6 +2189,10 @@ export class ShareFilesPanel extends Widget {
 
   private async _refreshConnection(conn: IConnection): Promise<void> {
     if (!conn.link && !this._linkFor(conn)) {
+      // No link to poll - do not leave a previous failure pinned on the badge
+      // forever, since no later poll can ever clear it.
+      this._state.offlineKeys.delete(conn.key);
+      this._state.offlineReasons.delete(conn.key);
       return;
     }
     const link = conn.link || this._linkFor(conn);
@@ -2176,11 +2206,31 @@ export class ShareFilesPanel extends Widget {
       }
       this._state.connectionData.set(conn.key, data);
       this._state.offlineKeys.delete(conn.key);
-    } catch {
+      this._state.offlineReasons.delete(conn.key);
+      this._loggedOfflineKeys.delete(conn.key);
+    } catch (err: any) {
       // a stale unlock token (expiry / password change) also lands here -
       // drop it so the next poll re-unlocks with the stored password
       this._unlockTokens.delete(conn.key);
       this._state.offlineKeys.add(conn.key);
+      // Every distinct failure collapses into one "offline" badge - a CORS
+      // rejection, a mixed-content block, DNS, an edge challenge page, a 401
+      // from an expired token, a 404. Without the reason a user report of
+      // "it just shows offline" cannot be diagnosed at all, so record it
+      // (once per streak) and keep it for the badge tooltip.
+      const reason = offlineReason(err, this._networkOffline);
+      this._state.offlineReasons.set(conn.key, reason);
+      // Log once per (link, reason) so a 15s poll does not flood the console,
+      // while a peer that starts failing differently - or the same failure on
+      // a new link - still gets its own line.
+      const logKey = `${link}|${reason}`;
+      if (this._loggedOfflineKeys.get(conn.key) !== logKey) {
+        this._loggedOfflineKeys.set(conn.key, logKey);
+        console.warn(
+          `Share Files: peer unavailable (${conn.key}) via ${link} -`,
+          err
+        );
+      }
     }
   }
 
@@ -3162,6 +3212,9 @@ export class ShareFilesPanel extends Widget {
   /** True while the server is unreachable (offline / suspended / restarting),
    * so a poll storm is logged once instead of every tick. */
   private _networkOffline = false;
+  /** Last (link, reason) logged per connection, so a 15s poll does not flood
+   * the console while a changed failure still gets its own line. */
+  private _loggedOfflineKeys = new Map<string, string>();
   /** Unlock tokens for password-protected connections, keyed by conn.key. */
   private _unlockTokens = new Map<string, string>();
 }
