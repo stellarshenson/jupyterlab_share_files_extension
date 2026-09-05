@@ -2,7 +2,7 @@ import { expect, test } from '@jupyterlab/galata';
 
 /**
  * Integration tests for the panel <-> file browser copy/paste feature
- * (acceptance criteria AC7/AC8 in docs/acc-crit-basic-sharing.md).
+ * (acceptance criteria ACC-SHARE-7 / ACC-SHARE-8 in docs/acc-crit.md).
  *
  * The native file-browser clipboard is private, so copy/paste is bridged
  * through the public `commands.commandExecuted` signal:

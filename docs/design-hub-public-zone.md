@@ -1,162 +1,122 @@
-# Design - Hub-Managed Public Zone
+# Design - Hub Mode
 
-High-level design for sharing work safely in two deployment shapes: a **standalone**
-JupyterLab and a **JupyterHub** where all traffic flows through the hub. The goal in
-hub mode is absolute: unauthenticated internet traffic never reaches any JupyterLab
-server. This document is the design overview; the acceptance-criteria document is
-derived from it.
-
-## Problem
-
-The `public/*` endpoints are unauthenticated by design - the link is the credential.
-That is safe on a standalone box the operator owns, but dangerous under a hub.
-
-- **No auth on the proxy path** - JupyterHub's proxy forwards `/user/<name>/*` to the single-user server with no authentication; auth is per-handler and `_PublicBase` opts out, so a recipient hitting `/user/<name>/.../public/...` lands **inside the user's JupyterLab server**
-- **Per-user tunnel is a foot-gun** - if a user provisions the Cloudflare tunnel, their own lab container becomes internet-facing
-- **Blast radius is the whole lab** - one badly-designed or compromised user server, once internet-reachable, is a DDoS source and a pivot into `jupyterhub_network`, where every user container is reachable by name
-- **JupyterLab is the attack surface** - any JupyterLab vulnerability becomes internet-exploitable the moment the server is exposed
-
-## Goal
-
-A defensible design where sharing works in both modes and the internet-facing
-surface in hub mode is one small, single-purpose service - not a JupyterLab.
-
-- **Standalone** - unchanged; the operator owns the box and accepts the exposure
-- **Hub-managed** - a dedicated Public Zone Service is the only thing serving `public/*`; user-server `public/*` returns 403; Cloudflare is global at the hub edge, never per-user
-- **Invariant** - in hub mode no unauthenticated request ever reaches a JupyterLab server
+The extension runs in one of two modes, decided once at server start. On a standalone JupyterLab it serves recipients itself from the notebook root. On a lab spawned by galaxahub it mounts no unauthenticated route at all and every panel action goes through the hub's fileshare API, which stages the bytes with its own transfer job and serves recipients from its own app container. The lab never holds a share byte and never carries a recipient request.
 
 ## Two modes
 
-The extension behaves differently depending on a single spawn-injected mode flag;
-standalone is the default and is untouched.
+|                                              | Standalone                       | Hub                                                             |
+| -------------------------------------------- | -------------------------------- | --------------------------------------------------------------- |
+| Signal                                       | `SHARE_FILES_PUBLIC_ZONE` absent | `SHARE_FILES_PUBLIC_ZONE=hub`, injected by the hub at spawn     |
+| Who can set it                               | nobody needs to                  | only the hub - the name is reserved against users and groups    |
+| `api/*` routes (authenticated)               | local store                      | proxied to the hub                                              |
+| `public/*` and `static/*` routes             | mounted                          | not mounted - jupyter_server answers 404                        |
+| Store directory                              | created on first use             | never created                                                   |
+| Per-user Cloudflare tunnel                   | optional                         | never started; the tunnel is the hub's                          |
+| Peer connections                             | yes                              | no                                                              |
+| Fallback when the hub contract is incomplete | n/a                              | none - stays in hub mode, hub calls fail with `hub_unavailable` |
 
-- **Standalone** - single-user server serves `public/*` from a notebook-root `shares_dir`; optional per-user Cloudflare tunnel, path-restricted to `public/*`; "the link is the credential" plus an optional password
-- **Hub-managed** - the Public Zone Service serves `public/*` from a shared volume; user servers only **write** shares into that volume over the internal network; the per-user tunnel is disabled; one hub-owned tunnel terminates at the zone
+The mode decision depends on the spawn variable alone. A missing API path or token never remounts the standalone routes - that would be the exact bypass hub mode exists to close.
 
 ```mermaid
 flowchart LR
+  subgraph lab[Hub-spawned lab]
+    P[Share Files panel]
+    X[Extension - api/* only]
+  end
+  H[galaxahub fileshare API]
+  M[Mediator transfer job - no network]
+  V[(Shares volume)]
+  W[(Workspace volume)]
+  A[Fileshare app container]
   R[Recipient]
-  T[Per-user Cloudflare tunnel<br/>optional, public/* only]
-  S[Single-user JupyterLab<br/>serves public/*]
-  D[(shares_dir<br/>notebook root)]
-  R --> T --> S --> D
-  R -. LAN .-> S
+  P --> X -- "Authorization: token" --> H
+  H --> M
+  W --> M --> V
+  V --> A --> R
 ```
 
-_Standalone: the operator owns the whole box; exposure is their explicit choice._
+## The spawn contract
 
-```mermaid
-flowchart TB
-  R[Recipient - internet]
-  E[Hub edge<br/>Cloudflare + Traefik<br/>public hostname]
-  Z[Public Zone Service<br/>public/* only · no kernel · no egress]
-  V[(Shared volume<br/>per-user subtrees)]
-  U[User JupyterLab<br/>public/* = 403]
-  A[Authenticated user]
-  H[Hub auth<br/>private hostname]
+galaxahub injects three things into every lab it manages; the extension reads them once.
 
-  R --> E --> Z --> V
-  A --> H --> U
-  U -- writes shares --> V
-```
+- **`SHARE_FILES_PUBLIC_ZONE=hub`** - selects hub mode (`hub.hub_mode()`)
+- **`SHARE_FILES_HUB_API`** - the path of the hub's fileshare API (`/hub/api/fileshare`); joined with the scheme and host of `JUPYTERHUB_API_URL`; an absolute value is used verbatim (`hub.hub_api_base()`)
+- **`JUPYTERHUB_API_TOKEN`** - the lab's own token; every hub request carries `Authorization: token <it>`, set in one place (`hub.HubClient.request`)
+- **Hub side** - the fileshare handlers accept token authentication (`_accept_token_auth = True`, galaxahub v4.4.56); a call without a token answers 403
 
-_Hub-managed: the internet reaches only the zone service; JupyterLab sits behind
-hub auth and is never internet-reachable._
+## What the lab mounts in hub mode
 
-## Public Zone Service
+`routes.setup_route_handlers` builds one of two tables and never mixes them. The hub table (`hub_routes.hub_handlers`) holds only `APIHandler` subclasses, every method wrapped by `tornado.web.authenticated`.
 
-A minimal Tornado application that reuses the extension's public handlers and the
-on-disk storage contract - and nothing else. It is the entire internet-facing
-surface in hub mode.
+| Panel call                                   | Hub call                                                                                    | Notes                                                                                    |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET api/info`                               | `GET capabilities`                                                                          | `mode: hub`, grants, refusal reason, serving verdict, password requirement, toggle state |
+| `GET api/stream`                             | `GET stream`                                                                                | the change stream, one hub connection per lab (below)                                    |
+| `GET api/tunnel`, `POST api/tunnel`          | `GET capabilities`, `GET items`, `PUT <kind>/<id>/cloud` per record                         | the cloud toggle - flips every record and the default                                    |
+| `POST api/<kind>/<id>/cloud`                 | `PUT <kind>/<id>/cloud {cloud}`                                                             | one record's Cloudflare switch                                                           |
+| `GET api/link-check`                         | `GET capabilities`                                                                          | reachable = `serving`; no probe of the link                                              |
+| `GET api/shares`                             | `GET items`                                                                                 | hub rows of kind share                                                                   |
+| `POST api/shares`                            | `POST shares {title, paths, password}`, then `PUT shares/<id>/cloud` while the toggle is on | paths only, never bytes; 202 becomes a `staging` row                                     |
+| `GET/DELETE api/shares/<id>`                 | `GET items` / `DELETE shares/<id>`                                                          | 204 removes the record and the bytes                                                     |
+| `GET api/requests`                           | `GET items` + `GET requests/<id>/uploads`                                                   | one uploader group per request                                                           |
+| `POST api/requests`                          | `POST requests {title, password}`, then the same cloud switch                               | 201 `ready`                                                                              |
+| `GET/DELETE api/requests/<id>`               | `GET items` / `DELETE requests/<id>`                                                        |                                                                                          |
+| `GET/POST api/<kind>/<id>/password`          | `PUT <kind>/<id>/password`                                                                  | the value read back is the one set in this server process                                |
+| `POST api/requests/<id>/uploads/<uid>/fetch` | `POST .../fetch {dest}`                                                                     | the lab picks a fresh directory under the folder the panel names                         |
+| `GET api/generate-password`                  | none                                                                                        | local                                                                                    |
 
-- **Reused** - the `_PublicBase` handlers (`routes.py:184`) and the read/upload functions in `storage.py`; the on-disk layout is a pure contract, so the same code serves the same files
-- **Excluded** - no `ServerApp`, no kernels, no terminals, no contents API, no peer-fetch, no outbound network; it cannot execute code or read anything outside the shared volume
-- **Topology** - its own hardened container on `jupyterhub_network`, behind Traefik on a **separate public hostname**, mounting only the shared share-files volume
-- **Blast radius** - a read-mostly file server over one volume; a JupyterLab vulnerability is irrelevant because JupyterLab is not on the public path
+Not mounted, because the hub has no equivalent: adding or removing files on an existing share (a hub share is a snapshot), removing a single upload, peer connections, tunnel setup and reset.
 
-## Shared volume
+## Links and the cloud toggle
 
-Shares move from user servers to the zone through a shared volume the hub already
-provides, with one per-user subtree each.
+Every hub record carries its own Cloudflare switch (`cloud`, galaxahub ACC-FILE-2920): off, the record serves on the hub's own address alone; on, the hub composes its link on the tunnel hostname while the group prefers it and the tunnel is registered. The hub mints every record with the switch off, and the tunnel runs only while some record has it on. The lab never composes a link; it restores the address recipients can use.
 
-- **Volume** - reuse `jupyterhub_shared` (mounted in every user container at `/mnt/shared`, `jupyterhub_config.py:140-144`) or a dedicated `jupyterhub_public_zone` volume
-- **Layout** - `/<zone>/<username>/uploads/{shares,requests,...}` mirroring the current `shares_dir` tree: `shares/<slug>-<id>/`, `requests/<slug>-<id>/<uploader_hash>/`, `*.json` sidecars
-- **Write path** - the user server's extension points `shares_dir` at its own subtree and writes authenticated over the internal network; the zone reads the same tree
-- **Required change** - `resolve_shares_dir()` refuses paths outside the notebook root today (`storage.py:252-282`); hub mode must allow the configured volume subtree
+- **Hub's own address** - the hub composes a row's `url` from the Host header of the request it answers, so a lab-originated call yields the hub's internal address; an origin equal to the hub API origin is replaced by the origin the browser reached the lab on (forwarded headers, else the request host) plus the hub path `/s/<id>`
+- **Tunnel address** - any other origin is the hub's choice for a record switched on and is kept as composed
+- **Per-record switch** - `POST api/<kind>/<id>/cloud {cloud}` relays `PUT <kind>/<id>/cloud`; the row carries `cloud`, the panel marks a switched-on row with a small cloud beside its meta and offers "Share Through Cloudflare" / "Hub Network Only" in the row's context menu; the link dialog says when a record's link works on the hub network only
+- **Toggle** - the header cloud icon is the bulk switch: `POST api/tunnel {active}` flips every record of the user through the hub and stores the default for the next one in the CLI config file (`hub_cloud`, default off); a record created while the toggle is on is switched on right after the hub minted it and answers with the url the hub composed for it
+- **Refusal** - the hub refuses a switch on with `cloud_not_configured` while the owner's group policy has Cloudflare off; the toggle relays the 403 and stays off, a create leaves the row off, turns the toggle off and carries `cloud_reason` so the panel says why the link stayed on the hub network; a switch off is never refused
+- **State** - `api/tunnel` and `api/info` report `tunnel_configured` (true while the hub answers - the hub decides per record), `tunnel_active` (the stored default) and `tunnel_running` (the hub is serving)
 
-## Cloudflare at the hub
+## Change stream
 
-One hub-admin-owned tunnel replaces every per-user tunnel, removing the foot-gun
-that let any user expose their own lab.
+The hub tells a lab when any of its records changed (galaxahub ACC-FILE-2919); the panel fetches on a ring instead of on a timer, so a lab costs the hub nothing while nothing changes.
 
-- **Single tunnel** - hub-owned, terminating at the zone service, ingress path-restricted to `/public/*` on the public hostname; everything else answers 404 at the edge
-- **Per-user disabled** - in hub mode the extension disables `cloudflare setup`; the cloud icon directs users to "sharing is managed by your hub"
-- **No user-initiated exposure** - users can never punch an internet hole pointing at their own server
+- **One hub connection per lab** - `hub_stream.RELAY` opens `GET stream` on the hub when the first panel subscribes and closes it when the last one leaves; every ring is fanned out to every open panel stream as one `changed` event, and the open itself rings so a reconnect refetches
+- **Raw socket, not the tornado client** - a tornado fetch cannot be cancelled and the hub never ends the stream, so a stream the last panel left behind would hold a slot of the shared client until the hub died; the relay speaks HTTP/1.1 over an asyncio socket, de-chunks the body and closes the socket on cancel. A read that waits longer than three hub keepalives (90s) is a vanished hub and reconnects
+- **Panel stream** - `GET api/stream` (authenticated, Server-Sent Events): `retry: 5000` on open, `event: changed` per ring, a keepalive comment every 25s while idle, `event: poll` when the hub has no stream route; the handler ends when the browser hangs up
+- **Panel** - one `EventSource` per attached panel in hub mode; the timer is stopped while it stands. A ring schedules one fetch after 300ms so a burst costs one; the open and every reconnect fetch too, so a ring lost while disconnected is covered. `poll` puts the panel back on its timer for the session; a source the browser closed for good (a non-200 answer while the lab restarts behind the proxy) puts it on the timer until the next refresh reopens the stream
+- **Older hub** - a hub without the route answers 404 once per subscription cycle: the relay remembers the verdict while a panel listens and asks again when a fresh panel subscribes; a hub that cannot be reached is retried every 5s while a panel listens
+- **Standalone** - unchanged: the timer, whose interval setting now says it is the standalone and fallback cadence
 
-## Blocking unauthenticated traffic at the hub
+## Password policy
 
-Two independent controls keep the internet off JupyterLab; either alone is
-sufficient, together they are defence in depth.
+A group may require a password on every record (galaxahub ACC-FILE-2927); `capabilities.password_required` rides on `api/info` as `hub.password_required`.
 
-- **Edge** - the public hostname routes only `/<base>/public/*` to the zone; hub login, `/user/*` and `/hub/api/*` are not routes on that hostname and 404 at the edge; the authenticated hub lives on its own hostname and is never published publicly
-- **Origin** - the extension detects hub-zone mode (spawn env var, e.g. `SHARE_FILES_PUBLIC_ZONE=hub`) and returns 403 for all `public/*` on the user server; the only working public path is through the zone
+- **Create dialog** - the password field is required and starts with a generated passphrase; an emptied field keeps Create disabled, so no create reaches the hub without one
+- **Relay** - the hub's 400 `password_required` on a create or a password removal is relayed with its reason, which the panel names
 
-## Mode detection and tokens
+## Errors
 
-One spawn-injected environment variable selects the mode; the recipient's security
-model is unchanged, and any extra token guards only machine-to-machine paths.
+The hub refuses with `{reason, message}` from a closed slug set; the lab relays the status and the slug.
 
-- **Selector** - `SHARE_FILES_PUBLIC_ZONE=hub` injected at spawn for hub mode; absent means standalone (default, unchanged)
-- **Recipient model** - still link plus optional password; no new credential is asked of recipients
-- **Service token** - a hub-issued scoped token guards the write/callback path between user servers and the zone, never the recipient; follows the existing managed-service token pattern (`services.py`)
+- **403, 400, 404, 429, 503** - status and message kept, `reason` added when the hub named one
+- **Hub unreachable** - 502 with `reason: hub_unavailable`; `api/info` still answers 200 with `hub.available: false` so the panel keeps its last view
+- **Panel** - `hubReasonText` turns a slug into a sentence, including `password_required`, `cloud_not_configured` and `policy_conflict`; the New menu greys out a refused kind with the reason; a refused share shows `refused: <slug>`
 
-## User self-exposure
+## Enforcement
 
-The lab is a research and development environment, so egress is **default-allow** -
-users must reach arbitrary package indexes, dataset hosts, model hubs and APIs.
-Egress is therefore a deterrent and a tripwire, not a guarantee; the containment of
-the self-exposure threat rests on the public-zone, the removed one-click path, and
-detection. A user with a shell can still expose their own lab regardless of sudo.
+The invariants are pinned by tests, not by review.
 
-- **Default-allow, blocklist the known** - DNS and SNI category blocklists (HaGeZi proxy-bypass + DoH, UT1 `proxy`/`filehosting`) drop the named tunnel and cloud-exfil services; this stops casual and known use, the large majority of real cases
-- **Sudo is the wrong lever** - `cloudflared` is a static binary a non-root user drops in `~/bin` and runs; `ngrok`, `frp`, `ssh -R`, or a hand-written socket relay are equivalent - stripping sudo stops none of them; blocklists match by hostname/SNI, so a raw-IP, encrypted-SNI, DoH or self-hosted relay slips past - the boundary fails open
-- **Forced filtering DNS** - an internal resolver the containers must use, loaded with the categorized feeds; outbound 53/853 and known DoH endpoints redirected or denied so users cannot switch resolvers to escape it
-- **Detection is the safety net** - an IDS (Suricata + ET Open) on the egress span alerts on tunnel/DoH attempts that get past the blocklist; in default-allow this catches what the filter cannot
-- **Privilege caveat** - any of this holds only for containers that are **not privileged and have no docker socket**; the hub's per-group `docker_access` / `docker_privileged` grants are root-on-host and void it, so "trusted near the internet" and "gets docker/privileged" must be mutually exclusive groups
-- **Sudo removal still earns its place** - as blast-radius reduction for a compromised container (no system tampering, no persistence), reliably enforced by the root entrypoint deleting `/etc/sudoers.d/*` on a per-group `ALLOW_SUDO=0` spawn flag before handing off to the user - just not as a tunnel control
-- **Honest limit** - default-allow means self-exposure is deterred and detected, not prevented; the design accepts this trade for research freedom and leans on the public-zone so the _sanctioned_ sharing path never depends on it
+- **Route table** - hub mode registers no pattern under `public/` or `static/`, no `_PublicBase` or `StaticFileHandler`; every method the extension implements on a registered handler carries `authenticated` (`tests/test_hub_mode.py`)
+- **Fail closed** - hub mode with the token or the API path missing still mounts no public route (`tests/test_hub_mode.py`)
+- **Handlers** - driven through a live jupyter_server against an in-memory hub: shapes, refusal relay, links, the toggle and the per-record switch, the password requirement, fetch, the panel stream (`tests/test_hub_handlers.py`)
+- **Stream** - the relay's lifecycle against a scripted hub and the raw read against an in-process SSE server, including that a cancel closes the socket (`tests/test_hub_mode.py`)
+- **End to end** - galata against a mock hub over HTTP: 404 on the recipient paths, panel state badges, grants, fetch, link dialog, the toggle and a row's own switch, the refusal under a policy with Cloudflare off, no timer while the stream stands and one fetch per ring, the timer fallback on an older hub, the required password (`ui-tests/tests/hub`, `ui-tests/mock_hub.py`); CI runs it beside the standalone suite
+- **Standalone** - the 27-route table with its public and static routes, and every pre-existing test, unchanged
 
-## Adversarial vectors
+## Residual
 
-Each attack vector against the public surface and the control that plugs it.
-
-| Vector                                                                    | Control                                                                                                                                                                                                                                                                     |
-| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Internet → JupyterLab via the proxy path                                  | Edge routes only `public/*` → zone; user-server `public/*` returns 403                                                                                                                                                                                                      |
-| User self-exposes their own lab (personal `cloudflared`/`ngrok`/`ssh -R`) | Default-allow egress (research lab): DNS/SNI category blocklist + forced filtering DNS + IDS detection - deters and detects, does **not** prevent; sudo removal does not stop it; privileged/docker-socket groups void it; containment rests on the public-zone, not egress |
-| Compromised user server as DDoS source / pivot                            | User servers never internet-facing; zone has no outbound (egress dropped); network segmentation                                                                                                                                                                             |
-| 40-bit share-id brute force                                               | Per-IP and global rate limiting on the zone - **a gap today; id guessing is unthrottled, only password unlock is limited**                                                                                                                                                  |
-| Disk-fill via unauthenticated uploads                                     | Per-request quota, upload size cap, volume high-watermark on the zone                                                                                                                                                                                                       |
-| Path traversal / cross-user read                                          | Id regex `[A-Z2-7]{6,16}`, resolve-inside-subtree, no contents API on the zone                                                                                                                                                                                              |
-| Plaintext password readable by the zone                                   | Move to a hashed password with the unlock HMAC keyed on the hash, so the zone never holds the plaintext                                                                                                                                                                     |
-| Shared volume as a new trust boundary                                     | Zone mounts read-only except upload dirs; per-user subtrees; volume holds only share data, never home or secrets                                                                                                                                                            |
-| SSRF / open proxy through the zone                                        | Zone serves only static reads from the volume; no peer-fetch, no outbound                                                                                                                                                                                                   |
-| Edge misconfig exposing the hub                                           | Separate public hostname, allow-list route, deny-by-default catch-all 404                                                                                                                                                                                                   |
-| Capability-URL leak (logs, Referer, history)                              | Optional password second factor; residual - see below                                                                                                                                                                                                                       |
-
-## Residual risks
-
-Honest limitations the design does not remove.
-
-- **Capability-URL leakage** - a leaked link grants access until the resource is closed; mitigated, not eliminated, by the optional password
-- **No expiry or revocation** short of closing the share
-- **Shared volume is a new trust boundary** - the zone and every user server touch it; its integrity is now part of the security model
-- **Rate-limit state is per process** - in-memory counters are more lenient across multiple workers, never less safe
-- **Default-allow egress** - a deliberate trade for research freedom; self-exposure and exfiltration are deterred and detected, never fully prevented; the sanctioned sharing path is built not to depend on egress control
-
-## Status
-
-Design only. No implementation here - the zone service, the `resolve_shares_dir`
-relaxation, password hashing, and zone rate limiting are sized in the acceptance-
-criteria document that follows. Volume name, hostname scheme, and Traefik label
-syntax are recommendations, finalised at implementation time.
+- **Process restart** - passwords set through the panel are held in memory; after a restart the dialog shows the link without the value (the hub stores only a hash)
+- **Mode is read from the environment** - a user with a shell cannot change it for the running process; a restart goes through the hub, which re-injects it. Persisting a modified extension across respawn is an image-integrity question, not this design's
+- **Hub-side backstop** - the hub's proxy could refuse `jupyterlab-share-files-extension/public/*` for every user, not only download-blocked ones; that change belongs to galaxahub

@@ -48,6 +48,7 @@ The standalone page recipients see in any browser - download view, upload view (
 - **Delete to trash** - panel deletes go to the OS trash by default (`c.ShareFilesConfig.use_trash`)
 - **HTTPS-aware links** - share URLs follow the scheme the browser is on
 - **Cloudflare tunnel sharing** - optional public links beyond your network; cloud icon in the panel header shows state, toggles public/private, opens setup when unconfigured ([docs/cloudflare_setup.md](docs/cloudflare_setup.md))
+- **Hub mode** - on a lab spawned by [galaxahub](https://github.com/stellarshenson/galaxahub) the panel works only through the hub's fileshare API and the lab mounts no unauthenticated route; the hub stages and serves the files ([docs/design-hub-public-zone.md](docs/design-hub-public-zone.md))
 - **Settings toggles** - shares, requests, hidden-file visibility, poll interval
 
 ![Sharing flow](.resources/sharing-flow.svg)
@@ -143,6 +144,19 @@ jupyterlab_share_files cloudflare start
 jupyterlab_share_files cloudflare stop
 jupyterlab_share_files cloudflare reset
 ```
+
+## Hub mode
+
+A lab spawned by galaxahub carries `SHARE_FILES_PUBLIC_ZONE=hub`, the path of the hub's fileshare API in `SHARE_FILES_HUB_API` and its own `JUPYTERHUB_API_TOKEN`. The extension then registers only its authenticated `api/*` routes - no `public/*`, no `static/*` - and every panel action is a call to the hub. Design: [docs/design-hub-public-zone.md](docs/design-hub-public-zone.md).
+
+- **Shares are snapshots** - a share names workspace paths; the hub copies the bytes with its own transfer job and the row shows `staging` until the copy lands, or `refused` with the hub's reason
+- **Recipients reach the hub** - the link is the hub's page; the lab answers 404 on its recipient paths
+- **Uploads are fetched in** - each upload under a request offers "Fetch to current folder"; the hub copies it into a fresh folder under the file browser's current directory
+- **Cloud icon** - every share and request carries its own Cloudflare switch on the hub; the header icon flips them all and sets the default for the next one, a row's context menu flips one. On, the link carries the hub's Cloudflare address; off, the hub's own address, reachable on the hub's network only. No tunnel runs on the lab, and the hub runs its tunnel only while some record is switched on
+- **Live panel** - the panel holds one change stream to the lab, which holds one to the hub: a new upload, a share turning ready or refused, a close or an expiry shows without polling; an older hub without the stream puts the panel back on its timer
+- **Grants** - what the panel may create comes from the hub; a refused kind is greyed out with the reason; a group that requires a password gets a create dialog with the password field required and pre-filled
+- **Not available** - peer connections, adding files to an existing share, removing a single upload, per-user Cloudflare setup
+- **Fail closed** - a lab in hub mode with an incomplete contract reports the hub unavailable; it never falls back to serving recipients itself
 
 ## Security
 

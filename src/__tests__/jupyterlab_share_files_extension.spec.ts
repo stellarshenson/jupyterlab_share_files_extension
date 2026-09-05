@@ -7,9 +7,12 @@
  */
 
 import {
+  hubReasonText,
+  streamUrl,
+  linkRef,
   offlineReason,
-  remoteDownloadUrl,
   remoteDownloadAllUrl,
+  remoteDownloadUrl,
   type IExtensionInfo
 } from '../api';
 import { clearClip, getClip, setClip } from '../clipboard';
@@ -45,6 +48,81 @@ describe('api URL helpers', () => {
       link + '/download/x.txt'
     );
     expect(remoteDownloadAllUrl(link + '/')).toBe(link + '/download-all');
+  });
+});
+
+describe('hub-mode link references', () => {
+  it('reads kind and id off a standalone public link', () => {
+    expect(
+      linkRef(
+        'https://lab.example.com/user/alice/jupyterlab-share-files-extension/public/share/ABCDEFGH'
+      )
+    ).toEqual({ kind: 'share', id: 'ABCDEFGH' });
+    expect(
+      linkRef(
+        'http://localhost:8888/jupyterlab-share-files-extension/public/request/ZZZZ2345'
+      )
+    ).toEqual({ kind: 'request', id: 'ZZZZ2345' });
+  });
+
+  it('reads kind and id off a hub link, request ids carry the r_ prefix', () => {
+    expect(linkRef('https://hub.example.com/s/9LEqaQ_QZgKxjj0De_u1wA')).toEqual(
+      {
+        kind: 'share',
+        id: '9LEqaQ_QZgKxjj0De_u1wA'
+      }
+    );
+    expect(linkRef('http://hub:8080/s/r_PhcmNOMGM_zLhkr7bsuA')).toEqual({
+      kind: 'request',
+      id: 'r_PhcmNOMGM_zLhkr7bsuA'
+    });
+  });
+
+  it('returns null for anything else', () => {
+    expect(linkRef('https://hub.example.com/hub/home')).toBeNull();
+    expect(linkRef('')).toBeNull();
+  });
+});
+
+describe('hub refusal slugs', () => {
+  it('translates the closed slug set into plain words', () => {
+    expect(hubReasonText('not_granted')).toMatch(/group/);
+    expect(hubReasonText('sidecar_not_serving')).toMatch(/not serving/);
+    expect(hubReasonText('hub_unavailable')).toMatch(/could not be reached/);
+  });
+
+  it('names the policy refusals galaxahub added with the cloud switch', () => {
+    expect(hubReasonText('password_required')).toMatch(/requires a password/);
+    expect(hubReasonText('cloud_not_configured')).toMatch(
+      /Cloudflare turned off/
+    );
+    expect(hubReasonText('policy_conflict')).toMatch(/administrator/);
+  });
+
+  it('passes an unknown slug through unchanged', () => {
+    expect(hubReasonText('something_new')).toBe('something_new');
+  });
+});
+
+describe('hub-mode change stream url', () => {
+  const base = {
+    baseUrl: 'https://hub.example.com/user/alice/',
+    token: 'abc def'
+  } as any;
+
+  it('points at the extension stream route under the lab base url', () => {
+    expect(streamUrl({ ...base, appendToken: false })).toBe(
+      'https://hub.example.com/user/alice/jupyterlab-share-files-extension/api/stream'
+    );
+  });
+
+  it('carries the token in the query only when the settings say so - an EventSource cannot set headers', () => {
+    expect(streamUrl({ ...base, appendToken: true })).toBe(
+      'https://hub.example.com/user/alice/jupyterlab-share-files-extension/api/stream?token=abc%20def'
+    );
+    expect(streamUrl({ ...base, appendToken: true, token: '' })).not.toContain(
+      'token='
+    );
   });
 });
 

@@ -1,7 +1,8 @@
 /**
  * ShareFilesPanel - Lumino side panel widget for the share-files extension.
  *
- * Vanilla DOM rendering, polling-based refresh, drag-drop targets, and
+ * Vanilla DOM rendering, refresh on a timer (standalone) or on the hub's
+ * change stream (hub mode), drag-drop targets, and
  * row-level context menus via Lumino's Menu and CommandRegistry.
  */
 
@@ -25,10 +26,13 @@ import {
   deleteShare,
   fetchRemoteRequest,
   fetchRemoteShare,
+  fetchRequestUpload,
   generatePassword,
   getInfo,
   getPassword,
+  hubReasonText,
   IExtensionInfo,
+  linkRef,
   listConnections,
   listRequests,
   listShares,
@@ -39,7 +43,9 @@ import {
   resetTunnel,
   saveFromConnection,
   setPassword,
+  setCloud,
   setTunnel,
+  streamUrl,
   setupTunnel,
   unlockRemote,
   uploadToConnection
@@ -51,6 +57,7 @@ import {
   cloudIcon,
   cloudOffIcon,
   disconnectIcon,
+  downloadIcon,
   fileIcon,
   folderIcon,
   linkIcon,
@@ -69,6 +76,9 @@ import {
 
 const DEFAULT_POLL_INTERVAL_SECONDS = 15;
 const MIN_POLL_INTERVAL_SECONDS = 2;
+/** Hub mode: how long the panel waits after a ring before fetching, so a
+ * burst of rings costs one fetch. */
+const STREAM_REFRESH_DELAY_MS = 300;
 const CONTENTS_MIME = 'application/x-jupyter-icontents';
 // Our own MIME for dragging a connected (remote) share entry out of the panel.
 // Carries `[{ key, name, type }]`; the file browser drop patch resolves it to a
@@ -105,7 +115,9 @@ export interface IShareFilesSettings {
   showHiddenFiles: boolean;
   /** Bring the Cloudflare tunnel up at server startup (public links). */
   tunnelAutostart: boolean;
-  /** Panel poll interval in seconds (one tick refreshes all shares/requests). */
+  /** Panel poll interval in seconds (one tick refreshes all shares/requests).
+   * Standalone only: a hub-managed lab refreshes on the hub's change stream
+   * and polls only while the hub offers none. */
   pollIntervalSeconds: number;
 }
 
@@ -168,6 +180,66 @@ export class ShareFilesPanel extends Widget {
     return this._settings;
   }
 
+  /** True on a hub-managed lab: shares and requests live on the hub, the
+   * lab mounts no recipient route, and peers cannot be connected. */
+  private get _hubMode(): boolean {
+    return this._state.info?.mode === 'hub';
+  }
+
+  /** Why the hub refuses to create `kind` right now, in plain words; '' when
+   * it allows it, and always '' outside hub mode. */
+  private _hubRefusal(kind: 'share' | 'request'): string {
+    const hub = this._state.info?.hub;
+    if (!this._hubMode || !hub) {
+      return '';
+    }
+    if (!hub.available) {
+      return hubReasonText(hub.reason || 'hub_unavailable');
+    }
+    const allowed = kind === 'share' ? hub.allow_share : hub.allow_request;
+    return allowed ? '' : hubReasonText(hub.reason || '');
+  }
+
+  /** Hub mode: the group policy requires a password on every share and
+   * request, so the create dialog asks for one up front. */
+  private get _passwordRequired(): boolean {
+    return this._hubMode && !!this._state.info?.hub?.password_required;
+  }
+
+  /** A freshly created row the cloud toggle could not be applied to: say
+   * why its link stayed on the hub's network. The server already turned the
+   * toggle off when the group policy refused it; the next info fetch shows
+   * the icon accordingly. */
+  private _noteCloudRefusal(reason?: string): void {
+    if (reason) {
+      Notification.warning(
+        `Link works on the hub network only - ${hubReasonText(reason)}`,
+        { autoClose: 8000 }
+      );
+    }
+  }
+
+  /** Hub mode: flip one record's Cloudflare switch (context menu). */
+  private async _setCloudFlow(
+    kind: 'share' | 'request',
+    id: string,
+    cloud: boolean
+  ): Promise<void> {
+    this._state.busyKeys.add(id);
+    this._render();
+    try {
+      await setCloud(this._serverSettings, kind, id, cloud);
+    } catch (err: any) {
+      Notification.error(
+        `Could not switch Cloudflare sharing: ${err?.message || err}`,
+        { autoClose: 8000 }
+      );
+    } finally {
+      this._state.busyKeys.delete(id);
+      await this.refresh();
+    }
+  }
+
   /** Apply new settings from the SettingRegistry. */
   updateSettings(next: IShareFilesSettings): void {
     const prevInterval = this._settings.pollIntervalSeconds;
@@ -200,10 +272,16 @@ export class ShareFilesPanel extends Widget {
       );
       return;
     }
+    const refusedShare = this._hubRefusal('share');
+    if (refusedShare) {
+      Notification.warning(refusedShare);
+      return;
+    }
     const suggested = this._suggestName(paths);
     const spec = await this._promptForNameAndPassword(
       'Create new share',
-      suggested
+      suggested,
+      this._passwordRequired
     );
     if (!spec) {
       return;
@@ -234,6 +312,7 @@ export class ShareFilesPanel extends Widget {
         type: 'success',
         autoClose: 5000
       });
+      this._noteCloudRefusal(share.cloud_reason);
     } catch (err: any) {
       Notification.update({
         id: pending,
@@ -255,9 +334,15 @@ export class ShareFilesPanel extends Widget {
       );
       return;
     }
+    const refusedRequest = this._hubRefusal('request');
+    if (refusedRequest) {
+      Notification.warning(refusedRequest);
+      return;
+    }
     const spec = await this._promptForNameAndPassword(
       'Create new file request',
-      ''
+      '',
+      this._passwordRequired
     );
     if (!spec) {
       return;
@@ -268,6 +353,7 @@ export class ShareFilesPanel extends Widget {
       // no success toast - the new row appearing in the panel is feedback
       // enough and the link lands on the clipboard silently
       await this._copyLinkToClipboard(req.link);
+      this._noteCloudRefusal(req.cloud_reason);
     } catch (err: any) {
       Notification.error(`Could not create request: ${err.message || err}`, {
         autoClose: 5000
@@ -325,10 +411,22 @@ export class ShareFilesPanel extends Widget {
     );
     const work = (async () => {
       try {
+        // info first: it names the mode (standalone or hub) the lists depend
+        // on, and it is refetched each tick because public_base_url can
+        // change at runtime (cloudflare --setup / --reset apply without a
+        // server restart)
+        try {
+          this._state.info = await getInfo(this._serverSettings);
+        } catch {
+          // keep the previous value - we just won't update the hints
+        }
         const [s, r, c] = await Promise.all([
           listShares(this._serverSettings),
           listRequests(this._serverSettings),
-          listConnections(this._serverSettings)
+          // peer connections have no hub equivalent - the route is not mounted
+          this._hubMode
+            ? Promise.resolve({ connections: [] as IConnection[] })
+            : listConnections(this._serverSettings)
         ]);
         this._state.shares = s.shares || [];
         this._state.requests = r.requests || [];
@@ -352,13 +450,6 @@ export class ShareFilesPanel extends Widget {
         // stale after files are added/removed - drop the cache each refresh.
         this._state.subEntries.clear();
         this._detectNewUploads();
-        // refetch info each tick - public_base_url can change at runtime
-        // (cloudflare --setup / --reset apply without a server restart)
-        try {
-          this._state.info = await getInfo(this._serverSettings);
-        } catch {
-          // keep the previous value - we just won't update the hints
-        }
         this._updateCloudIndicator();
         // refresh connection data in parallel
         await Promise.all(
@@ -390,6 +481,7 @@ export class ShareFilesPanel extends Widget {
         }
       }
       this._render();
+      this._syncLiveness();
     })();
     await Promise.all([work, minSpin]);
     if (spin && this._refreshBtn) {
@@ -496,11 +588,92 @@ export class ShareFilesPanel extends Widget {
   // ------------------------------------------------------------------ //
 
   protected onAfterAttach(): void {
+    // The mode may not be known yet (the first info fetch is in flight):
+    // start on the timer and let _syncLiveness swap it for the hub's change
+    // stream - now, when the mode is already known, else after that fetch.
     this._startPolling();
+    this._syncLiveness();
   }
 
   protected onBeforeDetach(): void {
     this._stopPolling();
+    this._closeStream();
+  }
+
+  /** Pick the refresh source for the mode the server reported: the hub's
+   * change stream on a hub-managed lab, the timer everywhere else and
+   * while the hub offers no stream. Called after every refresh, so a mode
+   * or fallback change takes effect on the next tick. */
+  private _syncLiveness(): void {
+    if (!this.isAttached) {
+      return;
+    }
+    if (
+      this._hubMode &&
+      !this._streamFallback &&
+      typeof EventSource !== 'undefined'
+    ) {
+      this._openStream();
+    } else {
+      this._closeStream();
+      this._startPolling();
+    }
+  }
+
+  /** Hub mode: one EventSource to the lab's `api/stream`. The lab holds one
+   * stream to the hub for all its panels and relays each ring as `changed`;
+   * the panel fetches its lists once per ring and once per (re)open, so a
+   * ring lost while disconnected is covered by the next open. A `poll`
+   * event means the hub has no stream route (an older galaxahub): the
+   * panel then falls back to its timer for the rest of the session. */
+  private _openStream(): void {
+    if (this._stream) {
+      return;
+    }
+    this._stopPolling();
+    const stream = new EventSource(streamUrl(this._serverSettings));
+    stream.addEventListener('changed', () => this._scheduleRefresh());
+    stream.addEventListener('poll', () => {
+      this._streamFallback = true;
+      this._closeStream();
+      this._startPolling();
+    });
+    // fetch on open and on every reconnect (EventSource retries by itself)
+    stream.onopen = () => this._scheduleRefresh();
+    // A non-200 or non-event-stream answer (the lab restarting behind the
+    // proxy, a lapsed session) closes the EventSource for good - only network
+    // drops are retried by the browser. Fall back to the timer; its next
+    // refresh reopens the stream through _syncLiveness.
+    stream.onerror = () => {
+      if (stream.readyState === EventSource.CLOSED) {
+        this._closeStream();
+        this._startPolling();
+      }
+    };
+    this._stream = stream;
+  }
+
+  private _closeStream(): void {
+    if (this._stream) {
+      this._stream.close();
+      this._stream = null;
+    }
+    if (this._refreshTimer) {
+      window.clearTimeout(this._refreshTimer);
+      this._refreshTimer = null;
+    }
+  }
+
+  /** Coalesce a burst of rings (the hub rings once per changed record, and
+   * the open rings too) into one fetch. */
+  private _scheduleRefresh(): void {
+    if (this._refreshTimer) {
+      return;
+    }
+    this._refreshTimer = window.setTimeout(() => {
+      this._refreshTimer = null;
+      void this.refresh();
+    }, STREAM_REFRESH_DELAY_MS);
   }
 
   /** (Re)start the single poll loop. One tick refreshes all shares/requests. */
@@ -642,6 +815,7 @@ export class ShareFilesPanel extends Widget {
     connectRow.appendChild(connectInput);
     connectRow.appendChild(connectBtn);
     root.appendChild(connectRow);
+    this._connectRow = connectRow;
 
     this._attachDropTargetOnZone();
   }
@@ -667,15 +841,25 @@ export class ShareFilesPanel extends Widget {
         () => this._renderRequests(visibleRequests)
       );
     }
-    this._renderSection(
-      'connected',
-      'Connected',
-      visibleConnections.length,
-      () => this._renderConnections(visibleConnections)
-    );
+    const hub = this._hubMode;
+    if (!hub) {
+      this._renderSection(
+        'connected',
+        'Connected',
+        visibleConnections.length,
+        () => this._renderConnections(visibleConnections)
+      );
+    }
     // The drop zone is for creating a new share - hide it if shares are off.
     if (this._dropZone) {
       this._dropZone.style.display = this._settings.enableShares ? '' : 'none';
+      this._dropZone.textContent = hub
+        ? 'Drag files here to share'
+        : 'Drag files here to share, or paste a link below';
+    }
+    // Peer links cannot be connected on a hub-managed lab.
+    if (this._connectRow) {
+      this._connectRow.style.display = hub ? 'none' : '';
     }
   }
 
@@ -742,7 +926,10 @@ export class ShareFilesPanel extends Widget {
     const item = document.createElement('div');
     item.className = 'jp-ShareFilesPanel-item';
     item.dataset.shareId = share.id;
-    this._attachDropTargetOnItem(item, 'share', share.id);
+    if (!this._hubMode) {
+      // a hub share is a snapshot - nothing can be added after creation
+      this._attachDropTargetOnItem(item, 'share', share.id);
+    }
 
     const expanded = this._state.expandedItems.has(`share:${share.id}`);
     const header = document.createElement('div');
@@ -760,19 +947,31 @@ export class ShareFilesPanel extends Widget {
 
     const meta = document.createElement('span');
     meta.className = 'jp-ShareFilesPanel-itemMeta';
-    if (this._state.busyKeys.has(share.id)) {
+    if (this._state.busyKeys.has(share.id) || share.state === 'staging') {
       meta.appendChild(this._spinnerNode());
+      if (share.state === 'staging') {
+        meta.appendChild(document.createTextNode(' staging'));
+        meta.title = 'The hub is copying the files';
+      }
+    } else if (share.state === 'refused') {
+      meta.textContent = `refused: ${share.reason || 'unknown'}`;
+      meta.classList.add('jp-mod-refused');
+      meta.title = hubReasonText(share.reason || '');
     } else {
       meta.textContent = `${share.entries.length} item${share.entries.length === 1 ? '' : 's'}`;
     }
     header.appendChild(meta);
+    this._appendCloudMark(header, share.cloud);
 
     const copyBtn = this._makeRowIconButton(
       linkIcon.svgstr,
       'Copy link',
       evt => {
         evt.stopPropagation();
-        void this._copyLinkWithFeedback(share.link, copyBtn);
+        void this._copyLinkWithFeedback(share.link, copyBtn, {
+          kind: 'share',
+          id: share.id
+        });
       }
     );
     header.appendChild(copyBtn);
@@ -811,9 +1010,46 @@ export class ShareFilesPanel extends Widget {
     return item;
   }
 
+  /** Hub mode: a small cloud beside the row's meta while the record's
+   * Cloudflare switch is on, so a glance tells which links leave the hub
+   * network. Standalone rows carry no switch and get no mark. */
+  private _appendCloudMark(header: HTMLElement, cloud?: boolean): void {
+    if (!this._hubMode || !cloud) {
+      return;
+    }
+    const mark = document.createElement('span');
+    mark.className = 'jp-ShareFilesPanel-itemCloud';
+    mark.title = "Reachable through the hub's Cloudflare address";
+    mark.appendChild(this._svgNode(cloudIcon.svgstr));
+    header.appendChild(mark);
+  }
+
   private _renderShareEntries(share: IShare): HTMLElement {
     const list = document.createElement('div');
     list.className = 'jp-ShareFilesPanel-entryList';
+    if (this._hubMode) {
+      // The snapshot lives on the hub: names and sizes only - nothing here
+      // to open, drag out or remove.
+      const visible = this._applyHiddenFilter(share.entries);
+      if (visible.length === 0) {
+        list.appendChild(
+          this._renderEmpty(
+            share.state === 'staging'
+              ? 'Staging - the hub is copying the files'
+              : share.state === 'refused'
+                ? `Refused - ${hubReasonText(share.reason || '')}`
+                : share.entries.length === 0
+                  ? 'No files in this share'
+                  : 'No visible files (hidden ones filtered)'
+          )
+        );
+        return list;
+      }
+      for (const entry of visible) {
+        list.appendChild(this._renderEntryRow(entry, undefined, 0));
+      }
+      return list;
+    }
     const subPath = this._state.shareSubPath.get(share.id) || '';
     // At the share root we use share.entries (synced via the extension's own
     // /api/shares listing). Inside a sub-folder we query JupyterLab's
@@ -1039,13 +1275,17 @@ export class ShareFilesPanel extends Widget {
       meta.textContent = `${req.upload_count} upload${req.upload_count === 1 ? '' : 's'}`;
     }
     header.appendChild(meta);
+    this._appendCloudMark(header, req.cloud);
 
     const copyBtn = this._makeRowIconButton(
       linkIcon.svgstr,
       'Copy link',
       evt => {
         evt.stopPropagation();
-        void this._copyLinkWithFeedback(req.link, copyBtn);
+        void this._copyLinkWithFeedback(req.link, copyBtn, {
+          kind: 'request',
+          id: req.id
+        });
       }
     );
     header.appendChild(copyBtn);
@@ -1113,17 +1353,22 @@ export class ShareFilesPanel extends Widget {
       list.appendChild(groupRow);
 
       for (const entry of uploader.entries) {
-        const row = this._renderEntryRow(
-          entry,
-          () => {
-            void this._removeUpload(
-              req.id,
-              uploader.hash || uploader.name,
-              entry.name
+        const row = this._hubMode
+          ? // the bytes sit on the hub's volume: fetch them in, never remove
+            this._renderEntryRow(entry, undefined, 1, undefined, () => {
+              void this._fetchUploadFlow(req, entry);
+            })
+          : this._renderEntryRow(
+              entry,
+              () => {
+                void this._removeUpload(
+                  req.id,
+                  uploader.hash || uploader.name,
+                  entry.name
+                );
+              },
+              1
             );
-          },
-          1
-        );
         list.appendChild(row);
       }
     }
@@ -1499,7 +1744,8 @@ export class ShareFilesPanel extends Widget {
     entry: IShareEntry,
     onRemove?: () => void,
     indentLevel = 0,
-    onOpenFolder?: (entry: IShareEntry) => void
+    onOpenFolder?: (entry: IShareEntry) => void,
+    onFetch?: () => void
   ): HTMLElement {
     const row = document.createElement('div');
     row.className = 'jp-ShareFilesPanel-entry';
@@ -1533,6 +1779,17 @@ export class ShareFilesPanel extends Widget {
       btn.addEventListener('click', ev => {
         ev.stopPropagation();
         onRemove();
+      });
+      row.appendChild(btn);
+    }
+    if (onFetch) {
+      const btn = document.createElement('button');
+      btn.className = 'jp-ShareFilesPanel-entryRemove';
+      btn.title = 'Fetch to current folder';
+      btn.appendChild(this._svgNode(downloadIcon.svgstr));
+      btn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        onFetch();
       });
       row.appendChild(btn);
     }
@@ -1736,8 +1993,14 @@ export class ShareFilesPanel extends Widget {
           if (!link) {
             return;
           }
+          const kind = String(args.kind || '');
+          const id = String(args.id || '');
+          const ref =
+            (kind === 'share' || kind === 'request') && id
+              ? { kind: kind as 'share' | 'request', id }
+              : undefined;
           void this._copyLinkToClipboard(link).then(ok => {
-            void this._showLinkDialog(link, ok);
+            void this._showLinkDialog(link, ok, ref);
           });
         }
       });
@@ -1749,6 +2012,17 @@ export class ShareFilesPanel extends Widget {
           const id = String(args.id || '');
           if (id) {
             void this._changePasswordFlow(kind, id);
+          }
+        }
+      });
+      c.addCommand('share-files-panel:set-cloud', {
+        label: args =>
+          args.cloud ? 'Hub Network Only' : 'Share Through Cloudflare',
+        execute: args => {
+          const kind = String(args.kind || 'share') as 'share' | 'request';
+          const id = String(args.id || '');
+          if (id) {
+            void this._setCloudFlow(kind, id, !args.cloud);
           }
         }
       });
@@ -1806,12 +2080,17 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:new-share', {
         label: 'New Share',
+        // hub mode: greyed with the hub's reason while the grant refuses
+        caption: () => this._hubRefusal('share'),
+        isEnabled: () => !this._hubRefusal('share'),
         execute: () => {
           void this.createShareFlow([]);
         }
       });
       c.addCommand('share-files-panel:new-request', {
         label: 'New Request',
+        caption: () => this._hubRefusal('request'),
+        isEnabled: () => !this._hubRefusal('request'),
         execute: () => {
           void this.createRequestFlow();
         }
@@ -1990,7 +2269,7 @@ export class ShareFilesPanel extends Widget {
     const menu = new Menu({ commands: this._commands });
     menu.addItem({
       command: 'share-files-panel:copy-link',
-      args: { link: share.link }
+      args: { link: share.link, kind: 'share', id: share.id }
     });
     menu.addItem({
       command: 'share-files-panel:open-link',
@@ -2003,7 +2282,7 @@ export class ShareFilesPanel extends Widget {
       });
     }
     const clip = getClip();
-    if (clip && clip.kind === 'local') {
+    if (!this._hubMode && clip && clip.kind === 'local') {
       menu.addItem({ type: 'separator' });
       menu.addItem({
         command: 'share-files-panel:paste-into-share',
@@ -2015,6 +2294,12 @@ export class ShareFilesPanel extends Widget {
       command: 'share-files-panel:set-password',
       args: { kind: 'share', id: share.id, hasPassword: !!share.has_password }
     });
+    if (this._hubMode) {
+      menu.addItem({
+        command: 'share-files-panel:set-cloud',
+        args: { kind: 'share', id: share.id, cloud: !!share.cloud }
+      });
+    }
     menu.addItem({ type: 'separator' });
     menu.addItem({
       command: 'share-files-panel:delete-share',
@@ -2027,7 +2312,7 @@ export class ShareFilesPanel extends Widget {
     const menu = new Menu({ commands: this._commands });
     menu.addItem({
       command: 'share-files-panel:copy-link',
-      args: { link: req.link }
+      args: { link: req.link, kind: 'request', id: req.id }
     });
     menu.addItem({
       command: 'share-files-panel:open-link',
@@ -2044,6 +2329,12 @@ export class ShareFilesPanel extends Widget {
       command: 'share-files-panel:set-password',
       args: { kind: 'request', id: req.id, hasPassword: !!req.has_password }
     });
+    if (this._hubMode) {
+      menu.addItem({
+        command: 'share-files-panel:set-cloud',
+        args: { kind: 'request', id: req.id, cloud: !!req.cloud }
+      });
+    }
     menu.addItem({ type: 'separator' });
     menu.addItem({
       command: 'share-files-panel:delete-request',
@@ -2137,6 +2428,34 @@ export class ShareFilesPanel extends Widget {
     } finally {
       this._state.busyKeys.delete(requestId);
       await this.refresh();
+    }
+  }
+
+  /** Hub mode: copy one recipient upload into the file browser's current
+   * folder through the hub's transfer job - the bytes never pass the panel. */
+  private async _fetchUploadFlow(
+    req: IRequest,
+    entry: IShareEntry
+  ): Promise<void> {
+    if (!entry.upload_id) {
+      return;
+    }
+    this._state.busyKeys.add(req.id);
+    this._render();
+    try {
+      const res = await fetchRequestUpload(
+        this._serverSettings,
+        req.id,
+        entry.upload_id,
+        this._getCurrentDir(),
+        req.name
+      );
+      Notification.success(`Fetched ${entry.name} to ${res.path}`);
+    } catch (err: any) {
+      Notification.error(`Could not fetch: ${err.message || err}`);
+    } finally {
+      this._state.busyKeys.delete(req.id);
+      this._render();
     }
   }
 
@@ -2436,9 +2755,14 @@ export class ShareFilesPanel extends Widget {
     return { row, input };
   }
 
+  /** The create dialog: name and an optional password. With `required`
+   * (a hub group policy) the password field starts with a generated
+   * passphrase and an empty one refuses the create instead of letting the
+   * hub refuse it after the fact. */
   private async _promptForNameAndPassword(
     title: string,
-    suggested: string
+    suggested: string,
+    required = false
   ): Promise<{ name: string; password: string } | null> {
     const wrap = document.createElement('div');
     wrap.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
@@ -2453,13 +2777,25 @@ export class ShareFilesPanel extends Widget {
     const { row: pwRow, input: pwInput } = this._passwordRow();
     wrap.appendChild(pwRow);
     const hint = document.createElement('div');
-    hint.textContent =
-      'With a password set, recipients must enter it before they can ' +
-      'see or access the files.';
+    hint.textContent = required
+      ? 'Your group requires a password: recipients must enter it before ' +
+        'they can see or access the files.'
+      : 'With a password set, recipients must enter it before they can ' +
+        'see or access the files.';
     hint.style.cssText =
       'font-size: var(--jp-ui-font-size0);' +
       ' color: var(--jp-ui-font-color2);';
     wrap.appendChild(hint);
+    if (required) {
+      pwInput.placeholder = 'Password (required)';
+      pwInput.required = true;
+      try {
+        pwInput.value =
+          (await generatePassword(this._serverSettings)).password || '';
+      } catch {
+        // the field stays empty - the check below still holds
+      }
+    }
     const widget = new Widget({ node: wrap });
     const result = await showDialog({
       title,
@@ -2473,7 +2809,14 @@ export class ShareFilesPanel extends Widget {
     if (!name) {
       return null;
     }
-    return { name, password: pwInput.value.trim() };
+    const password = pwInput.value.trim();
+    if (required && !password) {
+      Notification.warning(hubReasonText('password_required'), {
+        autoClose: 5000
+      });
+      return null;
+    }
+    return { name, password };
   }
 
   /** Set / change / clear the password of an existing share or request
@@ -2550,14 +2893,15 @@ export class ShareFilesPanel extends Widget {
    */
   private async _copyLinkWithFeedback(
     link: string,
-    btn: HTMLElement
+    btn: HTMLElement,
+    ref?: { kind: 'share' | 'request'; id: string }
   ): Promise<void> {
     const ok = await this._copyLinkToClipboard(link);
     if (btn) {
       btn.classList.add('jp-mod-copied');
       window.setTimeout(() => btn.classList.remove('jp-mod-copied'), 700);
     }
-    await this._showLinkDialog(link, ok);
+    await this._showLinkDialog(link, ok, ref);
   }
 
   /**
@@ -2566,7 +2910,8 @@ export class ShareFilesPanel extends Widget {
    */
   private async _showLinkDialog(
     link: string,
-    alreadyCopied: boolean
+    alreadyCopied: boolean,
+    ref?: { kind: 'share' | 'request'; id: string }
   ): Promise<void> {
     const wrap = document.createElement('div');
     // Wider than the default ~480px dialog so the full link fits on one line
@@ -2652,17 +2997,16 @@ export class ShareFilesPanel extends Widget {
       wrap.appendChild(status);
     }
 
-    const m = link.match(/\/public\/(share|request)\/([A-Z2-7]{6,16})$/);
+    // Kind and id: given by the caller, else read off the link itself (the
+    // standalone /public/<kind>/<id> form or the hub's /s/<id> form).
+    const m = ref ?? linkRef(link);
+    const hub = this._hubMode;
 
     // Password: protected resources show the password next to the link (the
     // owner hands both to the recipient) with its own copy button. Fetched
     // owner-side; appears only when one is set.
     if (m) {
-      void getPassword(
-        this._serverSettings,
-        m[1] as 'share' | 'request',
-        m[2]
-      ).then(
+      void getPassword(this._serverSettings, m.kind, m.id).then(
         res => {
           if (!res.password) {
             return;
@@ -2716,11 +3060,19 @@ export class ShareFilesPanel extends Widget {
 
     // Cloudflare configured but switched off: the link is private-only -
     // say so instead of probing reachability (which only makes sense for
-    // a public Cloudflare link).
-    if (tunnelConfigured && !tunnelActive) {
+    // a public Cloudflare link). In hub mode the switch is the record's own,
+    // read from the panel state so every caller of this dialog sees it.
+    const rec =
+      m &&
+      (m.kind === 'share' ? this._state.shares : this._state.requests).find(
+        x => x.id === m.id
+      );
+    if (hub ? rec?.cloud === false : tunnelConfigured && !tunnelActive) {
       const offLine = statusLine('--jp-warn-color1');
-      offLine.textContent =
-        'Cloudflare sharing is not running - link works on this network only';
+      offLine.textContent = hub
+        ? `Cloudflare sharing is off for this ${m!.kind} - link works on ` +
+          "the hub's network only"
+        : 'Cloudflare sharing is not running - link works on this network only';
       wrap.appendChild(offLine);
     }
 
@@ -2729,17 +3081,15 @@ export class ShareFilesPanel extends Widget {
     // every caller gets the check without extra plumbing. A spinner runs
     // while the probe is in flight. Only meaningful for Cloudflare sharing -
     // without an active tunnel there is no public link to probe.
-    if (m && tunnelConfigured && tunnelActive) {
+    // In hub mode the server reports the hub's own serving verdict instead
+    // of probing, so the check runs whatever the cloud toggle says.
+    if (m && (hub || (tunnelConfigured && tunnelActive))) {
       const reach = statusLine('--jp-border-color2');
       reach.setAttribute('data-reach', '1');
       reach.appendChild(this._spinnerNode());
       reach.appendChild(document.createTextNode('Checking link reachability…'));
       wrap.appendChild(reach);
-      void checkLink(
-        this._serverSettings,
-        m[1] as 'share' | 'request',
-        m[2]
-      ).then(
+      void checkLink(this._serverSettings, m.kind, m.id).then(
         res => {
           if (res.reachable) {
             reach.style.borderLeftColor = 'var(--jp-success-color1)';
@@ -2749,7 +3099,7 @@ export class ShareFilesPanel extends Widget {
             reach.textContent =
               '✗  Link is not reachable' +
               (res.error
-                ? ` - ${res.error}`
+                ? ` - ${hub ? hubReasonText(res.error) : res.error}`
                 : res.status
                   ? ` (HTTP ${res.status})`
                   : '');
@@ -2828,7 +3178,7 @@ export class ShareFilesPanel extends Widget {
     // reset`) - closes this popup, clears credentials and base URLs; links
     // revert to the private address and the cloud icon goes back to its
     // "click to set up" state.
-    if (this._state.info?.tunnel_configured) {
+    if (!hub && this._state.info?.tunnel_configured) {
       const reset = document.createElement('a');
       reset.textContent = 'Reset Cloudflare sharing settings';
       reset.href = '#';
@@ -2988,8 +3338,10 @@ export class ShareFilesPanel extends Widget {
       this._cloudIndicator.classList.remove('jp-mod-connecting');
       this._cloudIndicator.innerHTML = '';
       this._cloudIndicator.appendChild(this._svgNode(cloudOffIcon.svgstr));
-      this._cloudIndicator.title =
-        'Cloudflare sharing not configured - click to set up public links.';
+      this._cloudIndicator.title = this._hubMode
+        ? 'The hub could not be reached - links work on the hub network ' +
+          'while it answers again.'
+        : 'Cloudflare sharing not configured - click to set up public links.';
       return;
     }
     const active = !!info?.tunnel_active;
@@ -2999,6 +3351,14 @@ export class ShareFilesPanel extends Widget {
     this._cloudIndicator.appendChild(
       this._svgNode(active ? cloudIcon.svgstr : cloudOffIcon.svgstr)
     );
+    if (this._hubMode) {
+      this._cloudIndicator.title = active
+        ? "Shares and requests are reachable through the hub's Cloudflare " +
+          'address. Click to keep them on the hub network only.'
+        : 'Shares and requests work on the hub network only. Click to make ' +
+          "them reachable through the hub's Cloudflare address.";
+      return;
+    }
     this._cloudIndicator.title = active
       ? `Cloudflare sharing on - links use ${info?.public_base_url}. ` +
         'Click to switch to private links.'
@@ -3013,6 +3373,14 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     if (this._state.info && !this._state.info.tunnel_configured) {
+      if (this._hubMode) {
+        // The switch lives on the hub; it is offered whenever the hub answers.
+        Notification.warning(
+          hubReasonText(this._state.info.hub?.reason || 'hub_unavailable'),
+          { autoClose: 5000 }
+        );
+        return;
+      }
       // No tunnel yet - the icon is the entry point to configure one.
       return this._showTunnelSetupDialog();
     }
@@ -3032,8 +3400,8 @@ export class ShareFilesPanel extends Widget {
       }
     } catch (err: any) {
       Notification.error(
-        `Could not switch the Cloudflare tunnel: ${err?.message || err}`,
-        { autoClose: 5000 }
+        `Could not switch Cloudflare sharing: ${err?.message || err}`,
+        { autoClose: 8000 }
       );
     } finally {
       this._tunnelToggling = false;
@@ -3200,6 +3568,7 @@ export class ShareFilesPanel extends Widget {
   private _state: IPanelState;
   private _body: HTMLElement | null = null;
   private _dropZone: HTMLElement | null = null;
+  private _connectRow: HTMLElement | null = null;
   private _refreshBtn: HTMLElement | null = null;
   private _filterBtn: HTMLElement | null = null;
   private _cloudIndicator: HTMLElement | null = null;
@@ -3209,6 +3578,12 @@ export class ShareFilesPanel extends Widget {
   private _filterText = '';
   private _filterVisible = false;
   private _pollHandle: number | null = null;
+  /** Hub mode: the change stream, open while the panel is attached. */
+  private _stream: EventSource | null = null;
+  /** Hub mode: a pending ring-driven refresh, so a burst costs one fetch. */
+  private _refreshTimer: number | null = null;
+  /** Hub mode: the hub answered that it has no stream route - poll instead. */
+  private _streamFallback = false;
   /** True while the server is unreachable (offline / suspended / restarting),
    * so a poll storm is logged once instead of every tick. */
   private _networkOffline = false;

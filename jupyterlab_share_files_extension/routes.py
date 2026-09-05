@@ -32,6 +32,7 @@ from jupyter_server.utils import url_path_join
 from tornado.web import StaticFileHandler
 
 from .config import ShareFilesConfig
+from .hub import hub_mode
 from .storage import (
     SHARES_DIR_NAME,
     ConnectionStore,
@@ -317,6 +318,12 @@ def _public_origin(handler: tornado.web.RequestHandler) -> str:
     configured = _configured_public_origin(handler)
     if configured:
         return configured
+    return _request_origin(handler)
+
+
+def _request_origin(handler: tornado.web.RequestHandler) -> str:
+    """The scheme + host the browser reached this server on, from the
+    forwarded headers a TLS-terminating proxy sets, else the request itself."""
     proto = handler.request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
     if not proto:
         proto = handler.request.protocol
@@ -1573,6 +1580,14 @@ def setup_route_handlers(web_app, config: ShareFilesConfig | None = None):
     ns = EXTENSION_NAMESPACE
     # store config in settings so handlers can read it
     web_app.settings["share_files_config"] = config or ShareFilesConfig()
+
+    if hub_mode():
+        # Hub-managed lab: the panel works through the hub fileshare API and
+        # nothing unauthenticated is mounted - no public/*, no static/*.
+        from .hub_routes import hub_handlers
+
+        web_app.add_handlers(host_pattern, hub_handlers(base_url, ns))
+        return
 
     static_path = os.path.join(os.path.dirname(__file__), "static")
 

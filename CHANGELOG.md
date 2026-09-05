@@ -2,6 +2,32 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.43] - 2026-09-05
+
+Hub mode for galaxahub-spawned labs, reconciled with galaxahub v4.4.56.
+
+### Added
+
+- Hub mode: on a lab spawned by galaxahub (`SHARE_FILES_PUBLIC_ZONE=hub`) the extension mounts only its authenticated `api/*` routes and every panel action goes through the hub's fileshare API; the hub stages and serves the files, the lab answers 404 on its recipient paths and starts no tunnel
+- Live panel: the lab holds one change stream to the hub and the panel one to the lab, so a new upload, a share turning ready or refused, a close or an expiry shows without polling; an older hub without the stream puts the panel back on its timer
+- Per-record Cloudflare switch: the header cloud icon flips every share and request and sets the default for the next one, a row's context menu flips one; switched-on rows carry a cloud mark and the link dialog says when a link works on the hub network only
+- Password policy: a group that requires a password gets a create dialog with the field required and pre-filled with a generated passphrase
+- Galata suite for hub mode against a mock hub, run in CI beside the standalone suite
+
+### Changed
+
+- Dependency ranges: floor at the tested minor, ceiling at the next major, for the Python and npm dependencies
+- Makefile updated to the canonical 1.37
+- Acceptance criteria consolidated into one `docs/acc-crit.md`
+
+### Fixed
+
+- A hub connection left behind by a closed panel could exhaust the server's HTTP client queue; the hub stream is now read over a socket the lab closes itself
+- A panel whose stream the browser closed for good (a non-200 answer while the lab restarts) falls back to its timer instead of never refreshing again
+- The link dialog opened from the context menu shows the same hub-network-only line as the row button
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.40] - 2026-08-05
 
 Explain why a peer is offline, and stop caching public responses.
@@ -14,8 +40,6 @@ Explain why a peer is offline, and stop caching public responses.
 
 - Public share and request manifests, and the recipient pages, are no longer stored by any cache. A request manifest shows only the caller's own uploads yet was cacheable with no `Vary`, so a shared cache could serve one uploader's file list to another; a cached page could also skip the password prompt after the owner set a password
 - The recipient page now shows the password prompt when a link turns out to be protected, instead of dead-ending on "Share unavailable" - including while the page is already open
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.39] - 2026-07-25
 

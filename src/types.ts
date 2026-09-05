@@ -10,7 +10,12 @@ export interface IShareEntry {
   path?: string;
   /** Filesystem modification time in unix seconds (for the hover tooltip) */
   mtime?: number;
+  /** Hub mode: the hub's id of a recipient upload, used to fetch it */
+  upload_id?: string;
 }
+
+/** Hub mode: where a share's bytes are. Standalone rows carry no state. */
+export type IShareState = 'staging' | 'ready' | 'refused';
 
 export interface IShare {
   id: string;
@@ -24,6 +29,18 @@ export interface IShare {
   path?: string;
   /** Public access requires a password */
   has_password?: boolean;
+  /** Hub mode: staging while the hub copies, ready, or refused */
+  state?: IShareState;
+  /** Hub mode: the refusal slug when state is refused */
+  reason?: string;
+  /** Hub mode: unix seconds the hub removes the row at */
+  expires_at?: number;
+  /** Hub mode: the record's Cloudflare switch - the link is the hub's
+   * Cloudflare address while on, the hub's own address while off */
+  cloud?: boolean;
+  /** Hub mode, on a freshly created row only: why the cloud toggle could
+   * not be applied to it (a refusal slug) */
+  cloud_reason?: string;
 }
 
 export interface IUploaderEntry {
@@ -49,6 +66,12 @@ export interface IRequest {
   path?: string;
   /** Public access requires a password */
   has_password?: boolean;
+  /** Hub mode: ready, or refused with a reason */
+  state?: IShareState;
+  reason?: string;
+  expires_at?: number;
+  cloud?: boolean;
+  cloud_reason?: string;
 }
 
 export interface IConnection {

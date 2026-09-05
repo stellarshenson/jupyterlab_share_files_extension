@@ -34,7 +34,7 @@
       "default": 15,
       "minimum": 2,
       "title": "Refresh interval (seconds)",
-      "description": "How often the panel polls the server for changes - new uploads to your requests, updated connections, and all of your shares and requests. Lower values refresh faster but make more requests. Minimum 2 seconds."
+      "description": "How often the panel polls the server for changes - new uploads to your requests, updated connections, and all of your shares and requests. Lower values refresh faster but make more requests. Minimum 2 seconds. On a hub-managed lab the panel refreshes when the hub reports a change instead, and polls only while the hub offers no change stream."
     }
   },
   "additionalProperties": false

@@ -8,6 +8,7 @@ except ImportError:
     warnings.warn("Importing 'jupyterlab_share_files_extension' outside a proper installation.")
     __version__ = "dev"
 from .config import ShareFilesConfig
+from .hub import hub_api_base, hub_mode
 from .routes import setup_route_handlers
 from .storage import resolve_shares_dir
 
@@ -39,6 +40,13 @@ def _load_jupyter_server_extension(server_app):
     config = ShareFilesConfig(parent=server_app)
     setup_route_handlers(server_app.web_app, config=config)
     name = "jupyterlab_share_files_extension"
+    if hub_mode():
+        # No local store and no per-user tunnel: the hub holds the bytes and
+        # the tunnel. The store directory is never created on a hub lab.
+        server_app.log.info(
+            f"Registered {name} server extension (hub mode, api={hub_api_base() or 'contract incomplete'})"
+        )
+        return
     workspace_root = server_app.web_app.settings.get("server_root_dir", "")
     resolved = resolve_shares_dir(workspace_root, config.shares_dir)
     server_app.log.info(f"Registered {name} server extension (shares_dir={resolved})")

@@ -1,0 +1,730 @@
+# Acceptance Criteria - Share Files Extension
+
+Tracked through `pm-tools`; hand edits lose the id assignment and the log line. `[ ]` open, `[x]` met, `[-]` rejected. Ids are `ACC-<CAT>-<N>` and permanent. Importance is the first word of each body. Run `pm-tools report docs/acc-crit.md` for the standing view.
+
+## Authors
+
+- `@kj` Konrad Jelen
+
+## Connected share entries `SHARE`
+
+Entries inside a connected peer's share - open, save, drag and copy from the panel's CONNECTED section
+
+- [x] `ACC-SHARE-1` **Double-click a file opens it** - HIGH; double-clicking a file entry in an expanded connected share saves it into the file browser's current folder and opens it in a JupyterLab tab; it is never downloaded through the browser
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:02Z @kj imported from acc-crit-basic-sharing.md; verified live against the test.user peer on a self-signed hub
+  - log: 2026-09-01T19:56:33Z @kj edited test-tags (replaced)
+- [x] `ACC-SHARE-2` **Double-click a folder saves it** - HIGH; double-clicking a folder entry saves (extracts) it into the current folder and reveals it in the file browser; folders never open in a tab
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-basic-sharing.md; verified live against the test.user peer on a self-signed hub
+  - log: 2026-09-01T19:56:33Z @kj edited test-tags (replaced)
+- [x] `ACC-SHARE-3` **Drag an entry into the file browser copies it** - HIGH; dragging a file or folder entry onto a folder row or the current-directory empty area saves it there - a file as a file, a folder extracted recursively - and the cursor reads as a copy
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-basic-sharing.md; verified live against the test.user peer on a self-signed hub
+  - log: 2026-09-01T19:56:33Z @kj edited test-tags (replaced)
+- [x] `ACC-SHARE-4` **Right-click offers Download and Save** - MEDIUM; right-clicking an entry offers Download (browser download, no credentials) and Save to Current Folder (server-side save into the file browser's current directory)
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-basic-sharing.md; verified live against the test.user peer on a self-signed hub
+  - log: 2026-09-01T19:56:33Z @kj edited test-tags (replaced)
+- [x] `ACC-SHARE-5` **Self-signed peers do not 500** - HIGH; with `verify_peer_tls` on and a self-signed peer, a save returns a 502 naming `verify_peer_tls = False` as the fix, never an unhandled 500; with it off the save succeeds
+  - test-tags: UNIT, MANUAL
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-basic-sharing.md; verified live against the test.user peer on a self-signed hub
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [x] `ACC-SHARE-6` **No credentialed peer navigation** - CRITICAL; browser-side downloads use `fetch(..., {credentials:'omit'})` and saves use the server's own outbound request; no top-window navigation to a peer URL occurs, so an offline owner can never trigger JupyterHub's spawn-as-owner screen
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-basic-sharing.md; verified live against the test.user peer on a self-signed hub
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [x] `ACC-SHARE-7` **Copy a connected entry, paste into the file browser** - MEDIUM; Copy on a remote file or folder entry then Paste in the file browser saves it into the current folder, a folder extracted recursively; the peer's copy is unchanged and remote entries support Copy only, never Cut
+  - test-tags: UNIT, E2E
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-basic-sharing.md; verified live against the test.user peer on a self-signed hub
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [x] `ACC-SHARE-8` **Copy or cut a file-browser item, paste into a share or request** - MEDIUM; Copy or Cut in the file browser then Paste on an expanded share or request adds the item (or uploads it); Copy leaves the original, Cut removes it once the paste succeeds
+  - test-tags: UNIT, E2E
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-basic-sharing.md; verified live against the test.user peer on a self-signed hub
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+
+## Cloudflare integration `CLOUD`
+
+The Cloudflare tunnel exposing share and request links beyond the hub, and the password second factor it motivated
+
+- [x] `ACC-CLOUD-9` **token saved** - CRITICAL; `cloudflare setup --token <T>` writes the token to `~/.config/jupyterlab-share-files/config.json`, file mode `600`; a later `--token` replaces it
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-10` **account id saved** - MEDIUM; `--account-id <A>` saved alongside the token; each save preserves the other value
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-11` **both token types verify** - HIGH; `validate` checks `/user/tokens/verify`, falls back to `/accounts/{id}/tokens/verify` for account-owned `cfat_` tokens; `token_valid: true` for an active token of either kind
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-12` **account resolved** - MEDIUM; saved account id used directly, else discovered via `GET /accounts` (first account); neither -> exit with guidance naming the account id as the fix
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-13` **bind capability reported** - MEDIUM; `can_bind_existing: true` when the token can list `cfd_tunnel`; existing tunnels returned with id, name, status
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-14` **create capability proven, not inferred** - MEDIUM; throwaway tunnel `share-files-verify-<hex>` created and deleted; denial -> `can_create_tunnel: false` with the API error under `create_error`; failed cleanup -> `probe_cleanup_warning`
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-15` **validate uses saved credentials only** - MEDIUM; no flags; checks the SAVED config end to end (probe included); no saved token -> exit 1 with guidance; also reports `cloudflared_available`/`cloudflared_path` (`shutil.which`) - the extension launches the connector itself, so a binary missing from the server's PATH means the tunnel can never come up
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-16` **a verified token yields a working public URL** - HIGH; `cloudflare setup --hostname H --private-base-url URL` provisions everything; generated links then carry the Cloudflare hostname and the public share/request endpoints are reachable from outside the hub exactly as hub-local links are. Tunnel: creates or reuses tunnel `share-files-<sluggified private base URL>` (e.g. `share-files-hub-example-com-user-alice`); deterministic -> repeated setup is idempotent, unique per user/server on a shared account; `--private-base-url` MANDATORY: the server address the connector forwards to; explicit, never inferred; must be `https` (error with guidance otherwise; `localhost` acceptable only as an explicit https value); Ingress path-restricted: only `^(/user/[^/]+)?/jupyterlab-share-files-extension/public/.*` routes to the origin, catch-all 404; hub login, authenticated `/api/*` and the private network NOT reachable through the tunnel; Host/SNI override: origin's own hostname sent as Host header and TLS SNI (`httpHostHeader`/`originServerName`) so a reverse proxy in front of the hub routes the requests; `noTLSVerify` for https origins; DNS: proxied CNAME `<hostname> -> <tunnel>.cfargotunnel.com` upserted on the apex zone; Link rewrite: server reads `public_base_url` per request (mtime-cached, no restart); only scheme+host rewritten, base path auto-detected from the server's `base_url`; unconfigured -> old behaviour (the host the browser is on)
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
+- [ ] `ACC-CLOUD-17` **Cloudflare link connects in the panel** - HIGH; pasting a Cloudflare link adds a working connection (manifest, pick-up, uploads) identically to a hub-local link; link persisted verbatim, never reconstructed
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:57:19Z @kj edited test-tags (replaced)
+- [ ] `ACC-CLOUD-18` **HTTPS end to end behind the hub proxy** - HIGH; browser fetches (`credentials: 'omit'`) and server-side saves/uploads go to the stored `https://` Cloudflare origin; publicly trusted certificate, works with `verify_peer_tls = True`
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:57:19Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-19` **own Cloudflare links are self** - MEDIUM; `_own_link_prefixes` counts the configured public origin + own base path as self; pasting one's own Cloudflare link shows the "your own link" dialog, no loop connection
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-20` **reset returns to unconfigured** - MEDIUM; removes token, account id, tunnel state and `public_base_url`; unrelated keys preserved; links revert on the next request, no restart; Cloudflare-side resources kept; takes no flags
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-21` **HTTPS only** - CRITICAL; setup switches the zone's `always_use_https` on -> http 301-redirects to https at the edge; `--private-base-url` itself must be https (enforced at setup)
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-22` **six orthogonal subcommands** - LOW; `setup`, `validate`, `info`, `start`, `stop`, `reset`; only `setup` carries flags (`--token`, `--account-id`, `--hostname`, `--private-base-url`); `cloudflare --help` gives a comprehensive reference with examples
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-23` **info is safe and complete** - HIGH; config path, account id in full, hostname, tunnel id, `private_base_url`/`public_base_url`, `tunnel_active`, `tunnel_autostart`; API and tunnel tokens masked to their LAST 4 characters; reports `daemon_running` (process) and `tunnel_status` (Cloudflare-side, e.g. `healthy`)
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-24` **machine-readable on demand** - LOW; human `key: value` lines by default; global `--json` flag switches every subcommand to JSON
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-25` **extension guarantees the daemon** - MEDIUM; at startup and after setup, `cloudflared tunnel run` ensured, retrying `c.ShareFilesConfig.cloudflared_retries` times (default 3); all attempts failing logged as error, success as info; no manual `--run`; with `tunnel_autostart` off the server starts inactive (private links, no daemon)
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-26` **public/private switch keeps the setup** - MEDIUM; `start` marks active + starts the daemon (public links); `stop` stops the daemon (private links on the next request); credentials, tunnel and DNS kept (unlike `reset`); same switch as `POST api/tunnel {"active": bool}`; toggle read per request, no restart; self-connect detection toggle-independent
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-27` **cloud icon reflects and controls the tunnel** - MEDIUM; in the panel header, left of the filter (funnel) icon, ALWAYS visible; green filled cloud = active, dim dashed silhouette = inactive OR not configured, blinking blue = connecting; configured -> click toggles via `api/tunnel` and refreshes the panel so visible links change host; not configured -> click opens the setup popup (AC-CF23)
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-28` **autostart is a user setting, OFF by default** - HIGH; Settings Editor -> Share Files -> `tunnelAutostart` (default off - a fresh server never exposes links publicly without an explicit action); persisted server-side (`tunnel_autostart` in the CLI config) and honoured at startup: on -> tunnel up, public links; off -> tunnel down, private links until switched on via the cloud icon or `cloudflare start`
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-29` **link dialog verifies reachability** - LOW; "Checking link reachability..." -> "OK Link is reachable" (green) or "FAIL Link is not reachable" (red, with HTTP status or error); probe runs server-side (`GET api/link-check`) because a frontend fetch is blocked by CORS; only `kind`+`id` accepted, URL rebuilt server-side (no SSRF surface); certificate validation is off for the probe - the URL is the server's own, the question is reachability, so a self-signed hub certificate does not fail the check
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-30` **CLI readable by default** - LOW; bare `jupyterlab_share_files` prints the full command reference (exit 0), not a usage error; help and human output conservatively coloured on a TTY (headers bold, keys cyan, `True`/`healthy` green, `False`/`down` red); plain when piped or `NO_COLOR` set
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-31` **configure from the panel** - MEDIUM; clicking the silhouette icon while no tunnel is configured opens a setup popup with the same inputs as `cloudflare setup`: API token, account id, public hostname, private base URL; each field carries a hint where to take the value from (token -> dashboard My Profile/Account API Tokens with the two required policies; account id -> domain Overview right-hand column; public hostname -> a subdomain of a Cloudflare-managed domain; private base URL -> this server's address as seen in the browser bar, prefilled, https required); submit runs the full setup server-side (`POST api/tunnel/setup`, blocking Cloudflare calls in an executor) with an in-progress notification and success/error outcome
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-32` **reset from the link dialog** - LOW; the share-link popup carries a "Reset Cloudflare sharing settings" link at the bottom (shown only while a tunnel is configured); clicking it closes the popup and runs the same reset as `cloudflare reset` via `POST api/tunnel/reset` - credentials, tunnel state and private/public base URLs cleared, Cloudflare-side resources kept; links revert to the private address, the cloud icon returns to its "click to set up" state and the user must configure again (AC-CF23)
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:35Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-33` **one implementation, two frontends** - MEDIUM; ALL tunnel/Cloudflare behaviour lives once in the `tunnel` library module (config file, Cloudflare client, verify, `setup_and_start`, `tunnel_start`/`tunnel_stop`, autostart, `tunnel_state`/`tunnel_info`, `validate_config`, `reset_config`, connector lifecycle); the CLI (`cloudflare` subcommands) and the HTTP API (`api/tunnel*`) are thin dispatchers into it and must never grow their own logic - the two paths cannot diverge
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-34` **connector token never on argv** - CRITICAL; `cloudflared tunnel run` receives its token via the `TUNNEL_TOKEN` environment variable, not `--token` on the command line; nothing secret in `ps`/`/proc/<pid>/cmdline` on shared hosts
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-35` **optional password at creation** - HIGH; share/request create dialogs carry an optional password field with a "Generate" button (xkcd-style passphrase via the `xkcdpass` library, `api/generate-password`); CLI parity: `--password`/`--generate-password` on `create-share`/`create-request`, plus `set-password` and `generate-password` subcommands; password optional everywhere - empty means open access, unchanged behaviour
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-36` **password gates ALL public access** - CRITICAL; with a password set, the standalone page, manifest, downloads (single, zip, download-all) and request uploads all require a valid unlock token (`X-Share-Token` header or `?t=` query); the token comes from `POST public/<kind>/<id>/unlock`, is HMAC-bound to the password (changing the password invalidates every outstanding token) and expires after 6h; plaintext password never leaves the owner's authenticated API
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-37` **rate-limited unlock** - HIGH; password attempts are limited per resource id via the `limits` library (in-memory moving window): a per-minute cap plus a mandatory cooldown between consecutive attempts; defaults generous (30/minute, 1s cooldown), tightened via `c.ShareFilesConfig.password_max_attempts_per_minute` / `password_attempt_cooldown_seconds`; exceeded -> 429
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-38` **owner manages and sees the password** - MEDIUM; the link dialog shows the password (when set) next to the link with its own Copy button; right-click on a share/request row -> "Set Password..." / "Change Password..." opens a dialog pre-filled with the current value, with Generate, save and clear (empty = remove); owner retrieval via authenticated `GET api/<shares|requests>/<id>/password`
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-39` **connecting to a protected link** - HIGH; connect probes the peer: a protected resource answers 401 `password_required`, the panel prompts and the password is verified against the peer's unlock endpoint at connect time (wrong password -> re-prompt, peer rate limit surfaced as 429); the verified password is stored with the connection and every later peer fetch (manifest refresh, pick-up, send-to-request, panel downloads) unlocks automatically; the standalone page shows the same password gate before any content
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+
+## Hover tooltip `HOVER`
+
+The tooltip shown when hovering a file or folder row, and the owner-only fields it must never leak
+
+- [x] `ACC-HOVER-40` **Owner tooltip** - HIGH; hovering a row in an owned share or request shows name, path, size and modified date
+  - test-tags: MANUAL
+  - log: 2026-07-15T00:00:00Z @kj implemented (v1.2.37)
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-HOVER-41` **Peer tooltip omits path** - CRITICAL; a connected peer's share row tooltip shows name, size and modified - never the peer's server path
+  - test-tags: MANUAL
+  - log: 2026-07-15T00:00:00Z @kj `_entryTooltip(entry, false)`
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-HOVER-42` **Sub-folder rows show Modified** - MEDIUM; drilled-in sub-entries show the Modified line like top-level rows
+  - test-tags: MANUAL
+  - log: 2026-07-15T00:00:00Z @kj fixed DEF-3, map Contents API `last_modified` -> `mtime`
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-HOVER-43` **Directory suffix** - LOW; directory rows render with a trailing `/` in both the owned and the connected renderer
+  - test-tags: MANUAL
+  - log: 2026-07-15T00:00:00Z @kj fixed DEF-4
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-HOVER-44` **Edge: unknown timestamp** - LOW; `mtime` absent or `<= 0` hides the Modified line, never renders "Invalid Date"
+  - test-tags: MANUAL
+  - log: 2026-07-15T00:00:00Z @kj guarded in `_entryTooltip`
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-HOVER-45` **No owner path on public manifest** - CRITICAL; the public share and request manifest never carries a top-level or per-entry `path`
+  - test-tags: UNIT
+  - log: 2026-07-15T00:00:00Z @kj fixed DEF-2, `_strip_owner_fields` at both public handlers
+  - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-HOVER-46` **No mtime on public manifest** - CRITICAL; the public manifest never carries entry `mtime`
+  - test-tags: UNIT
+  - log: 2026-07-15T00:00:00Z @kj stripped server-side
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-HOVER-47` **Display fields preserved** - MEDIUM; public entries keep `name`, `type` and `size` so the recipient page still lists files
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-HOVER-48` **Owner view unchanged** - MEDIUM; the authenticated `api/shares` / `api/requests` responses still carry `path` (copy-to-browser) and `mtime` (Modified)
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-HOVER-49` **Edge: request uploader entries** - CRITICAL; the per-uploader entries in a request manifest are stripped the same way
+  - test-tags: UNIT
+  - log: 2026-07-15T00:00:00Z @kj covered in `tests/test_public_manifest_privacy.py`
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+
+## Lazy storage directory `STORE`
+
+The storage tree is created only when there is something to store
+
+- [x] `ACC-STORE-50` **Nothing at construction** - HIGH; constructing `ShareStore`, `RequestStore` or `ConnectionStore` creates no directory
+  - test-tags: UNIT
+  - log: 2026-07-25T00:00:00Z @kj fixed DEF-6, both eager `mkdir` calls removed
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-51` **Nothing at server start** - HIGH; loading the server extension creates no directory; stores are per-request handler properties, never built at load
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-52` **Nothing on read** - HIGH; `list`, `exists`, `get`, `get_password`, `resolve_data_path` and the id lookups create nothing on a missing tree
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-53` **Created on first share** - HIGH; creating a share builds `<storage>/shares/` and the share round-trips
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-54` **Created on first request** - HIGH; creating a request builds `<storage>/requests/` and the request round-trips
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-55` **Created on first connection** - HIGH; adding a connection writes `<storage>/connections.json`
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-56` **Created on first upload** - HIGH; uploading into a request from a cold start works and the upload is listed
+  - test-tags: UNIT
+  - log: 2026-07-25T00:00:00Z @kj cold-start upload test added
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-57` **Failed share create leaves nothing** - MEDIUM; a source that is missing or unsafe raises before anything is written; no storage tree, no ghost folder
+  - test-tags: UNIT
+  - log: 2026-07-25T00:00:00Z @kj fixed DEF-7, validation hoisted above the mkdir
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-58` **Edge: partly-valid source list** - MEDIUM; `["good.txt", "gone.txt"]` raises `NotFoundError` and leaves the workspace untouched (no partial copy)
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-59` **Edge: no-op connection delete** - MEDIUM; deleting a key that matches nothing does not write, so it cannot recreate the directory
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-60` **Edge: missing tree reads error correctly** - MEDIUM; `get` on an unknown id raises `NotFoundError`, never a raw `FileNotFoundError` and never a false empty success
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:37Z @kj edited test-tags (replaced)
+- [x] `ACC-STORE-61` **Atomic connections write** - HIGH; `connections.json` is written temp-then-rename so an interrupt cannot leave an unparseable file that reads back as "no connections"
+  - test-tags: UNIT
+  - log: 2026-07-25T00:00:00Z @kj fixed DEF-8
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [ ] `ACC-STORE-62` **Corrupt connections.json is recoverable** - MEDIUM; an unparseable file should be logged and set aside, not silently read as empty
+  - log: 2026-07-25T00:00:00Z @kj criterion added, open as DEF-9
+  - log: 2026-09-01T19:57:19Z @kj test-tags removed: the behaviour is not implemented, so no test covers it - lands in NO-TEST
+
+## Link dialog copy control `LINK`
+
+The copy affordance embedded inside the share-link field
+
+- [x] `ACC-LINK-63` **Embedded placement** - MEDIUM; copy icon renders inside the link input at its right edge; input text gets right padding (34px) so the link never runs under the icon
+  - test-tags: MANUAL
+  - log: 2026-06-12T00:00:00Z @kj implemented, verified via Playwright bounding boxes (icon box inside input box)
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-LINK-64` **No button chrome** - LOW; transparent background, no border; hover shows a `--jp-layout-color2` highlight only
+  - test-tags: MANUAL
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-LINK-65` **Copy action** - HIGH; click copies the full link via `_copyLinkToClipboard` (Clipboard API, `execCommand` fallback on http origins)
+  - test-tags: MANUAL
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-LINK-66` **Success feedback** - MEDIUM; glyph flips to a green check for 1.2 s, then back; no text, no resize
+  - test-tags: MANUAL
+  - log: 2026-06-12T00:00:00Z @kj implemented, fill sampled live: grey -> `--jp-success-color1` -> grey
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-LINK-67` **Failure feedback** - MEDIUM; copy glyph flashes `--jp-error-color1` for 1.2 s
+  - test-tags: MANUAL
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-LINK-68` **jp-mod-styled override** - LOW; styled via `.jp-Dialog-content button.jp-ShareFiles-copyEmbed` in `style/base.css` so the dialog's auto-applied `jp-mod-styled` (32px line-height, min-width, background) cannot inflate it
+  - test-tags: MANUAL
+  - log: 2026-06-12T00:00:00Z @kj implemented, same specificity trick as `.jp-ShareFiles-miniBtn`
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-LINK-69` **Layout intact** - LOW; password line, copied-status, reachability and QR keep their order below the link row (password inserts at `linkRow.nextSibling`)
+  - test-tags: MANUAL
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-LINK-70` **Edge: theme switch** - LOW; all colors via theme variables; correct in light and dark
+  - test-tags: MANUAL
+  - log: 2026-06-12T00:00:00Z @kj implemented, dark theme verified via screenshot
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-LINK-71` **Edge: focus-select unaffected** - LOW; clicking the input still selects the full link; the icon click does not steal the selection behaviour
+  - test-tags: MANUAL
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+
+## Panel refresh resilience `PANEL`
+
+The polling loop - what it keeps on a transient failure and what it must surface
+
+- [x] `ACC-PANEL-72` **Transient keeps last view** - HIGH; a dropped fetch preserves the last-good shares / requests / connections lists; the panel is not wiped
+  - test-tags: UNIT
+  - log: 2026-07-15T00:00:00Z @kj lists assigned only after the `Promise.all` of the three list calls resolves
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-PANEL-73` **Log once per streak** - MEDIUM; an offline streak logs a single `console.debug`, not one line per poll tick
+  - test-tags: UNIT
+  - log: 2026-07-15T00:00:00Z @kj `_networkOffline` guard
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-PANEL-74` **Recovery logged once** - LOW; when the server is reachable again a single recovery `console.debug` fires and the flag clears
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:06Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
+- [x] `ACC-PANEL-75` **Real errors surface** - HIGH; a real HTTP error (`ServerConnection.ResponseError`) or an ordinary code-bug `TypeError` reaches `console.error`, never swallowed as offline
+  - test-tags: UNIT
+  - log: 2026-07-15T00:00:00Z @kj fixed DEF-1, classifier keys on `ServerConnection.NetworkError` only
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-PANEL-76` **Flag reset on real error** - HIGH; a real error clears `_networkOffline` so a later genuine offline streak logs its message again
+  - test-tags: UNIT
+  - log: 2026-09-01T19:55:06Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-PANEL-77` **Edge: WAN down, localhost reachable** - MEDIUM; with `navigator.onLine === false` but the local server up, a real HTTP 500 still surfaces (not misclassified transient)
+  - test-tags: MANUAL
+  - log: 2026-09-01T19:55:06Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-PANEL-78` **Edge: peer refresh errors isolated** - MEDIUM; a connected-peer refresh failure is caught by `_refreshConnection` and never trips the panel-level offline logic
+  - test-tags: MANUAL
+  - log: 2026-07-15T00:00:00Z @kj confirmed in Round-2 adversarial review
+  - log: 2026-08-05T00:00:00Z @kj corrected - "isolated" must not mean "unlogged". The bare `catch {}` made every peer failure (CORS, mixed content, DNS, edge challenge, expired token, 404) an unattributable "offline" badge and blocked diagnosis of DEF-14
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-PANEL-79` **Peer failure reason recorded** - MEDIUM; a peer refresh failure logs the link and the error once per streak, and the offline badge carries the reason as its tooltip
+  - test-tags: UNIT
+  - log: 2026-08-05T00:00:00Z @kj implemented, `offlineReasons` in the panel state
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+
+## Uploader identity `UPLDR`
+
+Per-uploader identity on request pages - the server-issued hash and the scoping it gives
+
+- [x] `ACC-UPLDR-80` **Server-issued hash** - CRITICAL; first upload with no cookie mints a 6-char base32 hash server-side, sets it as an `httpOnly` `SameSite=Lax` cookie (365 days) and returns it as `me.hash`; client-supplied identity is never trusted
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-81` **Stable identity** - HIGH; subsequent uploads with the cookie land in the same pool (`requests/<id>/<hash>/`); the hash never changes for a browser
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-82` **Name is a label** - MEDIUM; display name stored in a `.uploader.json` sidecar per pool, last write wins; renaming relabels the existing pool, never forks it
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-83` **Scoped manifest** - CRITICAL; public manifest returns only the cookie owner's uploader entry plus `me: {hash, name}`; without a cookie `uploaders` is `[]` and `me` absent; other uploaders never exposed
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-84` **Own uploads visible** - HIGH; request page shows a "Your uploads" list (name, size) populated from the manifest, refreshed after every upload and remove
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-85` **Own remove** - HIGH; each listed upload has a Remove button; `DELETE public/request/<id>/upload?name=...` keyed by the cookie hash only
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-86` **Name prefill** - LOW; the name field prefills from `me.name` so a returning uploader keeps their label
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-87` **Owner view** - MEDIUM; panel shows each uploader as `name (hhhh)` (4-char hash suffix) so same-named uploaders stay distinguishable; owner remove keyed by full hash
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-88` **Connection uploads share identity** - MEDIUM; panel/CLI uploads to a connected request replay the persisted `uploader_hash` as a Cookie header; the hash minted on the first upload is captured from the response and stored on the connection
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-89` **Sidecar invisible** - MEDIUM; `.uploader.json` (and crashed `.tmp` leftovers) never listed as entries, never counted, not removable
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-90` **Password independence** - MEDIUM; identity cookie orthogonal to the unlock token; gated requests require both
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-91` **Edge: no cookie on manifest** - HIGH; `uploaders: []`, no `me`, page shows "Nothing uploaded yet from this browser."
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-92` **Edge: remove without cookie** - CRITICAL; 403 `no uploader identity`
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-93` **Edge: forged cookie** - CRITICAL; values not matching `[A-Z2-7]{4,16}` (traversal, slashes, lowercase, overlong) treated as absent
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-94` **Edge: cookie of another request** - CRITICAL; cookie name is scoped per request id; a hash for request A is invisible to request B
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-95` **Edge: cleared cookie / other browser** - MEDIUM; fresh identity; prior uploads invisible and unremovable from the new identity
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-96` **Edge: same name, different hash** - MEDIUM; distinct pools; owner sees two rows `anonymous (xxxx)` / `anonymous (yyyy)`
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-97` **Edge: concurrent same-filename uploads** - MEDIUM; O_EXCL suffixing (`-2`, `-3`) unchanged; concurrent sidecar writes race-safe via unique temp + atomic rename
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented, race found by concurrency tests and fixed
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-98` **Edge: pool emptied** - LOW; last file removed deletes the sidecar and the pool dir; the cookie persists, next upload recreates the pool under the same hash
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-99` **Edge: legacy uploads** - LOW; pre-identity dirs (keyed by name, no sidecar) stay visible with `hash = name = dir`; owner remove still works
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [x] `ACC-UPLDR-100` **Edge: upload named `.uploader.json`** - MEDIUM; O_EXCL collides with the sidecar, file lands as `.uploader-2.json`; sidecar never overwritten by an upload
+  - test-tags: UNIT
+  - log: 2026-06-12T00:00:00Z @kj implemented
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+- [ ] `ACC-UPLDR-101` **Live verification** - MEDIUM; Playwright: two browser contexts upload to one request, each sees only its own files and can remove them; owner panel shows both `name (hash)` rows
+  - test-tags: MANUAL
+  - log: 2026-06-12T00:00:00Z @kj criterion added, pending live run
+  - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+
+## Hub mode `HUBM`
+
+Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only through the hub fileshare API and no unauthenticated route is mounted on the lab
+
+- [x] `ACC-HUBM-102` **Mode from the spawn variable** - CRITICAL; SHARE_FILES_PUBLIC_ZONE=hub at server start selects hub mode; absence or any other value selects standalone; the value is read once at load
+  - evidence: test_hub_mode.py::test_hub_mode_is_read_from_the_spawn_variable green; pytest jupyterlab_share_files_extension/tests: 244 passed, 8 skipped on 2026-09-03
+  - test: monkeypatch the env, call setup_route_handlers on a fake web_app, assert which table was registered
+  - test-tags: UNIT
+  - mechanism: 2026-09-03T20:51:17Z @kj hub.hub_mode() reads the env once; setup_route_handlers builds one of two handler lists and never mixes them
+  - log: 2026-09-03T20:51:17Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: implemented in hub.py
+- [x] `ACC-HUBM-103` **No public route in hub mode** - CRITICAL; in hub mode the router carries no path under public/ and no handler derived from \_PublicBase
+  - evidence: test_hub_mode.py::test_hub_mode_registers_no_public_and_no_static_route green (hub table: no /public/ pattern, no \_PublicBase); galata hub suite 'recipient, static and peer routes are not mounted' green
+  - test: hub env, setup_route_handlers, assert no pattern contains /public/ and no handler class subclasses \_PublicBase
+  - test-tags: UNIT
+  - mechanism: 2026-09-03T20:51:17Z @kj the hub table is built in hub_routes.py from APIHandler subclasses only; the public handlers are appended by the standalone branch alone
+  - log: 2026-09-03T20:51:17Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: implemented in routes.py setup_route_handlers and hub_routes.py
+- [x] `ACC-HUBM-104` **No static route in hub mode** - CRITICAL; the static/(.\*) StaticFileHandler is not registered in hub mode
+  - evidence: test_hub_mode.py::test_hub_mode_registers_no_public_and_no_static_route green (no StaticFileHandler, no /static/ pattern); galata hub suite static/standalone.html answers 404
+  - test: hub env, assert no pattern contains /static/ and no StaticFileHandler in the table
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: implemented in routes.py setup_route_handlers
+- [x] `ACC-HUBM-105` **Every hub-mode route authenticated** - CRITICAL; every HTTP method implemented on every registered hub-mode handler is wrapped by tornado.web.authenticated
+  - evidence: test_hub_mode.py::test_every_hub_route_method_is_authenticated green: 15+ methods across the hub table carry the authenticated wrapper
+  - test: walk the hub table, for each handler and each of get/post/put/delete/patch it overrides assert the function carries **wrapped** from web.authenticated
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: every hub handler method decorated in hub_routes.py
+- [x] `ACC-HUBM-106` **Fail closed on an incomplete contract** - CRITICAL; hub mode with SHARE_FILES_HUB_API or JUPYTERHUB_API_TOKEN missing still mounts no public route; the hub client raises HubUnavailable and api/info reports the hub unavailable
+  - evidence: test_hub_mode.py::test_incomplete_contract_fails_closed[JUPYTERHUB_API_TOKEN|SHARE_FILES_HUB_API] green; test_hub_handlers.py::test_info_reports_an_unavailable_hub_without_failing green
+  - test: hub env without the token, assert the table has no public route and HubClient() raises HubUnavailable
+  - test-tags: UNIT
+  - mechanism: 2026-09-03T20:51:18Z @kj the mode decision depends on SHARE_FILES_PUBLIC_ZONE only; the API base and token are validated later, per call, so their absence can never reopen the standalone table
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: mode decided by SHARE_FILES_PUBLIC_ZONE alone; HubClient validates the rest per call
+- [x] `ACC-HUBM-107` **No local storage or tunnel in hub mode** - HIGH; \_load_jupyter_server_extension in hub mode neither resolves shares_dir nor creates a directory nor calls tunnel.apply_autostart
+  - evidence: test_hub_mode.py::test_load_in_hub_mode_creates_no_store_and_starts_no_tunnel green: no uploads dir, apply_autostart never called
+  - test: hub env, load the extension against a fake server app with a tmp root, assert no uploads dir exists and apply_autostart was not called
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: \_load_jupyter_server_extension returns before resolve_shares_dir and apply_autostart in hub mode
+- [x] `ACC-HUBM-108` **Hub API base composition** - HIGH; the client targets the scheme and host of JUPYTERHUB_API_URL joined with the SHARE_FILES_HUB_API path; an absolute SHARE_FILES_HUB_API is used verbatim
+  - evidence: test_hub_mode.py::test_hub_api_base_joins_the_path_with_the_api_origin green: http://hub:8080/hub/api/fileshare composed, absolute value kept, missing origin yields ''
+  - test: set JUPYTERHUB_API_URL=http://hub:8080/hub/api and SHARE_FILES_HUB_API=/hub/api/fileshare, assert base http://hub:8080/hub/api/fileshare; set an absolute value, assert it is kept
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: hub.hub_api_base joins JUPYTERHUB_API_URL origin with the SHARE_FILES_HUB_API path
+- [x] `ACC-HUBM-109` **Token on every hub call** - CRITICAL; every request the lab sends to the hub carries Authorization: token JUPYTERHUB_API_TOKEN and no other credential
+  - evidence: test_hub_mode.py::test_every_hub_call_carries_the_lab_token green: Authorization token t0k3n on GET and POST, no other credential; galata fetch call recorded with auth 'token test-token'
+  - test: stub the tornado client, call HubClient.request, assert the Authorization header value
+  - test-tags: UNIT
+  - mechanism: 2026-09-03T20:51:18Z @kj one HubClient.request method builds every hub request; handlers never call the HTTP client directly
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: one HubClient.request builds every hub request
+- [x] `ACC-HUBM-110` **Info reflects capabilities** - HIGH; api/info in hub mode returns mode=hub, public_base_url and a hub block with allow_share, allow_request, reason, serving, max_share_bytes, max_upload_bytes, max_shares, retention_days from GET capabilities
+  - evidence: test_hub_handlers.py::test_info_reflects_capabilities green: mode hub, allow_share false with reason share_not_granted, serving false, limits mapped
+  - test: stub capabilities, GET api/info, assert the mapped fields
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: HubInfoHandler maps GET capabilities
+- [x] `ACC-HUBM-111` **Create share sends paths, never bytes** - CRITICAL; POST api/shares forwards title, workspace paths and password to the hub POST shares and reads no file; a 202 becomes a share row in state staging
+  - evidence: test_hub_handlers.py::test_create_share_sends_paths_and_returns_a_staging_row green with a path absent on disk; test_create_share_refuses_an_unsafe_path_before_calling_the_hub green
+  - test: stub the hub, POST api/shares with a path that does not exist on disk, assert the hub body and a 202-derived staging row
+  - test-tags: UNIT
+  - mechanism: 2026-09-03T20:51:18Z @kj the hub mediator copies from the workspace volume; the lab only names paths
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: HubSharesListHandler.post forwards title, paths, password
+- [x] `ACC-HUBM-112` **Share rows from hub items** - HIGH; GET api/shares maps hub items of kind share to the panel share shape: id, name from title, entries from files with type file, link from url, has_password, state, reason, expires_at, created_at as unix seconds
+  - evidence: test_hub_mode.py::test_share_from_item_maps_the_live_payload green on the recorded live row; test_share_from_item_keeps_the_refusal_reason green
+  - test: feed a recorded items payload to share_from_item, assert every field
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: hub_routes.share_from_item
+- [x] `ACC-HUBM-113` **Request rows from hub items and uploads** - HIGH; GET api/requests maps hub items of kind request plus GET requests/id/uploads to the panel request shape: one uploader group holding every upload with upload_id, upload_count and last_upload_at derived
+  - evidence: test_hub_mode.py::test_request_from_item_groups_uploads_and_derives_counts green: one group, upload_count 2, last_upload_at from the newest upload
+  - test: feed an item and an uploads payload to request_from_item, assert the group, count and timestamps
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: hub_routes.request_from_item
+- [x] `ACC-HUBM-114` **Create request forwards** - HIGH; POST api/requests forwards title and password to the hub POST requests and returns the ready row
+  - evidence: test_hub_handlers.py::test_request_lifecycle_with_uploads_and_fetch green: POST requests {title, password} forwarded, ready row returned
+  - test: stub the hub, POST api/requests, assert the forwarded body and the returned row
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:42Z @kj closed: HubRequestsListHandler.post
+- [x] `ACC-HUBM-115` **Delete forwards and removes bytes** - HIGH; DELETE api/shares/id and api/requests/id forward to the hub DELETE; 204 answers ok true, 404 stays 404
+  - evidence: test_hub_handlers.py::test_delete_share_forwards_and_404_stays_404 green: 204 answers ok true, second delete 404
+  - test: stub 204 then 404, assert the two responses
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: HubShareItemHandler.delete and HubRequestItemHandler.delete
+- [x] `ACC-HUBM-116` **Password set, clear and read back** - HIGH; POST password forwards PUT password to the hub, an empty value clears; GET returns the value set through this server process and empty otherwise
+  - evidence: test_hub_handlers.py::test_password_set_read_back_and_cleared green: PUT forwarded, value read back, cleared, empty after a store reset
+  - test: set a password, GET it back, clear it, GET empty; restart the module state, GET empty
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: HubPasswordHandler with the in-process value store
+- [x] `ACC-HUBM-117` **Fetch an upload into the workspace** - HIGH; POST api/requests/id/uploads/uid/fetch with dest forwards to the hub fetch route and returns the landed path
+  - evidence: test_hub_handlers.py::test_request_lifecycle_with_uploads_and_fetch green (dest inbox/Inbox, path inbox/Inbox/report.csv); test_fetch_picks_a_fresh_directory_and_refuses_a_missing_folder green
+  - test: stub the hub fetch, POST with dest, assert the forwarded dest and the path in the answer
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: HubUploadFetchHandler picks a fresh dest under target_dir
+- [x] `ACC-HUBM-118` **Refusal mapping** - HIGH; a hub 403 with reason and message answers 403 with error=message and reason; 400, 404, 429 and 503 keep their status and message; a connection failure answers 502 with reason hub_unavailable
+  - evidence: test_hub_mode.py::test_relay_error_keeps_status_and_names_the_reason green; test_hub_handlers.py::test_hub_refusal_is_relayed_with_its_reason (403 downloads_blocked) and test_unreachable_hub_answers_502 (reason hub_unavailable) green
+  - test: stub each status, assert the lab status, error and reason
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: hub_routes.relay_error and \_HubBase.\_hub
+- [x] `ACC-HUBM-119` **Link check reports serving** - MEDIUM; api/link-check in hub mode answers reachable equal to capabilities.serving and carries the reason slug when false; no probe is sent to the link
+  - evidence: test_hub_handlers.py::test_link_check_reports_the_hubs_serving_verdict green: reachable false with sidecar_not_serving and status 503, true when serving, no call to the link
+  - test: stub serving false with reason sidecar_not_serving, GET link-check, assert reachable false and the reason
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: HubLinkCheckHandler reads capabilities.serving
+- [x] `ACC-HUBM-120` **Hub link rewritten to the browser-facing origin** - HIGH; a hub url whose origin is the lab's internal hub API origin is rewritten to the origin the browser reaches the lab on plus the hub base_url; any other origin is the tunnel and is kept verbatim
+  - evidence: test_hub_mode.py::test_rewrite_link_restores_the_browser_facing_origin green; test_hub_handlers.py::test_hub_address_links_are_rewritten_to_the_browser_origin green
+  - test: item url http://hub:8080/s/X with X-Forwarded-Host hub.example.com, assert https://hub.example.com/s/X; url https://share.example.com/s/X kept
+  - test-tags: UNIT
+  - mechanism: 2026-09-03T20:51:18Z @kj capabilities.public_base_url is composed by the hub from the caller's Host header, so a lab-originated call yields the internal address; the lab restores the address recipients can use
+  - log: 2026-09-03T20:51:18Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: hub_routes.rewrite_link over \_request_origin
+- [x] `ACC-HUBM-121` **Cloud on: links via Cloudflare** - HIGH; with the cloud toggle on and the hub offering a tunnel origin, share and request links carry the tunnel hostname
+  - evidence: test_hub_handlers.py::test_cloud_toggle_selects_the_link_origin green: link https://share.example.com/s/<id> with the toggle on; galata hub suite 'the cloud toggle switches links' green
+  - test: stub public_base_url https://share.example.com, toggle on, list shares, assert the tunnel origin in link
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: links_public toggle keeps the tunnel origin
+  - log: 2026-09-05T09:01:19Z @kj still holds after the galaxahub v4.4.56 reconciliation: the on/off now lives on each hub record (PUT cloud), the toggle flips every record and stores hub_cloud (default off); the hub composes the url, the lab only restores the browser origin
+- [x] `ACC-HUBM-122` **Cloud off: links via the hub network only** - HIGH; with the cloud toggle off, share and request links carry the hub's own browser-facing origin even when the hub offered the tunnel
+  - evidence: test_hub_handlers.py::test_cloud_toggle_selects_the_link_origin green: link http://localhost:<port>/s/<id> with the toggle off, public_base_url ''
+  - test: stub the tunnel origin, toggle off, list shares, assert the hub origin in link
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: links_public off rewrites to the hub origin
+  - log: 2026-09-05T09:01:19Z @kj still holds after the galaxahub v4.4.56 reconciliation: the on/off now lives on each hub record (PUT cloud), the toggle flips every record and stores hub_cloud (default off); the hub composes the url, the lab only restores the browser origin
+- [x] `ACC-HUBM-123` **Cloud toggle persisted and reported** - MEDIUM; api/tunnel GET reports tunnel_configured when the hub offers a tunnel origin, tunnel_active as the persisted toggle and tunnel_running as capabilities.serving; POST active persists the toggle without starting any daemon
+  - evidence: test_hub_mode.py::test_links_public_toggle_persists_in_the_config_file green; test_hub_handlers.py::test_cloud_toggle_selects_the_link_origin green: tunnel_configured true, tunnel_running true, no daemon started
+  - test: POST active false, GET, assert tunnel_active false and no cloudflared process was started
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: HubTunnelHandler persists hub_links_public in the CLI config file
+  - log: 2026-09-05T09:01:19Z @kj still holds after the galaxahub v4.4.56 reconciliation: the on/off now lives on each hub record (PUT cloud), the toggle flips every record and stores hub_cloud (default off); the hub composes the url, the lab only restores the browser origin
+- [-] `ACC-HUBM-124` **Cloud icon hidden without a hub tunnel** - MEDIUM; when the hub returns no tunnel origin the panel shows the cloud silhouette as not configured and a click explains that the hub administrator manages Cloudflare; no setup dialog opens
+  - test: galata hub suite: mock hub without a tunnel origin, click the cloud icon, assert the information dialog and no setup form
+  - test-tags: E2E
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:33:52Z @kj edited test (replaced) and test-tags (replaced)
+  - log: 2026-09-03T21:34:03Z @kj closed: \_toggleTunnel shows an information dialog in hub mode when no tunnel origin is offered
+  - log: 2026-09-05T09:01:18Z @kj reopened: reopened: the icon is no longer hidden - galaxahub v4.4.56 decides Cloudflare per record and the switch is offered whenever the hub answers; evidence retired: galata hub suite 'without a hub tunnel the cloud icon explains instead of opening setup' green on 2026-09-03: title mentions the hub network, dialog 'Cloudflare sharing is managed by the hub', no input field
+  - log: 2026-09-05T09:01:19Z @kj rejected: superseded by the per-record cloud switch and the toggle criteria (galaxahub v4.4.56 reconciliation, 2026-09-05): tunnel_configured is true while the hub answers, a refused switch names cloud_not_configured
+- [x] `ACC-HUBM-125` **Panel hides standalone-only controls** - HIGH; in hub mode the Connected section, the connect row, drop-onto-share, paste-into-share, entry remove buttons and the Cloudflare setup and reset controls are not rendered
+  - evidence: galata ui-tests/tests/hub/hub-mode.spec.ts 'the panel hides the peer controls' green on 2026-09-03; 'share rows show ...' asserts no entryRemove button
+  - test: galata against the mock hub: assert the Connected header and connect input are absent
+  - test-tags: E2E
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: widget.ts \_hubMode gates the Connected section, connect row, drop targets, paste and remove buttons
+- [x] `ACC-HUBM-126` **State badge on shares** - MEDIUM; a staging share shows a spinner and the word staging, a refused share shows its reason, a ready share shows its item count
+  - evidence: galata hub suite 'share rows show staging, ready and refused states from the hub' green: '1 item', 'staging', 'refused: over_cap'
+  - test: mock hub returns one row per state, assert the three badges
+  - test-tags: E2E
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: widget.ts \_renderShareItem meta badge
+- [x] `ACC-HUBM-127` **New menu honours the grants** - MEDIUM; New Share and New Request are disabled and carry the hub reason when allow_share or allow_request is false
+  - evidence: galata hub suite 'create is refused with the hub reason and the New menu greys it out' green: New Share lm-mod-disabled, New Request enabled
+  - test: mock hub capabilities allow_share false with reason share_not_granted, open the plus menu, assert the disabled entry
+  - test-tags: E2E
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: new-share/new-request commands carry isEnabled from \_hubRefusal
+- [x] `ACC-HUBM-128` **Upload fetch action** - HIGH; each upload row under a request offers Fetch to current folder which posts the fetch route with the file browser's current directory and reports the landed path
+  - evidence: galata hub suite 'a recipient upload is fetched into the workspace through the hub' green: the mock received POST .../uploads/u1/fetch with dest under the test folder and the lab token; the handler answers the landed path (test_hub_handlers.py)
+  - test: mock hub lists one upload, click fetch, assert the mock received dest and the toast names the path
+  - test-tags: E2E
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: \_fetchUploadFlow posts api/requests/<id>/uploads/<uid>/fetch with the current dir
+- [x] `ACC-HUBM-129` **Link dialog in hub mode** - MEDIUM; the link dialog shows the hub link, the password set in this session, and a warning when the hub is not serving; it shows no tunnel probe and no reset link
+  - evidence: galata hub suite 'the link dialog shows the hub link and the hub serving verdict' green: link value, 'not reachable ... not serving', no Reset Cloudflare link
+  - test: mock hub serving false, open the link dialog, assert the warning and the absence of the reset link
+  - test-tags: E2E
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: \_showLinkDialog takes an explicit kind/id and reads the hub verdict
+- [x] `ACC-HUBM-130` **Standalone unchanged** - CRITICAL; with the variable absent the route table is the standalone table with its public and static routes and every pre-existing test passes unmodified
+  - evidence: test_hub_mode.py::test_standalone_table_keeps_public_and_static_routes green (27 routes); pytest 244 passed 8 skipped; jest 38 passed; standalone galata 9 of 9 green on 2026-09-03
+  - test: env unset, assert the table contains the public share page route; run the full pytest and jest suites
+  - test-tags: UNIT
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: standalone branch of setup_route_handlers untouched
+- [x] `ACC-HUBM-131` **Recipient path answers 404 in hub mode** - CRITICAL; GET public/share/AAAAAAAA on a hub-mode lab answers jupyter_server's 404 and runs no extension code
+  - evidence: galata hub suite 'recipient, static and peer routes are not mounted' green: public/share, manifest, public/request, static and api/connections all 404; test_hub_handlers.py::test_public_and_static_paths_are_404_in_hub_mode green
+  - test: galata against the mock hub: fetch the public share path, assert 404
+  - test-tags: E2E
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:32:43Z @kj closed: no public handler registered in hub mode
+- [x] `ACC-HUBM-132` **Live: lab token reaches the hub API** - HIGH; from a hub-spawned lab, GET capabilities, items and status with JUPYTERHUB_API_TOKEN answer 200 and a call without a token answers 403
+  - evidence: 2026-09-03 curl from inside the lab: capabilities, items, status 200 with the token; capabilities without a token 403 Authentication required
+  - test: curl the three routes from inside the lab with and without the token
+  - test-tags: MANUAL
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T20:52:30Z @kj closed: verified live from the hub-spawned lab against galaxahub v4.4.56
+- [x] `ACC-HUBM-133` **Live: share round trip** - HIGH; POST shares with a workspace path answers 202 staging, the row reaches ready with the file's sha256, DELETE answers 204 and the row is gone
+  - evidence: 2026-09-03: POST shares 202 staging, ready after 4s, files[0].sha256 219b64e7... equal to sha256sum of the workspace file, DELETE 204, items empty
+  - test: curl from inside a hub-spawned lab, poll items, compare sha256sum
+  - test-tags: MANUAL
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T20:52:30Z @kj closed: verified live from the hub-spawned lab against galaxahub v4.4.56
+- [x] `ACC-HUBM-134` **Live: request round trip** - HIGH; POST requests answers 201 ready, GET uploads answers an empty list, PUT password answers 204, DELETE answers 204 and items is empty
+  - evidence: 2026-09-03: POST requests 201 ready, GET uploads 200 empty, PUT password 204, DELETE 204, items empty
+  - test: curl from inside a hub-spawned lab
+  - test-tags: MANUAL
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T20:52:30Z @kj closed: verified live from the hub-spawned lab against galaxahub v4.4.56
+- [x] `ACC-HUBM-135` **Adversarial review clean** - HIGH; the hub-mode change survives two consecutive clean rounds of the architect and bug-hunter adversaries
+  - evidence: adversarial review wf_c1ac29d7-afc round 1 (14 findings, 3 applied) then wf_e30ed38d-da7 rounds 2 and 3 confirm 0 findings each, status SHIP on 2026-09-03; pytest 246 passed, jest 38, galata hub 9/9 standalone 9/9, lint clean
+  - test: run devils-advocate:adversarial-review with architect and bug-hunter, fix, rerun until two clean rounds
+  - test-tags: MANUAL
+  - log: 2026-09-03T20:51:19Z @kj added
+  - log: 2026-09-03T21:46:51Z @kj round 1 (wf_c1ac29d7-afc, architect + bug-hunter): 14 findings, 1 MAJOR 13 MINOR; adjudicator PLAN of 3 - \_uploads relays hub outage as 502 instead of 200 with zero uploads, cloud toggle persists only after the hub answered, requestAPI error message uses hubReasonText on a relayed reason; applied with two pinning tests; pytest 246 jest 38 galata 9+9 lint clean; confirming round wf_e30ed38d-da7 running
+  - log: 2026-09-03T21:51:53Z @kj closed
+- [x] `ACC-HUBM-136` **Change stream replaces the timer in hub mode** - HIGH; a hub-managed lab holds ONE stream to the hub (GET stream) for all its panels and each panel holds one EventSource to the lab's api/stream; a ring on the hub becomes one changed event per panel and one fetch of the lists; while the stream stands the panel runs no timer, and the open and every reconnect fetch once
+  - evidence: test_hub_handlers.py::test_stream_relays_the_hub_rings and test_hub_mode.py relay tests green 2026-09-05; galata hub 'the panel refreshes on the hub change stream, not on a timer' green: 5s with a 2s poll interval and no refresh, one refresh per upload ring
+  - test: galata: set the poll interval to 2s with the stream up, 5s pass with no capabilities call, an upload on the hub shows in the row without Refresh and costs exactly one refresh
+  - test-tags: UNIT, INTEGRATION, E2E
+  - mechanism: 2026-09-05T09:01:14Z @kj hub_stream.Relay subscribes on the first panel stream and cancels the hub read with the last; HubStreamHandler relays changed and keepalives; the panel's \_syncLiveness opens the EventSource and stops polling
+  - log: 2026-09-05T09:01:14Z @kj added
+  - log: 2026-09-05T09:32:41Z @kj closed
+- [x] `ACC-HUBM-137` **A dropped panel stream closes its hub connection at once** - HIGH; when the last panel stream of a lab ends, the lab's hub stream socket is closed immediately, so no hub connection and no client slot outlives the panel; a tornado client fetch cannot be cancelled, which is why the read is a raw asyncio socket
+  - evidence: test_hub_mode.py::test_hold_reads_the_hub_stream_and_the_cancel_closes_the_socket green 2026-09-05: the in-process SSE server sees on_connection_close within 5s of the cancel; review round 1 found and fixed the Relay.\_run finally that cleared a task it no longer owned
+  - test: pytest: hold() against an in-process SSE server - cancel the task and the server's on_connection_close fires within 5s
+  - test-tags: UNIT
+  - mechanism: 2026-09-05T09:01:14Z @kj hub_stream.hold speaks HTTP/1.1 over asyncio.open_connection, de-chunks the body and closes the writer in finally; a read longer than 90s is a vanished hub and reconnects
+  - log: 2026-09-05T09:01:14Z @kj added
+  - log: 2026-09-05T09:32:41Z @kj closed
+- [x] `ACC-HUBM-138` **Older hub without the stream route puts the panel back on its timer** - MEDIUM; a hub that answers 404 on GET stream makes the lab send one poll event; the panel then polls at its configured interval for the session; the lab does not ask the hub again until every panel has left and a new one subscribes
+  - evidence: test_hub_mode.py::test_relay_answers_poll_on_an_older_hub_and_retries_only_on_resubscribe and test_hub_handlers.py::test_stream_tells_the_panel_to_poll_on_an_older_hub green; galata hub 'an older hub without the stream route puts the panel back on its timer' green 2026-09-05
+  - test: galata: mock hub with stream_supported off, reload, set the interval to 2s - more than one refresh within 10s and zero open hub streams
+  - test-tags: UNIT, INTEGRATION, E2E
+  - mechanism: 2026-09-05T09:01:14Z @kj Relay remembers the 404 while a subscriber exists and forgets it with the last unsubscribe
+  - log: 2026-09-05T09:01:14Z @kj added
+  - log: 2026-09-05T09:32:41Z @kj closed
+- [x] `ACC-HUBM-139` **Per-record Cloudflare switch** - HIGH; every hub share and request carries cloud; POST api/<kind>/<id>/cloud {cloud} relays PUT <kind>/<id>/cloud; a switched-on row shows a small cloud beside its meta and its context menu offers Share Through Cloudflare / Hub Network Only; the link dialog says when a record's link works on the hub network only; the lab never composes the link - the hub's url is kept except that the hub's own origin is restored to the browser origin
+  - evidence: test_hub_handlers.py::test_one_record_is_switched_on_its_own green; galata hub 'the cloud toggle flips every record and the next one, and a row can be switched on its own' green 2026-09-05 (row mark, context menu, dialog line, link host)
+  - test: galata: create a share, switch it on through the API and a request off through the context menu, assert cloud, link host, the row mark and the dialog line
+  - test-tags: UNIT, INTEGRATION, E2E
+  - mechanism: 2026-09-05T09:01:14Z @kj HubCloudHandler; share_from_item and request_from_item carry cloud; rewrite_link keeps any origin but the hub API origin
+  - log: 2026-09-05T09:01:14Z @kj added
+  - log: 2026-09-05T09:32:41Z @kj closed
+- [x] `ACC-HUBM-140` **Cloud toggle flips every record and sets the default for the next one** - HIGH; POST api/tunnel {active} puts every record of the user through PUT cloud and stores the default (hub_cloud in the CLI config, default off); a record created while the default is on is switched on right after the hub minted it and answers with the url the hub composed for it; tunnel_configured is true while the hub answers because the hub decides per record
+  - evidence: test_hub_handlers.py::test_cloud_toggle_flips_every_record_and_sets_the_default green; galata hub toggle test green 2026-09-05: header icon flips the standing share and the next request is born on
+  - test: pytest: toggle on switches both records and a new request is born on; toggle off takes them back. galata: the header icon flips a standing share and the next request
+  - test-tags: UNIT, INTEGRATION, E2E
+  - mechanism: 2026-09-05T09:01:14Z @kj HubTunnelHandler.post lists items and PUTs each whose switch differs, then set_cloud_default; \_apply_cloud_default after create re-reads the items row for its url
+  - log: 2026-09-05T09:01:14Z @kj added
+  - log: 2026-09-05T09:32:41Z @kj closed
+- [x] `ACC-HUBM-141` **Cloudflare-off policy refuses the switch and the toggle stays off** - HIGH; the hub refuses a switch on with 403 cloud_not_configured while the owner's group policy has Cloudflare off; the toggle relays the 403 and is not persisted; a create under an on default leaves the row off, turns the default off and carries cloud_reason so the panel names why the link stayed on the hub network; a switch off is never refused
+  - evidence: test_hub_handlers.py::test_cloud_toggle_on_is_refused_while_the_policy_has_cloudflare_off green; galata hub 'a group policy with Cloudflare off refuses the switch and the toggle stays off' green 2026-09-05
+  - test: pytest: cloudflare_enabled off - the toggle answers 403 with the reason, cloud_default stays False, a create answers cloud false with cloud_reason. galata: the icon stays inactive and the record route answers 403
+  - test-tags: UNIT, INTEGRATION, E2E
+  - mechanism: 2026-09-05T09:01:14Z @kj relay_error keeps the slug; \_apply_cloud_default resets the default on cloud_not_configured; hubReasonText names the slug
+  - log: 2026-09-05T09:01:14Z @kj added
+  - log: 2026-09-05T09:32:41Z @kj closed
+- [x] `ACC-HUBM-142` **Password required by the group is asked for up front** - HIGH; capabilities.password_required rides on api/info as hub.password_required; the create dialog then marks the password field required and pre-fills a generated passphrase, and an emptied field keeps Create disabled; the hub's 400 password_required on a bare create or a password removal is relayed with its reason
+  - evidence: test_hub_handlers.py::test_password_required_is_reported_and_relayed green; galata hub 'a group policy that requires a password makes the create dialog ask for one' green 2026-09-05: hint, pre-filled field, Create disabled when emptied, 400 password_required relayed
+  - test: galata: with password_required on, the dialog hint names the requirement, the field is pre-filled, clearing it disables Create, a bare API create answers 400 password_required and a create with a password succeeds
+  - test-tags: INTEGRATION, E2E
+  - mechanism: 2026-09-05T09:01:14Z @kj \_promptForNameAndPassword(required) sets input.required and generates; HubInfoHandler carries password_required; the mock and FakeHub refuse like the hub
+  - log: 2026-09-05T09:01:14Z @kj added
+  - log: 2026-09-05T09:32:41Z @kj closed
+- [x] `ACC-HUBM-143` **CI runs the hub galata suite** - MEDIUM; the integration job of build.yml runs playwright.hub.config.js after the standalone suite, against the mock hub, with the same browser and build
+  - evidence: step 'Execute hub-mode integration tests' added to .github/workflows/build.yml integration job running playwright.hub.config.js; the same command passes locally (12 tests) 2026-09-05; the hosted run follows the next push
+  - test: the build workflow shows the hub-mode step green on the next push
+  - test-tags: E2E
+  - mechanism: 2026-09-05T09:01:14Z @kj an extra step in .github/workflows/build.yml; the mock hub is started by the playwright config
+  - log: 2026-09-05T09:01:14Z @kj added
+  - log: 2026-09-05T09:32:41Z @kj closed
+- [x] `ACC-HUBM-144` **Adversarial review clean after the galaxahub reconciliation** - HIGH; the reconciled hub mode (stream, per-record cloud switch, password policy) survives the devils-advocate panel - architect, devops, ux-designer, bug-hunter, slop-hunter - with two consecutive clean rounds
+  - evidence: devils-advocate loop wf_c2273858-0b0 + wf_54833551-2c5 on 2026-09-05: round 1 discovery 32 findings (0 CRITICAL, 5 MAJOR) -> 3 changes applied (Relay.\_run task ownership, EventSource onerror fallback to the timer, link dialog reads the record's cloud switch from state); rounds 2 and 3 pinned confirms adjudicated clean -> SHIP; 2 immaterial MINOR left open by ruling, 9 deferrals recorded in the loop state
+  - test: run the adversarial-review loop over the hub-mode scope; SHIP on a clean confirming round
+  - test-tags: MANUAL
+  - mechanism: 2026-09-05T09:01:14Z @kj Workflow loop per the plugin's loop-spec; findings triaged and fixed, re-confirmed
+  - log: 2026-09-05T09:01:14Z @kj added
+  - log: 2026-09-05T09:32:41Z @kj closed

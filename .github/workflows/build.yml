@@ -150,6 +150,14 @@ jobs:
         mkdir -p "$JUPYTERLAB_GALATA_ROOT_DIR"
         jlpm playwright test
 
+    - name: Execute hub-mode integration tests
+      working-directory: ui-tests
+      env:
+        JUPYTERLAB_GALATA_ROOT_DIR: ${{ github.workspace }}/.galata-root
+      # A lab spawned with galaxahub's contract against the mock hub in
+      # mock_hub.py - no real hub, no tunnel; the same browser and build
+      run: jlpm playwright test -c playwright.hub.config.js
+
     - name: Upload Playwright Test report
       if: always()
       uses: actions/upload-artifact@v4

@@ -50,6 +50,17 @@ will be opened in your browser at the end of the tests execution; see
 [Playwright documentation](https://playwright.dev/docs/test-reporters#html-reporter)
 for configuring that behavior.
 
+## Hub-mode suite
+
+`tests/hub` drives a JupyterLab spawned with the contract galaxahub injects into every lab it manages, against the mock hub in `mock_hub.py` - no real hub and no Cloudflare tunnel are needed. The default configuration ignores this folder; run it with its own configuration:
+
+```sh
+cd ./ui-tests
+jlpm test:hub
+```
+
+The mock speaks the hub's fileshare routes including the per-record cloud switch, the password requirement and the change stream; `/_control/*` is the test's side door (reset, capabilities, policy, upload, nudge, calls, streams). `MOCK_HUB_PORT` (default 8765) and `JUPYTER_TEST_PORT` (default 8888) move the ports when the defaults are taken. Both configurations serve the working tree's build through `labextensions/` (a symlink to the build output, so `jlpm build` first) and load the server extension from the repository through `PYTHONPATH`.
+
 ## Update the tests snapshots
 
 > All commands are assumed to be executed from the root directory

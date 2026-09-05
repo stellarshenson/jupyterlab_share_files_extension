@@ -41,7 +41,11 @@ async function requestAPI<T>(
     }
   }
   if (!response.ok) {
-    const message = (data && data.error) || (data && data.message) || data;
+    const message =
+      (data && typeof data.reason === 'string' && hubReasonText(data.reason)) ||
+      (data && data.error) ||
+      (data && data.message) ||
+      data;
     throw new ServerConnection.ResponseError(response, message);
   }
   return data as T;
@@ -59,10 +63,34 @@ function jsonBody(body: any): RequestInit {
 // Info
 // --------------------------------------------------------------------------- //
 
+/** Hub mode: what the hub allows this user, from GET capabilities. */
+export interface IHubInfo {
+  /** The hub answered; false carries reason and message instead. */
+  available: boolean;
+  allow_share?: boolean;
+  allow_request?: boolean;
+  /** Refusal slug (closed set, see hubReasonText) - '' when nothing refuses */
+  reason?: string;
+  message?: string;
+  /** The hub's fileshare app is serving recipients */
+  serving?: boolean;
+  /** The group policy requires a password on every share and request */
+  password_required?: boolean;
+  max_share_bytes?: number | null;
+  max_upload_bytes?: number | null;
+  max_shares?: number | null;
+  retention_days?: number | null;
+}
+
 export interface IExtensionInfo {
   storage_path: string;
   shares_subdir: string;
   requests_subdir: string;
+  /** 'hub' when the lab was spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub;
+   * absent or 'standalone' otherwise. */
+  mode?: 'standalone' | 'hub';
+  /** Hub mode only */
+  hub?: IHubInfo;
   /** Configured external origin (e.g. a Cloudflare tunnel host) links are
    * rewritten to; empty when none is configured OR the tunnel is off. */
   public_base_url?: string;
@@ -90,12 +118,36 @@ export interface ITunnelState {
 }
 
 /** Toggle the Cloudflare tunnel (active: public vs private links) or
- * persist the autostart preference. Returns the new state. */
+ * persist the autostart preference. Returns the new state. In hub mode
+ * `active` flips the Cloudflare switch on every share and request and
+ * sets the default for the next one. */
 export function setTunnel(
   s: ServerConnection.ISettings,
   body: { active?: boolean; autostart?: boolean }
 ): Promise<ITunnelState> {
   return requestAPI('api/tunnel', s, jsonBody(body));
+}
+
+/** Hub mode: one record's Cloudflare switch. The hub refuses a switch on
+ * with `cloud_not_configured` while the group policy has Cloudflare off. */
+export function setCloud(
+  s: ServerConnection.ISettings,
+  kind: 'share' | 'request',
+  id: string,
+  cloud: boolean
+): Promise<{ id: string; cloud: boolean }> {
+  const plural = kind === 'share' ? 'shares' : 'requests';
+  return requestAPI(`api/${plural}/${id}/cloud`, s, jsonBody({ cloud }));
+}
+
+/** Hub mode: the panel's change stream (Server-Sent Events). The browser
+ * cannot set headers on an EventSource, so the token rides the query
+ * string when the server settings say it must. */
+export function streamUrl(s: ServerConnection.ISettings): string {
+  const url = URLExt.join(s.baseUrl, NAMESPACE, 'api', 'stream');
+  return s.appendToken && s.token
+    ? `${url}?token=${encodeURIComponent(s.token)}`
+    : url;
 }
 
 /** Provision Cloudflare sharing from the panel - same inputs and sequence
@@ -121,7 +173,6 @@ export function resetTunnel(
 }
 
 export interface ILinkCheck {
-  link: string;
   reachable: boolean;
   status?: number;
   error?: string;
@@ -231,6 +282,73 @@ export function removeRequestUpload(
   return requestAPI(`api/requests/${id}/uploads?${qs}`, s, {
     method: 'DELETE'
   });
+}
+
+/** Hub mode: copy one recipient upload into the workspace through the
+ * hub's transfer job. `targetDir` is the folder the panel names (the file
+ * browser's current directory); the server picks a fresh directory under it
+ * named after `name`, and answers with the landed path. */
+export function fetchRequestUpload(
+  s: ServerConnection.ISettings,
+  id: string,
+  uploadId: string,
+  targetDir: string,
+  name: string
+): Promise<{ ok: boolean; path: string }> {
+  return requestAPI(
+    `api/requests/${id}/uploads/${encodeURIComponent(uploadId)}/fetch`,
+    s,
+    jsonBody({ target_dir: targetDir, name })
+  );
+}
+
+/** The hub's refusal slugs (a closed set, `fileshare/reasons.py` on the
+ * hub) in plain words. An unknown slug is returned as-is. */
+export function hubReasonText(slug: string): string {
+  const text: Record<string, string> = {
+    not_granted: 'Your group does not grant file sharing on this hub.',
+    share_not_granted: 'Your group does not allow sharing files out.',
+    request_not_granted: 'Your group does not allow requesting files.',
+    downloads_blocked:
+      'Your group blocks file downloads, so files cannot be shared out.',
+    hub_unavailable: 'The hub could not be reached.',
+    no_capacity: 'You have reached the number of shares your group allows.',
+    volume_watermark: 'The hub has no free space for new shares.',
+    sidecar_image_absent:
+      'The hub has no file sharing service image - ask the administrator.',
+    sidecar_not_serving: 'The hub file sharing service is not serving yet.',
+    tunnel_not_ready: "The hub's Cloudflare tunnel is not connected yet.",
+    busy: 'The hub is busy copying other files - try again shortly.',
+    source_unreadable: 'The hub could not read the files from your workspace.',
+    grant_revoked: 'The grant this share was created under was revoked.',
+    expired: 'The retention period has passed.',
+    over_cap: 'The files are larger than your group allows for one share.',
+    bad_filename: 'A file name was rejected by the hub.',
+    password_required:
+      'Your group requires a password on every share and request.',
+    cloud_not_configured:
+      'Your group policy has Cloudflare turned off - links work on the hub network only.',
+    policy_conflict:
+      'Two groups claim file sharing on this hub - ask the administrator.'
+  };
+  return text[slug] || slug;
+}
+
+/** Kind and id from a share or request link: the standalone
+ * `/public/<kind>/<id>` form, or the hub's `/s/<id>` form where a request id
+ * carries the `r_` prefix. Null for anything else. */
+export function linkRef(
+  link: string
+): { kind: 'share' | 'request'; id: string } | null {
+  const own = link.match(/\/public\/(share|request)\/([A-Z2-7]{6,16})$/);
+  if (own) {
+    return { kind: own[1] as 'share' | 'request', id: own[2] };
+  }
+  const hub = link.match(/\/s\/([A-Za-z0-9_-]{6,64})$/);
+  if (hub) {
+    return { kind: hub[1].startsWith('r_') ? 'request' : 'share', id: hub[1] };
+  }
+  return null;
 }
 
 export function markRequestSeen(

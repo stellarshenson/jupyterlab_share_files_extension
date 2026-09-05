@@ -43,4 +43,4 @@ Every release ships the complete extension - there are no feature flags, edition
 
 - npm and PyPI are confirmed live (registry queries) before the release is reported
 - CI (GitHub Actions: Build, Check Release) must be green on the release commit
-- Cloudflare-affecting releases are verified live against the running tunnel (see `docs/acc-crit-cloudflare-integration.md` verification log)
+- Cloudflare-affecting releases are verified live against the running tunnel (see `docs/acc-crit.md` Cloudflare integration category)

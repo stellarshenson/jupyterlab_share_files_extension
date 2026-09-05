@@ -280,6 +280,21 @@
   font-size: var(--jp-ui-font-size0);
 }
 
+/* Hub mode: the row's Cloudflare switch is on - its link leaves the hub
+   network; same green as the header cloud so the two read as one state */
+.jp-ShareFilesPanel-itemCloud {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  margin-left: 4px;
+  color: var(--jp-success-color1);
+}
+
+.jp-ShareFilesPanel-itemCloud svg {
+  width: 12px;
+  height: 12px;
+}
+
 .jp-ShareFilesPanel-itemOwner {
   flex: 0 0 auto;
   color: var(--jp-ui-font-color2);
@@ -666,4 +681,9 @@
 .jp-Dialog-content button.jp-ShareFiles-copyEmbed svg {
   width: 16px;
   height: 16px;
+}
+
+/* Hub mode: a share the hub refused to stage */
+.jp-ShareFilesPanel-itemMeta.jp-mod-refused {
+  color: var(--jp-error-color1);
 }
