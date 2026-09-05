@@ -2,6 +2,14 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.44] - 2026-09-05
+
+### Changed
+
+- Republish of 1.2.43 with identical code; the release command was invoked again on a clean tree
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.43] - 2026-09-05
 
 Hub mode for galaxahub-spawned labs, reconciled with galaxahub v4.4.56.
@@ -25,8 +33,6 @@ Hub mode for galaxahub-spawned labs, reconciled with galaxahub v4.4.56.
 - A hub connection left behind by a closed panel could exhaust the server's HTTP client queue; the hub stream is now read over a socket the lab closes itself
 - A panel whose stream the browser closed for good (a non-200 answer while the lab restarts) falls back to its timer instead of never refreshing again
 - The link dialog opened from the context menu shows the same hub-network-only line as the row button
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.40] - 2026-08-05
 
