@@ -1364,18 +1364,16 @@ export class ShareFilesPanel extends Widget {
       });
       const children = Array.isArray(model.content) ? model.content : [];
       const entries: IShareEntry[] = children
-        .map(
-          (c: any): IShareEntry => ({
-            name: c.name,
-            type: c.type === 'directory' ? 'directory' : 'file',
-            size: typeof c.size === 'number' ? c.size : 0,
-            path: c.path,
-            // Contents API gives an ISO string; the tooltip wants unix seconds
-            mtime: c.last_modified
-              ? Math.floor(new Date(c.last_modified).getTime() / 1000)
-              : undefined
-          })
-        )
+        .map((c: any): IShareEntry => ({
+          name: c.name,
+          type: c.type === 'directory' ? 'directory' : 'file',
+          size: typeof c.size === 'number' ? c.size : 0,
+          path: c.path,
+          // Contents API gives an ISO string; the tooltip wants unix seconds
+          mtime: c.last_modified
+            ? Math.floor(new Date(c.last_modified).getTime() / 1000)
+            : undefined
+        }))
         .sort((a: IShareEntry, b: IShareEntry) => {
           // directories first, then alphabetical
           if (a.type !== b.type) {
