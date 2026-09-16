@@ -153,6 +153,41 @@ def test_load_in_hub_mode_creates_no_store_and_starts_no_tunnel(hub_env, monkeyp
     assert web_app.handlers and not any("/public/" in s[0] for s in web_app.handlers)
 
 
+def test_load_with_shares_dir_outside_the_root_registers_no_route(standalone_env, monkeypatch, tmp_path):
+    """A shares_dir outside the notebook root logs one error and registers
+    nothing, instead of mounting routes that then answer 500."""
+    from traitlets.config import Config
+
+    from jupyterlab_share_files_extension import tunnel
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    called = []
+    monkeypatch.setattr(tunnel, "apply_autostart", lambda *a, **k: called.append(a))
+
+    def load(shares_dir):
+        web_app = _FakeApp()
+        web_app.settings["server_root_dir"] = str(root)
+        server_app = _FakeServerApp(config=Config({"ShareFilesConfig": {"shares_dir": shares_dir}}))
+        server_app.web_app = web_app
+        errors = []
+        server_app.log = types.SimpleNamespace(
+            info=lambda *a, **k: None, error=lambda msg, *a, **k: errors.append(msg)
+        )
+        ext._load_jupyter_server_extension(server_app)
+        return web_app.handlers, errors
+
+    handlers, errors = load(str(tmp_path / "outside"))
+    assert handlers == []
+    assert called == []
+    assert len(errors) == 1 and "outside the notebook root" in errors[0]
+
+    handlers, errors = load("uploads")
+    assert len(handlers) == 27
+    assert len(called) == 1
+    assert errors == []
+
+
 # --------------------------------------------------------------------------- #
 # Hub client
 # --------------------------------------------------------------------------- #
@@ -230,6 +265,31 @@ def test_hub_client_maps_transport_failures_to_unavailable(hub_env, monkeypatch)
     )
     with pytest.raises(hub.HubUnavailable):
         _run(hub.HubClient().request("GET", "capabilities"))
+
+
+def test_hub_client_maps_a_hub_that_never_answers_or_closes_to_unavailable(hub_env, monkeypatch):
+    # tornado 6.5 raises these from fetch even with raise_error=False
+    from tornado.testing import bind_unused_port
+
+    monkeypatch.setattr(hub, "REQUEST_TIMEOUT_SECONDS", 0.2)
+    sock, port = bind_unused_port()  # listens; the kernel accepts, nobody answers
+    monkeypatch.setenv("SHARE_FILES_HUB_API", f"http://127.0.0.1:{port}/hub/api/fileshare")
+
+    async def closed():
+        call = asyncio.ensure_future(hub.HubClient().request("GET", "capabilities"))
+        await asyncio.sleep(0.1)
+        conn, _ = sock.accept()
+        conn.recv(4096)
+        conn.close()
+        return await call
+
+    try:
+        with pytest.raises(hub.HubUnavailable):
+            _run(hub.HubClient().request("GET", "capabilities"))
+        with pytest.raises(hub.HubUnavailable):
+            _run(closed())
+    finally:
+        sock.close()
 
 
 def test_hub_client_returns_http_errors_as_data(hub_env, monkeypatch):
@@ -408,6 +468,55 @@ def test_relay_answers_poll_on_an_older_hub_and_retries_only_on_resubscribe(monk
         await asyncio.sleep(0.01)
         assert len(opens) == 2 and c.get_nowait() == hub_stream.POLL
         relay.unsubscribe(c)
+
+    asyncio.run(scenario())
+
+
+def test_relay_is_not_connected_after_the_hub_answered_404(monkeypatch):
+    """DEF-HUB-26: the run ended on 404, so no hub stream is held."""
+
+    async def hold(on_open, on_event):
+        return 404
+
+    monkeypatch.setattr(hub_stream, "hold", hold)
+
+    async def scenario():
+        relay = hub_stream.Relay()
+        a = relay.subscribe()
+        await asyncio.sleep(0.01)
+        assert a.get_nowait() == hub_stream.POLL
+        assert relay.connected is False
+        relay.unsubscribe(a)
+
+    asyncio.run(scenario())
+
+
+def test_relay_retries_after_a_malformed_status_line(monkeypatch):
+    """DEF-HUB-27: a status line with no code is a failed read, not a crash."""
+    for key, value in HUB_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(hub_stream, "RETRY_SECONDS", 0.01)
+
+    async def scenario():
+        opens = []
+
+        async def answer(reader, writer):
+            opens.append(1)
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(answer, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        monkeypatch.setenv("SHARE_FILES_HUB_API", f"http://127.0.0.1:{port}/hub/api/fileshare")
+        assert await hub_stream.hold(lambda: None, lambda _n: None) == 0
+        relay = hub_stream.Relay()
+        a = relay.subscribe()
+        await asyncio.sleep(0.3)
+        assert len(opens) >= 3 and relay.connected
+        relay.unsubscribe(a)
+        server.close()
 
     asyncio.run(scenario())
 

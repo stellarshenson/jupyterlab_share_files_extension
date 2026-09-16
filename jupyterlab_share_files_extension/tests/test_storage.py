@@ -9,6 +9,7 @@ just a thin handler around it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -292,6 +293,41 @@ class TestShareStore:
         with pytest.raises(NotFoundError):
             store.get("not-base32!")
 
+    def test_planted_directory_does_not_shadow_share_content(self, tmp_path):
+        """A `<other>-<id>` folder placed beside a share is never served in
+        place of the folder that sits next to the share's manifest."""
+        (tmp_path / "real.txt").write_text("real")
+        store = ShareStore(str(tmp_path))
+        share = store.create("Report", ["real.txt"])
+        id_ = share["id"]
+        # many names, so at least one comes before the real folder in iterdir order
+        for prefix in "abcdefghijklmnopqrstuvwxyz":
+            planted = store.root / f"{prefix}-{id_}"
+            planted.mkdir()
+            (planted / "planted.txt").write_text("planted")
+        assert store.resolve_data_path(id_) == (store.root / f"Report-{id_}").resolve()
+        assert [e["name"] for e in store.get(id_)["entries"]] == ["real.txt"]
+
+    def test_renamed_content_folder_is_still_found(self, tmp_path):
+        (tmp_path / "real.txt").write_text("real")
+        store = ShareStore(str(tmp_path))
+        share = store.create("Report", ["real.txt"])
+        id_ = share["id"]
+        (store.root / f"Report-{id_}").rename(store.root / f"Renamed-{id_}")
+        assert [e["name"] for e in store.get(id_)["entries"]] == ["real.txt"]
+
+    def test_two_unpaired_content_folders_resolve_to_none(self, tmp_path):
+        """Without the folder beside the manifest, two `-<id>` candidates
+        are ambiguous - neither is served."""
+        (tmp_path / "real.txt").write_text("real")
+        store = ShareStore(str(tmp_path))
+        share = store.create("Report", ["real.txt"])
+        id_ = share["id"]
+        (store.root / f"Report-{id_}").rename(store.root / f"Renamed-{id_}")
+        (store.root / f"x-{id_}").mkdir()
+        assert store.get(id_)["entries"] == []
+        assert not store.resolve_data_path(id_).exists()
+
 
 # --------------------------------------------------------------------------- #
 # RequestStore
@@ -518,6 +554,25 @@ class TestConnectionStore:
         items = store.list()
         assert len(items) == 1
         assert items[0]["link"] == link
+
+    @pytest.mark.parametrize(
+        "content",
+        [b'[{"key": "share:https://hub.test:ABCDEFGH", "kind"', b'{"not": "a list"}', b"\xff\xfe\x00garbage"],
+    )
+    def test_corrupt_file_is_moved_aside_and_logged(self, tmp_path, caplog, content):
+        """An unreadable connections.json is kept as connections.json.corrupt,
+        so the next add starts a fresh file instead of overwriting it."""
+        store = ConnectionStore(str(tmp_path))
+        store.path.parent.mkdir(parents=True)
+        store.path.write_bytes(content)
+        with caplog.at_level(logging.WARNING, logger="jupyterlab_share_files_extension"):
+            assert store.list() == []
+        aside = store.path.with_name("connections.json.corrupt")
+        assert aside.read_bytes() == content
+        assert "connections.json.corrupt" in caplog.text
+        store.add("share", "STUVWXYZ", "https://other.test")
+        assert aside.read_bytes() == content
+        assert [e["id"] for e in store.list()] == ["STUVWXYZ"]
 
 
 # --------------------------------------------------------------------------- #

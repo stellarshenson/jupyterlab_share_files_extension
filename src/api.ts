@@ -15,7 +15,8 @@ import {
 
 const NAMESPACE = 'jupyterlab-share-files-extension';
 
-/** Low-level request to the server extension's API namespace. */
+/** Low-level request to the server extension's API namespace. A refusal
+ * the server names with a slug carries it on the thrown error as `reason`. */
 async function requestAPI<T>(
   endPoint: string,
   serverSettings: ServerConnection.ISettings,
@@ -41,12 +42,15 @@ async function requestAPI<T>(
     }
   }
   if (!response.ok) {
+    const reason = data && typeof data.reason === 'string' ? data.reason : '';
     const message =
-      (data && typeof data.reason === 'string' && hubReasonText(data.reason)) ||
+      (reason && hubReasonText(reason)) ||
       (data && data.error) ||
       (data && data.message) ||
       data;
-    throw new ServerConnection.ResponseError(response, message);
+    throw Object.assign(new ServerConnection.ResponseError(response, message), {
+      reason
+    });
   }
   return data as T;
 }
@@ -102,6 +106,12 @@ export interface IExtensionInfo {
   tunnel_autostart?: boolean;
   /** The cloudflared daemon process is running. */
   tunnel_running?: boolean;
+  /** Hub mode: a switch-on waits for the hub to confirm its Cloudflare address. */
+  tunnel_waiting?: boolean;
+  /** Hub mode: why the last switch-on ended unconfirmed - the lab switched it
+   * back off, or the switch back off failed (a slug, see hubReasonText); ''
+   * otherwise. */
+  tunnel_reason?: string;
 }
 
 export function getInfo(
@@ -115,6 +125,8 @@ export interface ITunnelState {
   tunnel_active: boolean;
   tunnel_autostart: boolean;
   tunnel_running: boolean;
+  tunnel_waiting?: boolean;
+  tunnel_reason?: string;
 }
 
 /** Toggle the Cloudflare tunnel (active: public vs private links) or
@@ -174,7 +186,11 @@ export function resetTunnel(
 
 export interface ILinkCheck {
   reachable: boolean;
+  /** The address the lab server opened */
+  link?: string;
+  /** The HTTP status the link answered */
   status?: number;
+  /** Why nothing answered, in plain words */
   error?: string;
 }
 
@@ -329,9 +345,104 @@ export function hubReasonText(slug: string): string {
     cloud_not_configured:
       'Your group policy has Cloudflare turned off - links work on the hub network only.',
     policy_conflict:
-      'Two groups claim file sharing on this hub - ask the administrator.'
+      'Two groups claim file sharing on this hub - ask the administrator.',
+    // the lab's own slugs: the wait for a switch-on's confirmation ran out,
+    // and a switch the hub answered with an error
+    cloud_not_confirmed:
+      'The hub did not bring up its Cloudflare address - links stay on the hub network.',
+    cloud_not_switched_off:
+      'The hub did not switch Cloudflare off - those links may still be on Cloudflare.',
+    cloud_not_switched_on:
+      'The hub did not switch Cloudflare on - this link works on the hub network only.'
   };
   return text[slug] || slug;
+}
+
+/** The header tooltip's short form of a refusal reason - the full sentence
+ * lives in hubReasonText for the toast; the tooltip line has 45 characters */
+export const HUB_REASON_SHORT: Record<string, string> = {
+  cloud_not_confirmed: 'Hub did not bring up its Cloudflare address',
+  cloud_not_switched_on: 'The hub did not switch Cloudflare on',
+  cloud_not_switched_off: 'The hub did not switch Cloudflare off',
+  hub_unavailable: 'The hub could not be reached'
+};
+
+/** HUB_REASON_SHORT for a known slug, the full sentence for any other */
+export function hubReasonShort(slug: string): string {
+  return HUB_REASON_SHORT[slug] || hubReasonText(slug);
+}
+
+/** The link dialog's reachability line: what answered, in plain words, and
+ * what the lab server opened unless it is `shown`, the link the dialog
+ * already shows. */
+export function linkCheckText(res: ILinkCheck, shown = ''): string {
+  if (res.reachable) {
+    return '✓  Link is reachable';
+  }
+  const got = res.status ? `HTTP ${res.status}` : res.error || 'no answer';
+  const opened =
+    res.link === shown ? '' : ` opened ${res.link || 'the link'} and`;
+  return `✗  Link is not reachable - the lab server${opened} got ${got}`;
+}
+
+/** Hub mode: the header cloud icon's look, whether it reads pressed, and its
+ * tooltip (two lines at most). `switching` is the direction of a switch
+ * still in flight. A switch-on reads pressed and shows waiting, not on,
+ * until the hub confirms it; one the hub never confirmed shows off with its
+ * reason in the second line until the next switch-on. A click switches off
+ * when the icon reads pressed, on otherwise. */
+export function hubCloudLook(
+  info: IExtensionInfo,
+  switching: '' | 'on' | 'off'
+): {
+  look: 'on' | 'off' | 'waiting' | 'unreachable';
+  pressed: boolean | 'mixed';
+  title: string;
+} {
+  if (switching) {
+    return {
+      look: 'waiting',
+      pressed: switching === 'on',
+      title: `Switching Cloudflare sharing ${switching}`
+    };
+  }
+  if (info.hub?.available && info.tunnel_waiting) {
+    return {
+      // mixed: the links are not public yet and may never be
+      look: 'waiting',
+      pressed: 'mixed',
+      title:
+        'Switching Cloudflare on - waiting for the hub\nClick to end the wait and switch it off'
+    };
+  }
+  if (!info.hub?.available) {
+    return {
+      look: 'unreachable',
+      pressed: false,
+      title: 'Hub unavailable\nCloudflare state unknown'
+    };
+  }
+  if (info.tunnel_reason && !info.tunnel_active) {
+    return {
+      look: 'off',
+      pressed: false,
+      title: `Cloudflare not confirmed - click to switch on\n${hubReasonShort(info.tunnel_reason)}`
+    };
+  }
+  if (info.tunnel_active) {
+    return {
+      look: 'on',
+      pressed: true,
+      title: info.tunnel_reason
+        ? `Cloudflare sharing on - click to switch off\n${hubReasonShort(info.tunnel_reason)}`
+        : 'Cloudflare sharing on\nClick to switch it off'
+    };
+  }
+  return {
+    look: 'off',
+    pressed: false,
+    title: 'Cloudflare sharing off - hub network only\nClick to switch it on'
+  };
 }
 
 /** Kind and id from a share or request link: the standalone

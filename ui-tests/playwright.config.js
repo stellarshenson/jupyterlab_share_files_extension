@@ -8,6 +8,7 @@
  * threads one port through both this config and jupyter_server_test_config.py.
  * CI leaves the default.
  */
+const os = require('os');
 const path = require('path');
 const baseConfig = require('@jupyterlab/galata/lib/playwright-config');
 
@@ -28,7 +29,10 @@ module.exports = {
       // the server extension under test is the working tree, not an installed copy
       PYTHONPATH: path.resolve(__dirname, '..'),
       // standalone mode even when the developer's own lab is hub-managed
-      SHARE_FILES_PUBLIC_ZONE: ''
+      SHARE_FILES_PUBLIC_ZONE: '',
+      // the Cloudflare config file - keep the developer's real one, with its
+      // credentials and autostart, out of the test lab
+      XDG_CONFIG_HOME: path.join(os.tmpdir(), 'share-files-galata')
     }
   }
 };

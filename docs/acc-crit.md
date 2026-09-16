@@ -269,9 +269,13 @@ The storage tree is created only when there is something to store
   - test-tags: UNIT
   - log: 2026-07-25T00:00:00Z @kj fixed DEF-8
   - log: 2026-09-01T19:56:38Z @kj edited test-tags (replaced)
-- [ ] `ACC-STORE-62` **Corrupt connections.json is recoverable** - MEDIUM; an unparseable file should be logged and set aside, not silently read as empty
+- [x] `ACC-STORE-62` **Corrupt connections.json is recoverable** - MEDIUM; an unparseable file should be logged and set aside, not silently read as empty
+  - evidence: test_corrupt_file_is_moved_aside_and_logged green for truncated JSON, a JSON object and binary garbage: the file is moved to connections.json.corrupt and a warning names both paths (DEF-STORE-9); local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test-tags: UNIT
   - log: 2026-07-25T00:00:00Z @kj criterion added, open as DEF-9
   - log: 2026-09-01T19:57:19Z @kj test-tags removed: the behaviour is not implemented, so no test covers it - lands in NO-TEST
+  - log: 2026-09-15T21:40:00Z @kj edited test-tags (added)
+  - log: 2026-09-15T21:40:00Z @kj closed: met
 
 ## Link dialog copy control `LINK`
 
@@ -686,13 +690,16 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - mechanism: 2026-09-05T09:01:14Z @kj Relay remembers the 404 while a subscriber exists and forgets it with the last unsubscribe
   - log: 2026-09-05T09:01:14Z @kj added
   - log: 2026-09-05T09:32:41Z @kj closed
-- [x] `ACC-HUBM-139` **Per-record Cloudflare switch** - HIGH; every hub share and request carries cloud; POST api/<kind>/<id>/cloud {cloud} relays PUT <kind>/<id>/cloud; a switched-on row shows a small cloud beside its meta and its context menu offers Share Through Cloudflare / Hub Network Only; the link dialog says when a record's link works on the hub network only; the lab never composes the link - the hub's url is kept except that the hub's own origin is restored to the browser origin
-  - evidence: test_hub_handlers.py::test_one_record_is_switched_on_its_own green; galata hub 'the cloud toggle flips every record and the next one, and a row can be switched on its own' green 2026-09-05 (row mark, context menu, dialog line, link host)
-  - test: galata: create a share, switch it on through the API and a request off through the context menu, assert cloud, link host, the row mark and the dialog line
+- [x] `ACC-HUBM-139` **Per-record Cloudflare switch** - HIGH; every hub share and request carries cloud; POST api/<kind>/<id>/cloud {cloud} relays PUT <kind>/<id>/cloud; a row's context menu offers Share Through Cloudflare / Hub Network Only; the link dialog says when a record's link works on the hub network only; the lab never composes the link - the hub's url is kept except that the hub's own origin is restored to the browser origin
+  - evidence: galata hub 'the cloud toggle flips every record and the next one, and a row can be switched on its own' green: context menu Hub Network Only, request cloud false, link on the hub address, dialog line "Link works on the hub's network only" with no probe; test_one_record_is_switched_on_its_own green; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test: galata: create a share, switch it on through the API and a request off through the context menu, assert cloud, link host and the dialog line
   - test-tags: UNIT, INTEGRATION, E2E
   - mechanism: 2026-09-05T09:01:14Z @kj HubCloudHandler; share_from_item and request_from_item carry cloud; rewrite_link keeps any origin but the hub API origin
   - log: 2026-09-05T09:01:14Z @kj added
   - log: 2026-09-05T09:32:41Z @kj closed
+  - log: 2026-09-15T19:06:24Z @kj reopened: reopened: the row cloud mark is removed - the header cloud icon alone shows whether Cloudflare is on (ACC-HUBM-149); evidence retired: test_hub_handlers.py::test_one_record_is_switched_on_its_own green; galata hub 'the cloud toggle flips every record and the next one, and a row can be switched on its own' green 2026-09-05 (row mark, context menu, dialog line, link host)
+  - log: 2026-09-15T19:06:24Z @kj edited text and test (replaced)
+  - log: 2026-09-15T21:39:59Z @kj closed: met
 - [x] `ACC-HUBM-140` **Cloud toggle flips every record and sets the default for the next one** - HIGH; POST api/tunnel {active} puts every record of the user through PUT cloud and stores the default (hub_cloud in the CLI config, default off); a record created while the default is on is switched on right after the hub minted it and answers with the url the hub composed for it; tunnel_configured is true while the hub answers because the hub decides per record
   - evidence: test_hub_handlers.py::test_cloud_toggle_flips_every_record_and_sets_the_default green; galata hub toggle test green 2026-09-05: header icon flips the standing share and the next request is born on
   - test: pytest: toggle on switches both records and a new request is born on; toggle off takes them back. galata: the header icon flips a standing share and the next request
@@ -728,3 +735,40 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - mechanism: 2026-09-05T09:01:14Z @kj Workflow loop per the plugin's loop-spec; findings triaged and fixed, re-confirmed
   - log: 2026-09-05T09:01:14Z @kj added
   - log: 2026-09-05T09:32:41Z @kj closed
+- [x] `ACC-HUBM-145` **Cloud switch-on pulses until the hub confirms it** - HIGH; after a click that switches Cloudflare on - the header cloud icon, or a row's Share Through Cloudflare - the header cloud icon pulses until the hub confirms: a switched-on record's url on an origin other than the hub's own (capabilities.public_base_url is always the hub's own address since galaxahub v4.4.58 and confirms nothing); a click on the header icon does not show the on state before the confirmation; with no record to switch, the toggle only stores the default and shows on at once, and the first record switched on starts the wait; the waiting state is held by the lab server, so a panel opened or reloaded during the wait pulses too; switching off pulses only while the lab's requests run and waits for no confirmation
+  - evidence: test_no_wait_without_a_record_or_for_a_link_already_on_the_tunnel, test_switch_on_waits_for_the_tunnel_link_and_rings_the_panels_once, src/**tests** hub cloud icon: pytest test_no_wait_without_a_record_or_for_a_link_already_on_the_tunnel and test_switch_on_waits_for_the_tunnel_link_and_rings_the_panels_once green; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test: galata hub: mock hub registers its tunnel 3 s after the first switch-on; click the icon, assert the pulse and no on state, then the on state and the tunnel host in the link dialog
+  - test-tags: UNIT, INTEGRATION, E2E
+  - log: 2026-09-15T18:52:22Z @kj added
+  - log: 2026-09-15T19:00:04Z @kj edited text
+  - log: 2026-09-15T19:06:25Z @kj edited text
+  - log: 2026-09-15T21:39:59Z @kj closed: met
+- [x] `ACC-HUBM-146` **Open panels pick up the Cloudflare link once confirmed** - HIGH; the hub does not ring its change stream when its tunnel registers; the lab detects the confirmation itself and rings every open panel of that lab once, so each fetches its lists and shows links on the tunnel hostname without Refresh
+  - evidence: test_switch_on_waits_for_the_tunnel_link_and_rings_the_panels_once, ui-tests/tests/hub/hub-mode.spec.ts: switching Cloudflare on pulses the icon until the hub confirms, then every open panel shows the tunnel link: pytest checks that exactly one ring follows confirmation and none before it; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test: galata hub: mock hub does not ring on tunnel registration; a second page open during the wait shows the tunnel link without Refresh
+  - test-tags: INTEGRATION, E2E
+  - log: 2026-09-15T18:52:22Z @kj added
+  - log: 2026-09-15T21:39:59Z @kj closed: met
+- [x] `ACC-HUBM-147` **Confirmation checks are bounded** - HIGH; the lab asks the hub's items at most once every 5 s, only while a switch-on is unconfirmed, and for at most 120 s; one wait per lab server process whatever the number of open panels; with nothing waiting the lab sends no confirmation checks
+  - evidence: test_confirmation_checks_are_bounded_and_none_while_nothing_waits, test_two_switch_ons_share_one_wait: pytest with the bounds set to 0.05 s and 0.5 s: no items calls while nothing waits; between 1 and 11 calls during the 0.5 s wait; no calls after it ends; two switch-ons stay within one wait's rate.; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test: pytest: scripted hub; count items calls made by the wait during the wait, after confirmation and with nothing waiting
+  - test-tags: UNIT, INTEGRATION
+  - log: 2026-09-15T18:52:22Z @kj added
+  - log: 2026-09-15T19:00:04Z @kj edited text and test (replaced)
+  - log: 2026-09-15T21:39:59Z @kj closed: met
+- [x] `ACC-HUBM-148` **Unconfirmed switch-on goes back off with a reason** - HIGH; no confirmation within 120 s: the lab switches back off the records switched on during the wait and the default for new records, the icon stops pulsing and shows off, and a warning says the hub did not bring up its Cloudflare address so links stay on the hub network
+  - evidence: test_unconfirmed_switch_on_goes_back_off_with_a_reason, src/**tests** hub refusal slugs: says why the lab switched an unconfirmed switch-on back off, ui-tests/tests/hub/hub-mode.spec.ts: a switch-on the hub does not confirm goes back off with a warning: pytest: PUT cloud false for both records, hub_cloud false, and tunnel_reason cloud_not_confirmed on api/tunnel and api/info, with one ring; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test: pytest with the bound shortened: scripted hub never confirms; assert PUT cloud false for those records, hub_cloud false and the reason on api/tunnel; galata hub: the warning and the off icon
+  - test-tags: UNIT, INTEGRATION, E2E
+  - log: 2026-09-15T18:52:22Z @kj added
+  - log: 2026-09-15T21:05:37Z @kj review round 1: a switch-back the hub refuses or cannot receive no longer sets the default off; the reason is hub_unavailable; test_a_switch_back_the_hub_refuses_keeps_the_default_and_says_so failed before, passes after
+  - log: 2026-09-15T21:39:59Z @kj closed: met
+- [x] `ACC-HUBM-149` **Rows carry no cloud mark** - MEDIUM; in hub mode a share or request row shows no cloud beside its meta, whatever its Cloudflare switch; the header cloud icon alone shows whether Cloudflare is on
+  - evidence: ui-tests/tests/hub/hub-mode.spec.ts: the cloud toggle flips every record and the next one, and a row can be switched on its own: galata hub 'the cloud toggle flips every record and the next one, and a row can be switched on its own' green: every record on, zero .jp-ShareFilesPanel-itemCloud, header icon jp-mod-active.; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - related: ACC-HUBM-139 - the switch whose row mark this removes
+  - test: galata hub: switch every record on through the header icon, assert zero .jp-ShareFilesPanel-itemCloud in the panel and the header icon active
+  - test-tags: E2E
+  - log: 2026-09-15T19:06:25Z @kj added
+  - log: 2026-09-15T19:06:30Z @kj edited text
+  - log: 2026-09-15T19:06:30Z @kj requested: "items do not need to have cloud icon by them - the header cloud icon shows if tunnel is enabled or not"
+  - log: 2026-09-15T21:39:59Z @kj closed: met

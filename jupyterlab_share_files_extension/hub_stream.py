@@ -111,7 +111,8 @@ async def hold(on_open: Callable[[], None], on_event: Callable[[str], None]) -> 
             for name in parse_events(buffer, data):
                 on_event(name)
         return code
-    except (OSError, asyncio.IncompleteReadError, asyncio.TimeoutError, ValueError):
+    except (OSError, asyncio.IncompleteReadError, asyncio.TimeoutError, ValueError, IndexError):
+        # IndexError: a status line with no code - a failed read the relay retries
         return 0
     finally:
         writer.close()
@@ -133,7 +134,8 @@ class Relay:
 
     @property
     def connected(self) -> bool:
-        return self._task is not None
+        # a run that ended (the hub answered 404) holds no hub stream
+        return self._task is not None and not self._task.done()
 
     def subscribe(self) -> asyncio.Queue:
         """One panel stream opened: its queue, and the hub stream if this is

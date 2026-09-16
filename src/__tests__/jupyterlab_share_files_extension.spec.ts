@@ -7,7 +7,9 @@
  */
 
 import {
+  hubCloudLook,
   hubReasonText,
+  linkCheckText,
   streamUrl,
   linkRef,
   offlineReason,
@@ -91,6 +93,21 @@ describe('hub refusal slugs', () => {
     expect(hubReasonText('hub_unavailable')).toMatch(/could not be reached/);
   });
 
+  it('says why the lab switched an unconfirmed switch-on back off', () => {
+    expect(hubReasonText('cloud_not_confirmed')).toMatch(
+      /did not bring up its Cloudflare address.*hub network/
+    );
+  });
+
+  it('says a switch the hub answered with an error stayed as it was, and what that means for the links', () => {
+    expect(hubReasonText('cloud_not_switched_off')).toBe(
+      'The hub did not switch Cloudflare off - those links may still be on Cloudflare.'
+    );
+    expect(hubReasonText('cloud_not_switched_on')).toBe(
+      'The hub did not switch Cloudflare on - this link works on the hub network only.'
+    );
+  });
+
   it('names the policy refusals galaxahub added with the cloud switch', () => {
     expect(hubReasonText('password_required')).toMatch(/requires a password/);
     expect(hubReasonText('cloud_not_configured')).toMatch(
@@ -101,6 +118,175 @@ describe('hub refusal slugs', () => {
 
   it('passes an unknown slug through unchanged', () => {
     expect(hubReasonText('something_new')).toBe('something_new');
+  });
+});
+
+describe('link check line', () => {
+  it('says reachable when the link answered 200', () => {
+    expect(
+      linkCheckText({
+        reachable: true,
+        link: 'http://hub:8080/s/abcdef',
+        status: 200
+      })
+    ).toBe('✓  Link is reachable');
+  });
+
+  it('names the link the lab server opened and the status that answered', () => {
+    expect(
+      linkCheckText({
+        reachable: false,
+        link: 'http://hub:8080/s/abcdef',
+        status: 404
+      })
+    ).toBe(
+      '✗  Link is not reachable - the lab server opened http://hub:8080/s/abcdef and got HTTP 404'
+    );
+  });
+
+  it('says what the lab server got when nothing answered', () => {
+    expect(
+      linkCheckText({
+        reachable: false,
+        link: 'https://share.example.com/s/abcdef',
+        error: 'no answer within 10 s'
+      })
+    ).toBe(
+      '✗  Link is not reachable - the lab server opened https://share.example.com/s/abcdef and got no answer within 10 s'
+    );
+    expect(
+      linkCheckText({
+        reachable: false,
+        link: 'http://hub:8080/s/abcdef',
+        error: 'connection refused'
+      })
+    ).toMatch(/and got connection refused$/);
+  });
+
+  it('does not repeat the link the dialog already shows', () => {
+    const link = 'https://share.example.com/s/abcdef';
+    expect(linkCheckText({ reachable: false, link, status: 503 }, link)).toBe(
+      '✗  Link is not reachable - the lab server got HTTP 503'
+    );
+    expect(
+      linkCheckText(
+        { reachable: false, link, error: 'no address for the host name' },
+        link
+      )
+    ).toBe(
+      '✗  Link is not reachable - the lab server got no address for the host name'
+    );
+    // a different address than the one shown is still named
+    expect(
+      linkCheckText(
+        { reachable: false, link, status: 503 },
+        'http://hub:8080/s/abcdef'
+      )
+    ).toBe(
+      `✗  Link is not reachable - the lab server opened ${link} and got HTTP 503`
+    );
+  });
+});
+
+describe('hub cloud icon', () => {
+  const info = (extra: Partial<IExtensionInfo>): IExtensionInfo => ({
+    storage_path: '',
+    shares_subdir: '',
+    requests_subdir: '',
+    mode: 'hub',
+    hub: { available: true },
+    tunnel_configured: true,
+    ...extra
+  });
+  const looks = {
+    off: hubCloudLook(info({ tunnel_active: false }), ''),
+    on: hubCloudLook(info({ tunnel_active: true }), ''),
+    waiting: hubCloudLook(
+      info({ tunnel_active: true, tunnel_waiting: true }),
+      ''
+    ),
+    switchingOn: hubCloudLook(info({ tunnel_active: false }), 'on'),
+    switchingOff: hubCloudLook(info({ tunnel_active: true }), 'off'),
+    unreachable: hubCloudLook(
+      info({
+        tunnel_configured: false,
+        hub: { available: false, reason: 'hub_unavailable' }
+      }),
+      ''
+    ),
+    notConfirmed: hubCloudLook(
+      info({ tunnel_active: false, tunnel_reason: 'cloud_not_confirmed' }),
+      ''
+    ),
+    // the switch back off failed: the default is still on
+    stayedOn: hubCloudLook(
+      info({ tunnel_active: true, tunnel_reason: 'cloud_not_switched_off' }),
+      ''
+    ),
+    notReached: hubCloudLook(
+      info({ tunnel_active: true, tunnel_reason: 'hub_unavailable' }),
+      ''
+    )
+  };
+
+  it('shows on only once no switch-on waits, and hub-down apart from off', () => {
+    expect(looks.off.look).toBe('off');
+    expect(looks.on.look).toBe('on');
+    expect(looks.waiting.look).toBe('waiting');
+    expect(looks.switchingOn.look).toBe('waiting');
+    expect(looks.switchingOff.look).toBe('waiting');
+    expect(looks.unreachable.look).toBe('unreachable');
+  });
+
+  it('keeps every tooltip to two short lines', () => {
+    for (const { title } of Object.values(looks)) {
+      const lines = title.split('\n');
+      expect(lines.length).toBeLessThanOrEqual(2);
+      for (const line of lines) {
+        expect(line.length).toBeLessThanOrEqual(45);
+      }
+    }
+  });
+
+  it('names the action a click takes', () => {
+    expect(looks.on.title).toMatch(/Click to switch it off$/);
+    expect(looks.off.title).toMatch(/Click to switch it on$/);
+  });
+
+  it('reads pressed during a switch-on and names what a click does', () => {
+    expect(looks.waiting.pressed).toBe('mixed');
+    expect(looks.switchingOn.pressed).toBe(true);
+    expect(looks.switchingOff.pressed).toBe(false);
+    expect(looks.on.pressed).toBe(true);
+    expect(looks.off.pressed).toBe(false);
+    expect(looks.waiting.title.split('\n')[1]).toBe(
+      'Click to end the wait and switch it off'
+    );
+  });
+
+  it('shows on while the hub kept Cloudflare on after a failed switch back', () => {
+    for (const look of [looks.stayedOn, looks.notReached]) {
+      expect(look.look).toBe('on');
+      expect(look.pressed).toBe(true);
+    }
+  });
+
+  it('keeps the reason of an unconfirmed switch-on in the second line', () => {
+    expect(looks.notConfirmed.title.split('\n')[1]).toBe(
+      'Hub did not bring up its Cloudflare address'
+    );
+    expect(looks.notConfirmed.title.split('\n')[0]).toMatch(
+      /click to switch on$/
+    );
+  });
+
+  it('names a standing reason on the on look, after a failed switch back', () => {
+    expect(looks.stayedOn.title).toBe(
+      'Cloudflare sharing on - click to switch off\nThe hub did not switch Cloudflare off'
+    );
+    expect(looks.notReached.title).toBe(
+      'Cloudflare sharing on - click to switch off\nThe hub could not be reached'
+    );
   });
 });
 

@@ -110,6 +110,26 @@
   animation: share-files-blink 0.9s ease-in-out infinite;
 }
 
+.jp-ShareFilesPanel-cloudIndicator:focus-visible {
+  /* keyboard focus - the brand colour reads on both themes */
+  outline: 1px solid var(--jp-brand-color1);
+  outline-offset: -1px;
+}
+
+.jp-ShareFilesPanel-cloudIndicator.jp-mod-unreachable {
+  /* hub mode: the hub cannot be reached - struck-through cloud; warn-color0
+     keeps the glyph over the 3:1 non-text bar in the light theme */
+  color: var(--jp-warn-color0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
+    /* switch in flight without motion - still blue, half transparent */
+    animation: none;
+    opacity: 0.5;
+  }
+}
+
 @keyframes share-files-blink {
   0%,
   100% {
@@ -258,6 +278,13 @@
   background: var(--jp-layout-color2);
 }
 
+/* keyboard focus on a row header (Shift+F10 opens its menu); inset so the
+   list edge does not clip it */
+.jp-ShareFilesPanel-itemHeader:focus-visible {
+  outline: 1px solid var(--jp-brand-color1);
+  outline-offset: -1px;
+}
+
 .jp-ShareFilesPanel-itemTwisty {
   flex: 0 0 auto;
   width: 14px;
@@ -278,21 +305,6 @@
   flex: 0 0 auto;
   color: var(--jp-ui-font-color2);
   font-size: var(--jp-ui-font-size0);
-}
-
-/* Hub mode: the row's Cloudflare switch is on - its link leaves the hub
-   network; same green as the header cloud so the two read as one state */
-.jp-ShareFilesPanel-itemCloud {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  margin-left: 4px;
-  color: var(--jp-success-color1);
-}
-
-.jp-ShareFilesPanel-itemCloud svg {
-  width: 12px;
-  height: 12px;
 }
 
 .jp-ShareFilesPanel-itemOwner {
@@ -324,7 +336,13 @@
   transform: scale(0.85);
 }
 
-.jp-ShareFilesPanel-itemHeader:hover .jp-ShareFilesPanel-rowIconButton {
+/* also while the KEYBOARD focus is anywhere in the row - on the header or
+   on one of its buttons - so tabbing onto one button keeps the other drawn;
+   :focus-within would catch a mouse click's focus and leave the row lit */
+.jp-ShareFilesPanel-itemHeader:hover .jp-ShareFilesPanel-rowIconButton,
+.jp-ShareFilesPanel-itemHeader:focus-visible .jp-ShareFilesPanel-rowIconButton,
+.jp-ShareFilesPanel-itemHeader:has(:focus-visible)
+  .jp-ShareFilesPanel-rowIconButton {
   opacity: 1;
 }
 
@@ -390,6 +408,13 @@
   cursor: pointer;
 }
 
+/* keyboard focus on a connected peer's entry (Shift+F10 opens its menu);
+   inset so the list edge does not clip it */
+.jp-ShareFilesPanel-entry:focus-visible {
+  outline: 1px solid var(--jp-brand-color1);
+  outline-offset: -1px;
+}
+
 .jp-ShareFilesPanel-entryIndent {
   flex: 0 0 auto;
   width: 12px;
@@ -431,7 +456,12 @@
   transition: opacity 0.1s;
 }
 
-.jp-ShareFilesPanel-entry:hover .jp-ShareFilesPanel-entryRemove {
+/* keyboard focus on the row - or, via :has, on a control inside it - draws
+   the button, the same reveal the item header rule above carries */
+.jp-ShareFilesPanel-entry:hover .jp-ShareFilesPanel-entryRemove,
+.jp-ShareFilesPanel-entry:focus-visible .jp-ShareFilesPanel-entryRemove,
+.jp-ShareFilesPanel-entry:has(:focus-visible) .jp-ShareFilesPanel-entryRemove,
+.jp-ShareFilesPanel-entryRemove:focus-visible {
   opacity: 1;
 }
 
@@ -683,7 +713,14 @@
   height: 16px;
 }
 
-/* Hub mode: a share the hub refused to stage */
+/* Hub mode: a share the hub refused to stage - the reason sentence stays on
+   one line, takes at most half the row and ends in an ellipsis when cut */
 .jp-ShareFilesPanel-itemMeta.jp-mod-refused {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--jp-error-color1);
 }

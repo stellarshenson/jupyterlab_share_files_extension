@@ -123,6 +123,10 @@ class HubClient:
             )
         except (OSError, ConnectionError) as exc:
             raise HubUnavailable(f"could not reach the hub: {exc}") from None
+        except tornado.httpclient.HTTPClientError as exc:
+            # a timeout or a closed connection: fetch raises these even with
+            # raise_error=False (an HTTP error status is returned, not raised)
+            raise HubUnavailable(f"the hub did not answer: {exc}") from None
         if resp.code == 599:
             raise HubUnavailable(f"the hub did not answer: {resp.error}")
         raw = resp.body or b""

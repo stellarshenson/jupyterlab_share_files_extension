@@ -76,3 +76,45 @@ class TestShareFilesConfigTypes:
 
         with pytest.raises(TraitError):
             ShareFilesConfig(shares_dir=123)
+
+
+class TestUseTrashReachesEveryHandler:
+    """One `use_trash` policy for the panel and the public pages - an uploader
+    removing their file from the request page is treated like the owner
+    removing it from the panel. Stub handler, no server."""
+
+    @pytest.mark.parametrize("use_trash", [True, False])
+    def test_public_upload_removal_follows_use_trash(self, tmp_path, monkeypatch, use_trash):
+        import os
+        import types
+
+        from jupyterlab_share_files_extension import routes, storage
+
+        store = storage.RequestStore(str(tmp_path))
+        req = store.create("Inbox")
+        store.add_upload(req["id"], "HASHAB", "alice", "a.txt", b"x")
+        trashed = []
+        monkeypatch.setattr(storage, "_send2trash", lambda p: (trashed.append(p), os.remove(p)))
+        app = types.SimpleNamespace(
+            settings={
+                "share_files_config": ShareFilesConfig(use_trash=use_trash),
+                "server_root_dir": str(tmp_path),
+            }
+        )
+        handler = object.__new__(routes.PublicRequestUploadHandler)
+        handler.application = app
+        handler.request = types.SimpleNamespace(headers={})
+        handler.get_cookie = lambda name, default="": "HASHAB"
+        handler.get_argument = lambda name, default="": "a.txt"
+        handler.set_status = lambda code: setattr(handler, "status", code)
+        handler.set_header = lambda *a: None
+        handler.finish = lambda payload="": setattr(handler, "payload", payload)
+        handler.delete(req["id"])
+        assert handler.payload == '{"ok": true}'
+        assert len(trashed) == (1 if use_trash else 0)
+        assert store.get(req["id"])["upload_count"] == 0
+
+        panel = object.__new__(routes.RequestUploadsHandler)
+        panel.application = app
+        assert panel.request_store.use_trash is handler.request_store.use_trash is use_trash
+        assert panel.share_store.use_trash is handler.share_store.use_trash is use_trash

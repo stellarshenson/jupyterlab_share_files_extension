@@ -16,19 +16,29 @@ import io
 import json
 import os
 import re
+import shutil
+import socket
 import ssl
 import time
 import zipfile
+import zlib
+
+try:
+    import lzma
+except ImportError:  # a liblzma-less Python: LZMA members raise NotImplementedError
+    lzma = None
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import tornado
 import tornado.httpclient
+import tornado.simple_httpclient
 import tornado.ioloop
 import tornado.web
 from jupyter_server.base.handlers import APIHandler
 from jupyter_server.utils import url_path_join
+from tornado.simple_httpclient import HTTPStreamClosedError, HTTPTimeoutError
 from tornado.web import StaticFileHandler
 
 from .config import ShareFilesConfig
@@ -81,6 +91,24 @@ class PeerUnavailable(Exception):
     """A server-side fetch to a connected peer could not be completed."""
 
 
+class SaveTooLarge(Exception):
+    """A save from a connected peer passed PEER_SAVE_MAX_BYTES."""
+
+
+# seconds a download from, or an upload to, a connected peer may take
+PEER_TRANSFER_TIMEOUT_SECONDS = 300
+# seconds a connected peer has to accept the connection, and to answer any
+# request other than a download or an upload
+PEER_TIMEOUT_SECONDS = 20
+# bytes one save from a connected peer may write, unpacked - and the largest
+# body a peer fetch may carry, so the download of a save can reach the same
+# limit; tornado takes max_body_size only at client construction
+PEER_SAVE_MAX_BYTES = 1024**3
+# one dedicated client: the AsyncHTTPClient() singleton is shared with the
+# hub client and keeps tornado's 100 MiB default body cap
+_PEER_CLIENT = tornado.simple_httpclient.SimpleAsyncHTTPClient(max_body_size=PEER_SAVE_MAX_BYTES)
+
+
 # --------------------------------------------------------------------------- #
 # Base classes
 # --------------------------------------------------------------------------- #
@@ -105,19 +133,33 @@ class _Base(APIHandler):
     def verify_peer_tls(self) -> bool:
         return _verify_peer_tls_setting(self)
 
-    async def _peer_fetch(self, url: str, **kwargs):
+    async def _peer_fetch(self, url: str, download: bool = False, **kwargs):
         """Fetch a connected peer's public endpoint server-side.
 
         Honours the `verify_peer_tls` config (self-signed peers need it off)
-        and converts TLS / connection errors - which `raise_error=False` does
-        NOT suppress - into a `PeerUnavailable` the handler maps to a 502.
+        and converts TLS / connection errors, a timeout, a closed connection
+        and an answer over the client's body size limit - which
+        `raise_error=False` does NOT suppress - into a `PeerUnavailable` the
+        handler maps to a 502. A download may take
+        PEER_TRANSFER_TIMEOUT_SECONDS, any other request PEER_TIMEOUT_SECONDS.
         """
-        client = tornado.httpclient.AsyncHTTPClient()
+        client = _PEER_CLIENT
+        request_timeout = PEER_TRANSFER_TIMEOUT_SECONDS if download else PEER_TIMEOUT_SECONDS
+        lengths = []  # the Content-Length the peer announced
+
+        def note_length(line: str) -> None:
+            name, _, value = line.partition(":")
+            if name.lower() == "content-length" and value.strip().isdigit():
+                lengths.append(int(value))
+
         try:
             return await client.fetch(
                 url,
                 raise_error=False,
                 validate_cert=self.verify_peer_tls,
+                connect_timeout=PEER_TIMEOUT_SECONDS,
+                request_timeout=request_timeout,
+                header_callback=note_length,
                 **kwargs,
             )
         except ssl.SSLError as exc:
@@ -127,8 +169,22 @@ class _Base(APIHandler):
                 "c.ShareFilesConfig.verify_peer_tls = False in "
                 "jupyter_server_config.py."
             ) from None
-        except (OSError, ConnectionError) as exc:
-            raise PeerUnavailable(f"Could not reach the peer: {exc}") from None
+        except (OSError, ConnectionError, ValueError):
+            raise PeerUnavailable("Could not reach the peer") from None
+        except HTTPTimeoutError as exc:
+            # tornado says "Timeout during request" when the answer ran out of
+            # time, otherwise the connection did not open in time
+            waited = request_timeout if "during request" in str(exc) else PEER_TIMEOUT_SECONDS
+            raise PeerUnavailable(f"The peer did not answer within {waited:g} s") from None
+        except HTTPStreamClosedError:
+            # tornado closes the connection itself, with the same error, when
+            # the announced body passes its size limit
+            limit = client.max_body_size or client.max_buffer_size
+            if lengths and lengths[-1] > limit:
+                raise PeerUnavailable(
+                    f"The peer's download is larger than the {limit / 1024**3:g} GiB limit for one save"
+                ) from None
+            raise PeerUnavailable("The peer closed the connection before the download finished") from None
 
     async def _peer_auth_headers(self, conn: dict) -> dict:
         """Unlock a password-protected peer resource before fetching from it.
@@ -223,12 +279,16 @@ class _PublicBase(tornado.web.RequestHandler):
         return _shares_dir_setting(self)
 
     @property
+    def use_trash(self) -> bool:
+        return _use_trash_setting(self)
+
+    @property
     def share_store(self) -> ShareStore:
-        return ShareStore(self.workspace_root, self.shares_dir)
+        return ShareStore(self.workspace_root, self.shares_dir, self.use_trash)
 
     @property
     def request_store(self) -> RequestStore:
-        return RequestStore(self.workspace_root, self.shares_dir)
+        return RequestStore(self.workspace_root, self.shares_dir, self.use_trash)
 
 
 # Cached content of the CLI config file, keyed by mtime so `cloudflare setup`
@@ -556,6 +616,42 @@ class TunnelHandler(_Base):
         self.write_json(_tunnel_state(self))
 
 
+# seconds the link check waits for a link to answer
+LINK_CHECK_TIMEOUT_SECONDS = 10
+
+
+async def probe_link(link: str) -> dict:
+    """GET ``link`` from this server and report what answered.
+
+    ``status`` is the HTTP status the link answered - a redirect is reported
+    as the status it is, never followed; ``error`` says in plain words why
+    nothing answered. The link is one the server composed itself, so the
+    question is "does it answer", not "is the certificate trusted": a
+    self-signed certificate does not fail the probe.
+    """
+    client = tornado.httpclient.AsyncHTTPClient()
+    try:
+        resp = await client.fetch(
+            link, raise_error=False, validate_cert=False, follow_redirects=False,
+            request_timeout=LINK_CHECK_TIMEOUT_SECONDS,
+        )
+    except HTTPTimeoutError:
+        error = f"no answer within {LINK_CHECK_TIMEOUT_SECONDS:g} s"
+    except ConnectionRefusedError:
+        error = "connection refused"
+    except socket.gaierror:
+        error = "no address for the host name"
+    except ssl.SSLError:
+        error = "a TLS error"
+    except (ConnectionError, HTTPStreamClosedError):
+        error = "a closed connection"
+    except (OSError, tornado.httpclient.HTTPClientError):
+        error = "a network error"
+    else:
+        return {"link": link, "reachable": resp.code == 200, "status": resp.code}
+    return {"link": link, "reachable": False, "error": error}
+
+
 class LinkCheckHandler(_Base):
     """Probe a generated public link server-side (api/link-check).
 
@@ -578,21 +674,7 @@ class LinkCheckHandler(_Base):
             link = _public_request_url(self, id_)
         else:
             return self.write_error_json(400, "kind must be 'share' or 'request'")
-        # The URL is OUR OWN (rebuilt from kind+id above) - the question is
-        # "does it answer", not "is the certificate trusted", so a
-        # self-signed hub certificate must not fail the probe.
-        client = tornado.httpclient.AsyncHTTPClient()
-        try:
-            resp = await client.fetch(
-                link, raise_error=False, validate_cert=False, request_timeout=10
-            )
-            self.write_json({
-                "link": link,
-                "reachable": resp.code == 200,
-                "status": resp.code,
-            })
-        except (ssl.SSLError, OSError, ConnectionError) as exc:
-            self.write_json({"link": link, "reachable": False, "error": str(exc)})
+        self.write_json(await probe_link(link))
 
 
 class TunnelSetupHandler(_Base):
@@ -977,7 +1059,9 @@ def _resolve_workspace_target_dir(workspace_root: str, target_dir: str, shares_d
 
     Accepts symlinked subdirectories - we only validate the user-supplied path
     syntactically (rejecting `..` and absolute paths) and check that the final
-    location isn't the shares directory itself.
+    location is neither the shares directory itself nor inside its shares/ or
+    requests/ tree, where a saved `<name>-<id>` folder would sit among the
+    stored content.
     """
     root = Path(workspace_root)
     if target_dir in ("", "."):
@@ -987,22 +1071,40 @@ def _resolve_workspace_target_dir(workspace_root: str, target_dir: str, shares_d
             raise StorageError(f"Unsafe target_dir: {target_dir}")
         resolved = root / target_dir
     forbidden = resolve_shares_dir(workspace_root, shares_dir_setting)
-    # only block if resolved actually equals the shares dir literally;
-    # symlinked subtrees are fine
+    # compared after resolve(), so a symlink into the store is blocked too;
+    # symlinked subtrees elsewhere are fine
     try:
-        if resolved.resolve() == forbidden.resolve():
+        forbidden = forbidden.resolve()
+        final = resolved.resolve()
+        if final == forbidden or any(
+            final.is_relative_to(forbidden / sub) for sub in (ShareStore.subdir, RequestStore.subdir)
+        ):
             raise StorageError("Cannot save into the shares directory")
     except (OSError, ValueError):
         pass
     return resolved
 
 
-def _extract_zip_into(zip_bytes: bytes, dest_dir: Path) -> int:
-    """Extract a zip archive into dest_dir, return file count.
+# bytes a save from a connected peer may write, unpacked
+# bytes copied from a zip member to disk at a time
+_EXTRACT_CHUNK_BYTES = 1024 * 1024
 
-    Strips path components that escape the destination.
+# what an unreadable member of a peer's zip raises across the four standard
+# codecs, member-name decoding, encryption, unknown methods and corrupt
+# offsets and seeks in the central directory
+_ZIP_UNREADABLE = (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, UnicodeDecodeError, ValueError) + (
+    (lzma.LZMAError,) if lzma else ()
+)
+
+
+def _extract_zip_into(zip_bytes: bytes, dest_dir: Path, max_bytes: int) -> int:
+    """Extract a zip archive into dest_dir, return the bytes written.
+
+    Strips path components that escape the destination. Each member is
+    copied to disk in chunks; passing ``max_bytes`` raises `SaveTooLarge`
+    and leaves what was written for the caller to remove.
     """
-    count = 0
+    written = 0
     dest_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         for info in zf.infolist():
@@ -1017,13 +1119,37 @@ def _extract_zip_into(zip_bytes: bytes, dest_dir: Path) -> int:
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info) as src, open(target, "wb") as out:
-                out.write(src.read())
-            count += 1
-    return count
+                while True:
+                    try:
+                        chunk = src.read(_EXTRACT_CHUNK_BYTES)
+                    except OSError as exc:
+                        # a codec fault (corrupt bzip2), not the workspace
+                        raise zipfile.BadZipFile(str(exc)) from None
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise SaveTooLarge()
+                    out.write(chunk)
+    return written
 
 
 class ConnectionSaveHandler(_Base):
     """Download items from a connected share into the user's workspace."""
+
+    def _failed(self, saved: list[str], code: int, message: str) -> None:
+        """Remove what the save wrote, then answer with the error.
+
+        DEF-PEER-53: a save that answers an error leaves nothing behind,
+        whichever step failed.
+        """
+        for rel in saved:
+            path = Path(self.workspace_root) / rel
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        return self.write_error_json(code, message)
 
     @tornado.web.authenticated
     async def post(self, key):
@@ -1055,6 +1181,8 @@ class ConnectionSaveHandler(_Base):
             api_base = host + url_path_join(base_url, EXTENSION_NAMESPACE, "public", "share", share_id)
 
         saved: list[str] = []
+        # bytes this save may still write
+        left = PEER_SAVE_MAX_BYTES
         # Peer fetches can fail on TLS (self-signed) or connection - map those
         # to a clean 502 rather than an unhandled 500.
         try:
@@ -1064,44 +1192,76 @@ class ConnectionSaveHandler(_Base):
             manifest_resp = await self._peer_fetch(api_base + "/manifest", headers=auth_headers)
             if manifest_resp.code != 200:
                 return self.write_error_json(502, f"Remote unavailable ({manifest_resp.code})")
-            manifest = json.loads(manifest_resp.body)
-            share_slug = manifest.get("slug") or share_id
+            try:
+                manifest = json.loads(manifest_resp.body)
+            except ValueError:
+                manifest = None
+            if not isinstance(manifest, dict) or (
+                "entries" in manifest
+                and not (
+                    isinstance(manifest["entries"], list)
+                    and all(isinstance(e, dict) and isinstance(e.get("name"), str) for e in manifest["entries"])
+                )
+            ):
+                return self._failed(saved, 502, "The peer did not send a readable manifest")
+            # the slug comes from the peer - reduce it to one path component
+            share_slug = _safe_name(str(manifest.get("slug") or share_id))
 
             if names is None:
                 # Save All - download zip, extract into <dest_root>/<share-slug>/
-                zip_resp = await self._peer_fetch(api_base + "/download-all", headers=auth_headers)
+                zip_resp = await self._peer_fetch(api_base + "/download-all", download=True, headers=auth_headers)
                 if zip_resp.code != 200:
-                    return self.write_error_json(502, f"Could not download share ({zip_resp.code})")
+                    return self._failed(saved, 502, f"Could not download share ({zip_resp.code})")
                 wrap_dir = _resolve_unique_target(dest_root, share_slug)
-                _extract_zip_into(zip_resp.body, wrap_dir)
-                saved.append(str(wrap_dir.relative_to(Path(self.workspace_root).resolve())))
+                # `.` and `..` pass _safe_name - check where the folder really
+                # lands after resolve(), not how its path reads
+                if wrap_dir.resolve().parent != dest_root.resolve():
+                    return self._failed(saved, 502, f"The peer sent an unsafe folder name: {share_slug}")
+                saved.append(str(wrap_dir.relative_to(self.workspace_root)))
+                _extract_zip_into(zip_resp.body, wrap_dir, left)
             else:
                 if not isinstance(names, list) or not names:
-                    return self.write_error_json(400, "'names' must be a non-empty list")
+                    return self._failed(saved, 400, "'names' must be a non-empty list")
                 # determine which entries are directories vs files
                 entry_map = {e["name"]: e for e in manifest.get("entries", [])}
                 for name in names:
-                    if not name or "/" in name or "\\" in name or name in (".", ".."):
-                        return self.write_error_json(400, f"Invalid name: {name}")
+                    if not name or "/" in name or "\\" in name or "\0" in name or name in (".", ".."):
+                        return self._failed(saved, 400, f"Invalid name: {name}")
                     entry = entry_map.get(name)
                     if entry is None:
-                        return self.write_error_json(404, f"Not in share: {name}")
+                        return self._failed(saved, 404, f"Not in share: {name}")
                     url = api_base + "/download/" + tornado.escape.url_escape(name)
-                    resp = await self._peer_fetch(url, headers=auth_headers)
+                    resp = await self._peer_fetch(url, download=True, headers=auth_headers)
                     if resp.code != 200:
-                        return self.write_error_json(502, f"Could not download {name} ({resp.code})")
+                        return self._failed(saved, 502, f"Could not download {name} ({resp.code})")
                     if entry.get("type") == "directory":
                         wrap_dir = _resolve_unique_target(dest_root, name)
-                        _extract_zip_into(resp.body, wrap_dir)
-                        saved.append(str(wrap_dir.relative_to(Path(self.workspace_root).resolve())))
+                        saved.append(str(wrap_dir.relative_to(self.workspace_root)))
+                        left -= _extract_zip_into(resp.body, wrap_dir, left)
                     else:
+                        if len(resp.body) > left:
+                            raise SaveTooLarge()
+                        left -= len(resp.body)
                         target = _resolve_unique_target(dest_root, name)
                         target.parent.mkdir(parents=True, exist_ok=True)
+                        saved.append(str(target.relative_to(self.workspace_root)))
                         with open(target, "wb") as f:
                             f.write(resp.body)
-                        saved.append(str(target.relative_to(Path(self.workspace_root).resolve())))
         except PeerUnavailable as exc:
-            return self.write_error_json(502, str(exc))
+            return self._failed(saved, 502, str(exc))
+        except SaveTooLarge:
+            return self._failed(
+                saved, 502, f"The share is larger than {PEER_SAVE_MAX_BYTES / 1024**3:g} GiB when unpacked"
+            )
+        except _ZIP_UNREADABLE:
+            # DEF-PEER-52: the peer answered 200 with something that is not a
+            # readable zip - an unreadable archive, an encrypted member, an
+            # unknown compression or a corrupt stream - and
+            # _extract_zip_into has already created the folder
+            return self._failed(saved, 502, "The peer did not send a readable zip archive")
+        except OSError:
+            # the workspace refused the write (disk full, read-only) mid-save
+            return self._failed(saved, 502, "Could not write the save to the workspace")
 
         self.write_json({"ok": True, "saved": saved})
 
@@ -1210,7 +1370,12 @@ async def _post_file(
     validate_cert: bool = True,
     headers: dict | None = None,
 ) -> bytes:
-    """Send a single file as multipart/form-data POST. Returns the response body."""
+    """Send a single file as multipart/form-data POST. Returns the response body.
+
+    An upload may take PEER_TRANSFER_TIMEOUT_SECONDS. A timeout and a closed
+    connection - which `raise_error=False` does NOT suppress - become a
+    `PeerUnavailable` the handler maps to a 502.
+    """
     boundary = "----shareFilesBoundary" + os.urandom(8).hex()
     body_parts = [
         f"--{boundary}\r\n".encode(),
@@ -1231,6 +1396,8 @@ async def _post_file(
             body=body,
             raise_error=False,
             validate_cert=validate_cert,
+            connect_timeout=PEER_TIMEOUT_SECONDS,
+            request_timeout=PEER_TRANSFER_TIMEOUT_SECONDS,
         )
     except ssl.SSLError as exc:
         raise PeerUnavailable(
@@ -1238,8 +1405,17 @@ async def _post_file(
             "self-signed certificate, set c.ShareFilesConfig.verify_peer_tls = "
             "False in jupyter_server_config.py."
         ) from None
-    except (OSError, ConnectionError) as exc:
-        raise PeerUnavailable(f"Could not reach the peer: {exc}") from None
+    except (OSError, ConnectionError):
+        raise PeerUnavailable("Could not reach the peer") from None
+    except HTTPTimeoutError as exc:
+        # tornado says "Timeout during request" when the answer ran out of
+        # time, otherwise the connection did not open in time
+        waited = (
+            PEER_TRANSFER_TIMEOUT_SECONDS if "during request" in str(exc) else PEER_TIMEOUT_SECONDS
+        )
+        raise PeerUnavailable(f"The peer did not answer within {waited:g} s") from None
+    except HTTPStreamClosedError:
+        raise PeerUnavailable("The peer closed the connection before the upload finished") from None
     if resp.code >= 400:
         raise PeerUnavailable(f"Upload failed: {resp.code}")
     return resp.body or b""

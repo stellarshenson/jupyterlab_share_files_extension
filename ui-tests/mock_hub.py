@@ -10,8 +10,18 @@ a title containing ``stay-staging`` never leaves ``staging``, one containing
 ``refuse`` is refused with ``over_cap``, any other share is promoted to
 ``ready`` on the next listing with one file per submitted path.
 
+Links follow galaxahub v4.4.58: ``capabilities.public_base_url`` is always
+the hub's own address, and a cloud-on record's url carries the tunnel base
+only once the tunnel registered. The first record switched on starts the
+tunnel, which registers after ``tunnel_delay`` seconds (never while
+``tunnel_registers`` is false) without ringing the change stream - the real
+hub does not ring for it either. ``/s/<id>`` is the recipient page the lab's
+link check opens.
+
 ``/_control/*`` is the test's own side door: reset the store, change the
-capabilities, add an upload, ring the change stream, read the recorded calls.
+capabilities, the policy, the tunnel, the recipient page and the status a
+Cloudflare switch off answers, add an upload, ring the change stream, read
+the recorded calls.
 """
 
 from __future__ import annotations
@@ -48,11 +58,35 @@ class Store:
         self.cloudflare_enabled = True
         # an older hub without the stream route answers 404
         self.stream_supported = True
+        # the hub's Cloudflare tunnel; the default base is a second origin on
+        # this loopback port, so a tunnel link resolves without a network
+        if getattr(self, "tunnel_timer", None) is not None:
+            self.tunnel_timer.cancel()
+        self.tunnel_timer = None
+        self.tunnel_base = f"http://localhost:{PORT}"
+        self.tunnel_delay = 0.0
+        self.tunnel_registers = True
+        self.tunnel_registered = False
+        # the status the recipient page answers for a record that exists
+        self.page_status = 200
+        # the status a Cloudflare switch off answers for a record that exists
+        self.cloud_off_status = 204
         self.streams: list[asyncio.Queue] = []
         self.items: list[dict] = []
         self.pending_paths: dict[str, list[str]] = {}
         self.uploads: dict[str, list[dict]] = {}
         self.counter = 0
+
+    def start_tunnel(self):
+        """The first record switched on starts the tunnel; it registers after
+        the delay, and nothing rings when it does."""
+        if self.tunnel_registered or self.tunnel_timer is not None or not self.tunnel_registers:
+            return
+        if not self.tunnel_delay:
+            self.tunnel_registered = True
+            return
+        self.tunnel_timer = asyncio.get_running_loop().call_later(
+            self.tunnel_delay, lambda: setattr(self, "tunnel_registered", True))
 
     def nudge(self):
         """Ring every open stream - the hub's `fileshare_stream.nudge`."""
@@ -134,9 +168,10 @@ class Capabilities(_Hub):
 
 def _with_url(item: dict) -> dict:
     """The row as the hub answers it: the url is composed per request, never
-    stored - the hub's own address while the record's cloud switch is off,
-    the origin the policy prefers (its tunnel, when it has one) while on."""
-    base = STORE.capabilities["public_base_url"].rstrip("/") if item.get("cloud") else BASE
+    stored - the tunnel base while the record's cloud switch is on and the
+    tunnel is registered, the hub's own address otherwise."""
+    on_tunnel = item.get("cloud") and STORE.tunnel_registered
+    base = STORE.tunnel_base.rstrip("/") if on_tunnel else BASE
     return {**item, "url": f"{base}/s/{item['id']}"}
 
 
@@ -218,7 +253,12 @@ class Cloud(_Hub):
                 if cloud and not STORE.cloudflare_enabled:
                     return self.answer(403, {"reason": "cloud_not_configured",
                                              "message": "The group policy has Cloudflare turned off"})
+                if not cloud and STORE.cloud_off_status != 204:
+                    return self.answer(STORE.cloud_off_status, {"status": STORE.cloud_off_status,
+                                                                "message": "switch off failed"})
                 item["cloud"] = cloud
+                if cloud:
+                    STORE.start_tunnel()
                 STORE.nudge()
                 return self.answer(204)
         self.answer(404, {"status": 404, "message": "No such share"})
@@ -280,6 +320,17 @@ class Fetch(_Hub):
         self.answer(404, {"status": 404, "message": "No such upload"})
 
 
+class RecipientPage(tornado.web.RequestHandler):
+    """The recipient page, unauthenticated as the real one: ``page_status``
+    for a record that exists, 404 for any other id."""
+
+    def get(self, id_):
+        STORE.calls.append({"method": "GET", "path": self.request.path, "body": "", "auth": ""})
+        exists = any(i["id"] == id_ for i in STORE.items)
+        self.set_status(STORE.page_status if exists else 404)
+        self.finish("<html><body>recipient page</body></html>")
+
+
 class Control(_Base):
     """The test's side door - never token-gated, never part of the contract."""
 
@@ -325,6 +376,25 @@ class Control(_Base):
                 STORE.stream_supported = bool(body["stream_supported"])
             return self.answer(200, {"cloudflare_enabled": STORE.cloudflare_enabled,
                                      "stream_supported": STORE.stream_supported})
+        if action == "tunnel":
+            # base, delay (seconds after the first switch-on), registers (ever)
+            if "base" in body:
+                STORE.tunnel_base = str(body["base"])
+            if "delay" in body:
+                STORE.tunnel_delay = float(body["delay"])
+            if "registers" in body:
+                STORE.tunnel_registers = bool(body["registers"])
+            return self.answer(200, {"base": STORE.tunnel_base, "delay": STORE.tunnel_delay,
+                                     "registers": STORE.tunnel_registers,
+                                     "registered": STORE.tunnel_registered})
+        if action == "page":
+            # the status the recipient page answers
+            STORE.page_status = int(body.get("status") or 200)
+            return self.answer(200, {"status": STORE.page_status})
+        if action == "cloudoff":
+            # the status a Cloudflare switch off answers
+            STORE.cloud_off_status = int(body.get("status") or 204)
+            return self.answer(200, {"status": STORE.cloud_off_status})
         self.answer(404, {"status": 404, "message": "unknown control"})
 
 
@@ -343,6 +413,7 @@ def make_app():
         (rf"{prefix}/stream", Stream),
         (rf"{prefix}/requests/{ID}/uploads", Uploads),
         (rf"{prefix}/requests/{ID}/uploads/{ID}/fetch", Fetch),
+        (rf"/s/{ID}", RecipientPage),
         (r"/_control/([a-z]+)", Control),
     ])
 

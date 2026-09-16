@@ -30,8 +30,10 @@ import {
   generatePassword,
   getInfo,
   getPassword,
+  hubCloudLook,
   hubReasonText,
   IExtensionInfo,
+  linkCheckText,
   linkRef,
   listConnections,
   listRequests,
@@ -56,6 +58,7 @@ import {
   closeIcon,
   cloudIcon,
   cloudOffIcon,
+  cloudUnreachableIcon,
   disconnectIcon,
   downloadIcon,
   fileIcon,
@@ -135,6 +138,26 @@ export interface IShareFilesPanelOptions {
   revealInFileBrowser: (dirPath: string, name?: string) => Promise<void>;
 }
 
+/** A dialog body that makes the dialog check its fields as soon as it opens.
+ * `Dialog` validates on input events only, so an empty required field would
+ * leave the accept button enabled until the field is edited. */
+class ValidatedBody extends Widget {
+  constructor(node: HTMLElement, field: HTMLInputElement) {
+    super({ node });
+    this._field = field;
+  }
+
+  protected onAfterAttach(): void {
+    // the dialog starts listening for input events in its own after-attach,
+    // which runs after this one - the microtask lands once it listens
+    queueMicrotask(() =>
+      this._field.dispatchEvent(new Event('input', { bubbles: true }))
+    );
+  }
+
+  private _field: HTMLInputElement;
+}
+
 export class ShareFilesPanel extends Widget {
   constructor(options: IShareFilesPanelOptions) {
     super();
@@ -212,8 +235,26 @@ export class ShareFilesPanel extends Widget {
    * the icon accordingly. */
   private _noteCloudRefusal(reason?: string): void {
     if (reason) {
+      // the cloud_ sentences each name the consequence themselves -
+      // prefixing one would state 'hub network only' twice
       Notification.warning(
-        `Link works on the hub network only - ${hubReasonText(reason)}`,
+        reason.startsWith('cloud_')
+          ? hubReasonText(reason)
+          : `Link works on the hub network only - ${hubReasonText(reason)}`,
+        { autoClose: 8000 }
+      );
+    }
+  }
+
+  /** A Cloudflare switch the server did not apply: a refusal the hub named
+   * (a group policy, the hub unreachable) is a warning in its own words;
+   * anything else is an error. */
+  private _noteCloudSwitchFailure(err: any): void {
+    if (err?.reason) {
+      Notification.warning(hubReasonText(err.reason), { autoClose: 8000 });
+    } else {
+      Notification.error(
+        `Could not switch Cloudflare sharing: ${err?.message || err}`,
         { autoClose: 8000 }
       );
     }
@@ -230,10 +271,7 @@ export class ShareFilesPanel extends Widget {
     try {
       await setCloud(this._serverSettings, kind, id, cloud);
     } catch (err: any) {
-      Notification.error(
-        `Could not switch Cloudflare sharing: ${err?.message || err}`,
-        { autoClose: 8000 }
-      );
+      this._noteCloudSwitchFailure(err);
     } finally {
       this._state.busyKeys.delete(id);
       await this.refresh();
@@ -416,7 +454,21 @@ export class ShareFilesPanel extends Widget {
         // change at runtime (cloudflare --setup / --reset apply without a
         // server restart)
         try {
-          this._state.info = await getInfo(this._serverSettings);
+          const info = await getInfo(this._serverSettings);
+          // hub mode: the lab switched an unconfirmed switch-on back off -
+          // say why, once, on the fetch that sees its wait end
+          if (
+            this._state.info?.tunnel_waiting &&
+            !info.tunnel_waiting &&
+            info.tunnel_reason
+          ) {
+            Notification.warning(hubReasonText(info.tunnel_reason), {
+              // stays in the tray: after 8 s the reason would live only in
+              // the icon's tooltip, which keyboard and touch cannot reach
+              autoClose: false
+            });
+          }
+          this._state.info = info;
         } catch {
           // keep the previous value - we just won't update the hints
         }
@@ -478,6 +530,15 @@ export class ShareFilesPanel extends Widget {
           // A real error means the server answered - we are not offline.
           this._networkOffline = false;
           console.error('Share Files: refresh failed', err);
+          if (err?.reason === 'hub_unavailable') {
+            // the icon shows the hub unreachable; a clicked Refresh says so
+            this._updateCloudIndicator();
+            if (spin) {
+              Notification.warning(hubReasonText('hub_unavailable'), {
+                autoClose: 5000
+              });
+            }
+          }
         }
       }
       this._render();
@@ -741,8 +802,20 @@ export class ShareFilesPanel extends Widget {
     this._cloudIndicator.className = 'jp-ShareFilesPanel-cloudIndicator';
     this._cloudIndicator.style.display = 'none';
     this._cloudIndicator.appendChild(this._svgNode(cloudIcon.svgstr));
+    // a toggle button for the keyboard and screen readers: Enter and Space
+    // act like a click, aria-pressed follows the on/off state
+    this._cloudIndicator.tabIndex = 0;
+    this._cloudIndicator.setAttribute('role', 'button');
+    this._cloudIndicator.setAttribute('aria-label', 'Cloudflare sharing');
+    this._cloudIndicator.setAttribute('aria-pressed', 'false');
     this._cloudIndicator.addEventListener('click', () => {
       void this._toggleTunnel();
+    });
+    this._cloudIndicator.addEventListener('keydown', evt => {
+      if (evt.key === 'Enter' || evt.key === ' ') {
+        evt.preventDefault();
+        void this._toggleTunnel();
+      }
     });
     header.appendChild(this._cloudIndicator);
 
@@ -824,6 +897,25 @@ export class ShareFilesPanel extends Widget {
     if (!this._body) {
       return;
     }
+    // every row is rebuilt below - remember what held the focus (a row
+    // header, a row button or an entry button) and whether the keyboard
+    // put it there
+    const active = document.activeElement as HTMLElement | null;
+    const focusedKey = this._body.contains(active)
+      ? active?.dataset.rowKey || active?.dataset.focusKey
+      : undefined;
+    const byKeyboard = !!active?.matches(':focus-visible');
+    // the focused row's place in the list, so a row the rebuild drops (a
+    // confirmed delete) can hand the focus to its neighbour
+    let focusedIndex = -1;
+    if (focusedKey) {
+      const row = active?.closest<HTMLElement>('[data-row-key]');
+      if (row) {
+        focusedIndex = Array.from(
+          this._body.querySelectorAll<HTMLElement>('[data-row-key]')
+        ).indexOf(row);
+      }
+    }
     this._body.innerHTML = '';
     const visibleShares = this._applyNameFilter(this._state.shares);
     const visibleRequests = this._applyNameFilter(this._state.requests);
@@ -861,6 +953,73 @@ export class ShareFilesPanel extends Widget {
     if (this._connectRow) {
       this._connectRow.style.display = hub ? 'none' : '';
     }
+    if (focusedKey) {
+      this._restoreFocus(focusedKey, byKeyboard, focusedIndex);
+    }
+  }
+
+  /** The element in the list that `key` names - a re-render replaces the
+   * node, the key survives it. */
+  private _byFocusKey(key: string): HTMLElement | null {
+    const all = this._body?.querySelectorAll<HTMLElement>(
+      '[data-row-key], [data-focus-key]'
+    );
+    for (const el of Array.from(all || [])) {
+      if (el.dataset.rowKey === key || el.dataset.focusKey === key) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  /** Put the focus back on what `key` names after a re-render. Keyboard
+   * focus also scrolls back into view when rows added above have pushed the
+   * element out of the list; a clicked row keeps the scroll position. */
+  private _restoreFocus(
+    key: string,
+    byKeyboard: boolean,
+    fallbackIndex = -1
+  ): void {
+    let el = this._byFocusKey(key);
+    if (!el && fallbackIndex >= 0) {
+      // the named row is gone (deleted) - the one that took its place
+      const rows =
+        this._body?.querySelectorAll<HTMLElement>('[data-row-key]') || [];
+      el = rows[Math.min(fallbackIndex, rows.length - 1)] || null;
+    }
+    if (!el) {
+      return;
+    }
+    el.focus({ preventScroll: true });
+    if (!byKeyboard) {
+      return;
+    }
+    const row = el.getBoundingClientRect();
+    const list = this._body!.getBoundingClientRect();
+    if (row.top < list.top || row.bottom > list.bottom) {
+      el.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  /** Remember what holds the keyboard focus before a dialog opens and give
+   * it back once the dialog closes: the element itself while it is still in
+   * the list, else the one that replaced it, else its row header. A dialog
+   * leaves the focus on the body when a re-render replaced its opener. */
+  private _keepFocus(): () => void {
+    const opener = document.activeElement as HTMLElement | null;
+    const key = opener?.dataset.rowKey || opener?.dataset.focusKey;
+    const rowKey =
+      opener?.closest<HTMLElement>('[data-row-key]')?.dataset.rowKey;
+    return () => {
+      const back =
+        opener && opener.isConnected
+          ? opener
+          : (key && this._byFocusKey(key)) ||
+            (rowKey && this._byFocusKey(rowKey));
+      if (back) {
+        back.focus({ preventScroll: true });
+      }
+    };
   }
 
   private _renderSection(
@@ -954,18 +1113,28 @@ export class ShareFilesPanel extends Widget {
         meta.title = 'The hub is copying the files';
       }
     } else if (share.state === 'refused') {
-      meta.textContent = `refused: ${share.reason || 'unknown'}`;
+      // the reason sentence on one line, cut when the row is narrow (see
+      // base.css); the hover holds the whole sentence and the slug. A slug
+      // with no sentence keeps the plain form.
+      const slug = share.reason || 'unknown';
+      const sentence = hubReasonText(slug);
       meta.classList.add('jp-mod-refused');
-      meta.title = hubReasonText(share.reason || '');
+      if (sentence === slug) {
+        meta.textContent = `refused: ${slug}`;
+        meta.title = meta.textContent;
+      } else {
+        meta.textContent = sentence;
+        meta.title = `${sentence}\nrefused: ${slug}`;
+      }
     } else {
       meta.textContent = `${share.entries.length} item${share.entries.length === 1 ? '' : 's'}`;
     }
     header.appendChild(meta);
-    this._appendCloudMark(header, share.cloud);
 
     const copyBtn = this._makeRowIconButton(
       linkIcon.svgstr,
       'Copy link',
+      `share:${share.id}/copy`,
       evt => {
         evt.stopPropagation();
         void this._copyLinkWithFeedback(share.link, copyBtn, {
@@ -979,6 +1148,7 @@ export class ShareFilesPanel extends Widget {
     const trashBtn = this._makeRowIconButton(
       trashIcon.svgstr,
       'Delete share',
+      `share:${share.id}/delete`,
       evt => {
         evt.stopPropagation();
         void this._deleteShare(share.id);
@@ -1000,6 +1170,9 @@ export class ShareFilesPanel extends Widget {
       evt.preventDefault();
       this._openShareContextMenu(evt, share);
     });
+    this._attachKeyboardMenu(header, `share:${share.id}`, evt =>
+      this._openShareContextMenu(evt, share)
+    );
 
     item.appendChild(header);
 
@@ -1008,20 +1181,6 @@ export class ShareFilesPanel extends Widget {
     }
 
     return item;
-  }
-
-  /** Hub mode: a small cloud beside the row's meta while the record's
-   * Cloudflare switch is on, so a glance tells which links leave the hub
-   * network. Standalone rows carry no switch and get no mark. */
-  private _appendCloudMark(header: HTMLElement, cloud?: boolean): void {
-    if (!this._hubMode || !cloud) {
-      return;
-    }
-    const mark = document.createElement('span');
-    mark.className = 'jp-ShareFilesPanel-itemCloud';
-    mark.title = "Reachable through the hub's Cloudflare address";
-    mark.appendChild(this._svgNode(cloudIcon.svgstr));
-    header.appendChild(mark);
   }
 
   private _renderShareEntries(share: IShare): HTMLElement {
@@ -1080,7 +1239,9 @@ export class ShareFilesPanel extends Widget {
               void this._removeEntryFromShare(share.id, entry.name);
             },
             0,
-            drillIn
+            drillIn,
+            undefined,
+            `share:${share.id}/${entry.name}`
           )
         );
       }
@@ -1275,11 +1436,11 @@ export class ShareFilesPanel extends Widget {
       meta.textContent = `${req.upload_count} upload${req.upload_count === 1 ? '' : 's'}`;
     }
     header.appendChild(meta);
-    this._appendCloudMark(header, req.cloud);
 
     const copyBtn = this._makeRowIconButton(
       linkIcon.svgstr,
       'Copy link',
+      `request:${req.id}/copy`,
       evt => {
         evt.stopPropagation();
         void this._copyLinkWithFeedback(req.link, copyBtn, {
@@ -1293,6 +1454,7 @@ export class ShareFilesPanel extends Widget {
     const trashBtn = this._makeRowIconButton(
       trashIcon.svgstr,
       'Delete request',
+      `request:${req.id}/delete`,
       evt => {
         evt.stopPropagation();
         void this._deleteRequest(req.id);
@@ -1314,6 +1476,9 @@ export class ShareFilesPanel extends Widget {
       evt.preventDefault();
       this._openRequestContextMenu(evt, req);
     });
+    this._attachKeyboardMenu(header, `request:${req.id}`, evt =>
+      this._openRequestContextMenu(evt, req)
+    );
 
     item.appendChild(header);
 
@@ -1353,11 +1518,19 @@ export class ShareFilesPanel extends Widget {
       list.appendChild(groupRow);
 
       for (const entry of uploader.entries) {
+        const key = `request:${req.id}/${uploader.hash || uploader.name}/${entry.name}`;
         const row = this._hubMode
           ? // the bytes sit on the hub's volume: fetch them in, never remove
-            this._renderEntryRow(entry, undefined, 1, undefined, () => {
-              void this._fetchUploadFlow(req, entry);
-            })
+            this._renderEntryRow(
+              entry,
+              undefined,
+              1,
+              undefined,
+              () => {
+                void this._fetchUploadFlow(req, entry);
+              },
+              key
+            )
           : this._renderEntryRow(
               entry,
               () => {
@@ -1367,7 +1540,10 @@ export class ShareFilesPanel extends Widget {
                   entry.name
                 );
               },
-              1
+              1,
+              undefined,
+              undefined,
+              key
             );
         list.appendChild(row);
       }
@@ -1444,6 +1620,7 @@ export class ShareFilesPanel extends Widget {
     const disconnectBtn = this._makeRowIconButton(
       disconnectIcon.svgstr,
       'Disconnect',
+      `conn:${conn.key}/disconnect`,
       evt => {
         evt.stopPropagation();
         void this._disconnect(conn);
@@ -1464,6 +1641,9 @@ export class ShareFilesPanel extends Widget {
       evt.preventDefault();
       this._openConnectionContextMenu(evt, conn);
     });
+    this._attachKeyboardMenu(header, `conn:${conn.key}`, evt =>
+      this._openConnectionContextMenu(evt, conn)
+    );
 
     item.appendChild(header);
 
@@ -1537,6 +1717,9 @@ export class ShareFilesPanel extends Widget {
         evt.stopPropagation();
         this._openConnectedEntryContextMenu(evt, conn, entry, url);
       });
+      this._attachKeyboardMenu(row, `conn:${conn.key}/${entry.name}`, evt =>
+        this._openConnectedEntryContextMenu(evt, conn, entry, url)
+      );
       this._attachRemoteEntryDragSource(row, conn, entry);
       list.appendChild(row);
     }
@@ -1686,7 +1869,7 @@ export class ShareFilesPanel extends Widget {
     conn: IConnection,
     entry: IShareEntry,
     downloadUrl: string
-  ): void {
+  ): Menu {
     const menu = new Menu({ commands: this._commands });
     menu.addItem({
       command: 'share-files-panel:download-remote-entry',
@@ -1705,6 +1888,7 @@ export class ShareFilesPanel extends Widget {
       args: { key: conn.key, name: entry.name, type: entry.type }
     });
     menu.open(evt.clientX, evt.clientY);
+    return menu;
   }
 
   /**
@@ -1745,7 +1929,10 @@ export class ShareFilesPanel extends Widget {
     onRemove?: () => void,
     indentLevel = 0,
     onOpenFolder?: (entry: IShareEntry) => void,
-    onFetch?: () => void
+    onFetch?: () => void,
+    // names the row's button across a re-render (see `_byFocusKey`); rows
+    // without a button need none
+    focusKey?: string
   ): HTMLElement {
     const row = document.createElement('div');
     row.className = 'jp-ShareFilesPanel-entry';
@@ -1775,6 +1962,7 @@ export class ShareFilesPanel extends Widget {
       const btn = document.createElement('button');
       btn.className = 'jp-ShareFilesPanel-entryRemove';
       btn.title = 'Remove';
+      btn.dataset.focusKey = `${focusKey}/remove`;
       btn.appendChild(this._svgNode(closeIcon.svgstr));
       btn.addEventListener('click', ev => {
         ev.stopPropagation();
@@ -1786,6 +1974,7 @@ export class ShareFilesPanel extends Widget {
       const btn = document.createElement('button');
       btn.className = 'jp-ShareFilesPanel-entryRemove';
       btn.title = 'Fetch to current folder';
+      btn.dataset.focusKey = `${focusKey}/fetch`;
       btn.appendChild(this._svgNode(downloadIcon.svgstr));
       btn.addEventListener('click', ev => {
         ev.stopPropagation();
@@ -1800,6 +1989,13 @@ export class ShareFilesPanel extends Widget {
         evt.stopPropagation();
         this._openEntryContextMenu(evt, entry);
       });
+      this._attachKeyboardMenu(
+        row,
+        focusKey ?? `entry:${entry.path}`,
+        // the attach sits inside `if (entry.path)`, so the opener never
+        // fires without one
+        evt => this._openEntryContextMenu(evt, entry) as Menu
+      );
       row.addEventListener('dblclick', evt => {
         evt.preventDefault();
         evt.stopPropagation();
@@ -1951,9 +2147,12 @@ export class ShareFilesPanel extends Widget {
     }
   }
 
-  private _openEntryContextMenu(evt: MouseEvent, entry: IShareEntry): void {
+  private _openEntryContextMenu(
+    evt: MouseEvent,
+    entry: IShareEntry
+  ): Menu | undefined {
     if (!entry.path) {
-      return;
+      return undefined;
     }
     const menu = new Menu({ commands: this._commands });
     menu.addItem({
@@ -1970,6 +2169,7 @@ export class ShareFilesPanel extends Widget {
       args: { path: entry.path }
     });
     menu.open(evt.clientX, evt.clientY);
+    return menu;
   }
 
   private _renderEmpty(text: string): HTMLElement {
@@ -1999,8 +2199,10 @@ export class ShareFilesPanel extends Widget {
             (kind === 'share' || kind === 'request') && id
               ? { kind: kind as 'share' | 'request', id }
               : undefined;
-          void this._copyLinkToClipboard(link).then(ok => {
-            void this._showLinkDialog(link, ok, ref);
+          const restore = this._keepFocus();
+          void this._copyLinkToClipboard(link).then(async ok => {
+            await this._showLinkDialog(link, ok, ref);
+            restore();
           });
         }
       });
@@ -2265,7 +2467,38 @@ export class ShareFilesPanel extends Widget {
     }
   }
 
-  private _openShareContextMenu(evt: MouseEvent, share: IShare): void {
+  /** Make a row header or an entry row a keyboard stop: Shift+F10 or the
+   * ContextMenu key opens its context menu below it. `key` names the row so
+   * a re-render puts the focus back on it. */
+  private _attachKeyboardMenu(
+    header: HTMLElement,
+    key: string,
+    open: (evt: MouseEvent) => Menu
+  ): void {
+    header.tabIndex = 0;
+    header.dataset.rowKey = key;
+    header.addEventListener('keydown', evt => {
+      if (evt.key === 'ContextMenu' || (evt.shiftKey && evt.key === 'F10')) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const box = header.getBoundingClientRect();
+        const menu = open(
+          new MouseEvent('contextmenu', {
+            clientX: box.left,
+            clientY: box.bottom
+          })
+        );
+        // Lumino leaves the focus on the body when the menu closes - give it
+        // back to the row header, or to its replacement after a re-render
+        menu.aboutToClose.connect(() => {
+          const row = header.isConnected ? header : this._byFocusKey(key);
+          row?.focus();
+        });
+      }
+    });
+  }
+
+  private _openShareContextMenu(evt: MouseEvent, share: IShare): Menu {
     const menu = new Menu({ commands: this._commands });
     menu.addItem({
       command: 'share-files-panel:copy-link',
@@ -2306,9 +2539,10 @@ export class ShareFilesPanel extends Widget {
       args: { id: share.id }
     });
     menu.open(evt.clientX, evt.clientY);
+    return menu;
   }
 
-  private _openRequestContextMenu(evt: MouseEvent, req: IRequest): void {
+  private _openRequestContextMenu(evt: MouseEvent, req: IRequest): Menu {
     const menu = new Menu({ commands: this._commands });
     menu.addItem({
       command: 'share-files-panel:copy-link',
@@ -2341,9 +2575,10 @@ export class ShareFilesPanel extends Widget {
       args: { id: req.id }
     });
     menu.open(evt.clientX, evt.clientY);
+    return menu;
   }
 
-  private _openConnectionContextMenu(evt: MouseEvent, conn: IConnection): void {
+  private _openConnectionContextMenu(evt: MouseEvent, conn: IConnection): Menu {
     const menu = new Menu({ commands: this._commands });
     const data = this._state.connectionData.get(conn.key);
     const link = (data && data.link) || '';
@@ -2365,6 +2600,7 @@ export class ShareFilesPanel extends Widget {
       args: { key: conn.key }
     });
     menu.open(evt.clientX, evt.clientY);
+    return menu;
   }
 
   private _openNewMenu(evt: MouseEvent): void {
@@ -2460,11 +2696,13 @@ export class ShareFilesPanel extends Widget {
   }
 
   private async _deleteShare(id: string): Promise<void> {
+    const restore = this._keepFocus();
     const result = await showDialog({
       title: 'Delete share?',
       body: 'This will remove the share permanently. The link will stop working.',
       buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Delete' })]
     });
+    restore();
     if (!result.button.accept) {
       return;
     }
@@ -2477,11 +2715,13 @@ export class ShareFilesPanel extends Widget {
   }
 
   private async _deleteRequest(id: string): Promise<void> {
+    const restore = this._keepFocus();
     const result = await showDialog({
       title: 'Delete request?',
       body: 'This will remove the request and any uploads permanently.',
       buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Delete' })]
     });
+    restore();
     if (!result.button.accept) {
       return;
     }
@@ -2743,6 +2983,9 @@ export class ShareFilesPanel extends Widget {
       void generatePassword(this._serverSettings)
         .then(r => {
           input.value = r.password || '';
+          // assigning the value raises no input event of its own, and the
+          // dialog re-checks its fields on that event alone
+          input.dispatchEvent(new Event('input', { bubbles: true }));
         })
         .catch((err: any) => {
           Notification.error(
@@ -2796,7 +3039,12 @@ export class ShareFilesPanel extends Widget {
         // the field stays empty - the check below still holds
       }
     }
-    const widget = new Widget({ node: wrap });
+    // the change dialog's rule holds here too: when the policy requires a
+    // password and the field opened empty (generate-password failed), the
+    // dialog checks it while it is open, not after Create
+    const widget = required
+      ? new ValidatedBody(wrap, pwInput)
+      : new Widget({ node: wrap });
     const result = await showDialog({
       title,
       body: widget,
@@ -2831,28 +3079,58 @@ export class ShareFilesPanel extends Widget {
     } catch {
       // resource may have vanished; the save below will surface the error
     }
+    const restore = this._keepFocus();
     const wrap = document.createElement('div');
     wrap.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
     const { row: pwRow, input: pwInput } = this._passwordRow(current);
     wrap.appendChild(pwRow);
+    // a group policy that requires a password refuses its removal: the
+    // field is required, so the dialog keeps Save disabled while it is empty
+    const required = this._passwordRequired;
+    if (required) {
+      pwInput.placeholder = 'Password (required)';
+      pwInput.required = true;
+    }
     const hint = document.createElement('div');
-    hint.textContent =
-      'Leave empty to remove the password. Changing it invalidates ' +
-      'everyone who already unlocked with the old one.';
+    // the invalidation sentence names a consequence that exists only when a
+    // password does - a first-time setter has no old unlocks
+    const invalidates = current
+      ? ' Changing it invalidates everyone who already unlocked with the old one.'
+      : '';
+    hint.textContent = required
+      ? 'Your group requires a password: recipients must enter it before ' +
+        'they can see or access the files.' +
+        invalidates
+      : (current
+          ? 'Leave empty to remove the password.'
+          : 'Leave empty for no password.') + invalidates;
     hint.style.cssText =
       'font-size: var(--jp-ui-font-size0);' +
       ' color: var(--jp-ui-font-color2);';
     wrap.appendChild(hint);
-    const widget = new Widget({ node: wrap });
+    // a record that predates the policy opens with an empty field: the
+    // dialog checks it before the user types, not after Save
+    const widget = required
+      ? new ValidatedBody(wrap, pwInput)
+      : new Widget({ node: wrap });
     const result = await showDialog({
       title: current ? 'Change password' : 'Set password',
       body: widget,
       buttons: [Dialog.cancelButton(), Dialog.okButton({ label: 'Save' })]
     });
+    restore();
     if (!result.button.accept) {
       return;
     }
     const password = pwInput.value.trim();
+    if (required && !password) {
+      // the dialog checks the field only once it is edited: an empty field
+      // it never checked is refused here, not by the hub
+      Notification.warning(hubReasonText('password_required'), {
+        autoClose: 5000
+      });
+      return;
+    }
     try {
       await setPassword(this._serverSettings, kind, id, password);
       Notification.success(password ? 'Password set' : 'Password removed', {
@@ -2896,12 +3174,14 @@ export class ShareFilesPanel extends Widget {
     btn: HTMLElement,
     ref?: { kind: 'share' | 'request'; id: string }
   ): Promise<void> {
+    const restore = this._keepFocus();
     const ok = await this._copyLinkToClipboard(link);
     if (btn) {
       btn.classList.add('jp-mod-copied');
       window.setTimeout(() => btn.classList.remove('jp-mod-copied'), 700);
     }
     await this._showLinkDialog(link, ok, ref);
+    restore();
   }
 
   /**
@@ -3060,30 +3340,37 @@ export class ShareFilesPanel extends Widget {
 
     // Cloudflare configured but switched off: the link is private-only -
     // say so instead of probing reachability (which only makes sense for
-    // a public Cloudflare link). In hub mode the switch is the record's own,
-    // read from the panel state so every caller of this dialog sees it.
-    const rec =
-      m &&
-      (m.kind === 'share' ? this._state.shares : this._state.requests).find(
-        x => x.id === m.id
-      );
-    if (hub ? rec?.cloud === false : tunnelConfigured && !tunnelActive) {
+    // a public Cloudflare link). In hub mode the link itself tells: the
+    // server restores the browser origin only for the hub's own address, so
+    // a link on this page's origin works on the hub's network only - whether
+    // the record is off or its switch-on is not confirmed yet. A record
+    // switched on while the hub's confirmation is awaited says its link moves.
+    const hubOnly =
+      hub &&
+      new URL(link, window.location.origin).origin === window.location.origin;
+    if (hub ? hubOnly : tunnelConfigured && !tunnelActive) {
+      const moving =
+        !!this._state.info?.tunnel_waiting &&
+        [...this._state.shares, ...this._state.requests].some(
+          r => r.id === m?.id && r.cloud
+        );
       const offLine = statusLine('--jp-warn-color1');
-      offLine.textContent = hub
-        ? `Cloudflare sharing is off for this ${m!.kind} - link works on ` +
-          "the hub's network only"
-        : 'Cloudflare sharing is not running - link works on this network only';
+      offLine.textContent = moving
+        ? "Works on the hub's network only - moves to the Cloudflare hostname once the hub confirms"
+        : hub
+          ? "Link works on the hub's network only"
+          : 'Cloudflare sharing is not running - link works on this network only';
       wrap.appendChild(offLine);
     }
 
     // Reachability: the server probes its own public link (a frontend fetch
     // would be blocked by CORS). Kind and id come from the link itself, so
     // every caller gets the check without extra plumbing. A spinner runs
-    // while the probe is in flight. Only meaningful for Cloudflare sharing -
-    // without an active tunnel there is no public link to probe.
-    // In hub mode the server reports the hub's own serving verdict instead
-    // of probing, so the check runs whatever the cloud toggle says.
-    if (m && (hub || (tunnelConfigured && tunnelActive))) {
+    // while the probe is in flight, and every opening checks again. Only
+    // meaningful for Cloudflare sharing - without an active tunnel there is
+    // no public link to probe. In hub mode only a tunnel link is probed: the
+    // lab cannot open the hub's own address (its API port redirects /s/<id>).
+    if (m && (hub ? !hubOnly : tunnelConfigured && tunnelActive)) {
       const reach = statusLine('--jp-border-color2');
       reach.setAttribute('data-reach', '1');
       reach.appendChild(this._spinnerNode());
@@ -3091,19 +3378,10 @@ export class ShareFilesPanel extends Widget {
       wrap.appendChild(reach);
       void checkLink(this._serverSettings, m.kind, m.id).then(
         res => {
-          if (res.reachable) {
-            reach.style.borderLeftColor = 'var(--jp-success-color1)';
-            reach.textContent = '✓  Link is reachable';
-          } else {
-            reach.style.borderLeftColor = 'var(--jp-error-color1)';
-            reach.textContent =
-              '✗  Link is not reachable' +
-              (res.error
-                ? ` - ${hub ? hubReasonText(res.error) : res.error}`
-                : res.status
-                  ? ` (HTTP ${res.status})`
-                  : '');
-          }
+          reach.style.borderLeftColor = res.reachable
+            ? 'var(--jp-success-color1)'
+            : 'var(--jp-error-color1)';
+          reach.textContent = linkCheckText(res, link);
         },
         () => {
           reach.style.borderLeftColor = 'var(--jp-error-color1)';
@@ -3294,11 +3572,14 @@ export class ShareFilesPanel extends Widget {
   private _makeRowIconButton(
     svg: string,
     title: string,
+    focusKey: string,
     onClick: (evt: MouseEvent) => void
   ): HTMLElement {
     const btn = document.createElement('button');
     btn.className = 'jp-ShareFilesPanel-rowIconButton';
     btn.title = title;
+    // names the button across a re-render, so the focus comes back to it
+    btn.dataset.focusKey = focusKey;
     btn.appendChild(this._svgNode(svg));
     btn.addEventListener('click', onClick);
     return btn;
@@ -3316,7 +3597,8 @@ export class ShareFilesPanel extends Widget {
   /** Render the header cloud icon from the server-reported tunnel state:
    * hidden when no tunnel is configured; green filled cloud when the tunnel
    * is on (public links); dashed silhouette when off (private links);
-   * blinking blue while connecting. */
+   * blinking blue while connecting. Hub mode draws the looks of
+   * `hubCloudLook`. */
   private _updateCloudIndicator(): void {
     if (!this._cloudIndicator) {
       return;
@@ -3332,42 +3614,55 @@ export class ShareFilesPanel extends Widget {
       // _toggleTunnel owns the icon while the switch is in flight
       return;
     }
+    if (this._hubMode) {
+      this._drawHubCloud(hubCloudLook(info, ''));
+      return;
+    }
     const configured = !!info.tunnel_configured;
     if (!configured) {
       this._cloudIndicator.classList.remove('jp-mod-active');
       this._cloudIndicator.classList.remove('jp-mod-connecting');
+      this._cloudIndicator.setAttribute('aria-pressed', 'false');
       this._cloudIndicator.innerHTML = '';
       this._cloudIndicator.appendChild(this._svgNode(cloudOffIcon.svgstr));
-      this._cloudIndicator.title = this._hubMode
-        ? 'The hub could not be reached - links work on the hub network ' +
-          'while it answers again.'
-        : 'Cloudflare sharing not configured - click to set up public links.';
+      this._cloudIndicator.title =
+        'Cloudflare sharing not set up\nClick to set up public links';
       return;
     }
     const active = !!info?.tunnel_active;
     this._cloudIndicator.classList.toggle('jp-mod-active', active);
     this._cloudIndicator.classList.remove('jp-mod-connecting');
+    this._cloudIndicator.setAttribute('aria-pressed', String(active));
     this._cloudIndicator.innerHTML = '';
     this._cloudIndicator.appendChild(
       this._svgNode(active ? cloudIcon.svgstr : cloudOffIcon.svgstr)
     );
-    if (this._hubMode) {
-      this._cloudIndicator.title = active
-        ? "Shares and requests are reachable through the hub's Cloudflare " +
-          'address. Click to keep them on the hub network only.'
-        : 'Shares and requests work on the hub network only. Click to make ' +
-          "them reachable through the hub's Cloudflare address.";
-      return;
-    }
     this._cloudIndicator.title = active
-      ? `Cloudflare sharing on - links use ${info?.public_base_url}. ` +
-        'Click to switch to private links.'
-      : 'Cloudflare sharing off - links use the private address. ' +
-        'Click to share publicly.';
+      ? 'Cloudflare sharing on - public links\nClick to switch it off'
+      : 'Cloudflare sharing off - private links\nClick to switch it on';
+  }
+
+  /** Hub mode: draw one look of the header cloud icon. */
+  private _drawHubCloud(look: ReturnType<typeof hubCloudLook>): void {
+    const el = this._cloudIndicator!;
+    el.classList.toggle('jp-mod-active', look.look === 'on');
+    el.classList.toggle('jp-mod-connecting', look.look === 'waiting');
+    el.classList.toggle('jp-mod-unreachable', look.look === 'unreachable');
+    el.setAttribute('aria-pressed', String(look.pressed));
+    el.innerHTML = '';
+    const icon =
+      look.look === 'off'
+        ? cloudOffIcon
+        : look.look === 'unreachable'
+          ? cloudUnreachableIcon
+          : cloudIcon;
+    el.appendChild(this._svgNode(icon.svgstr));
+    el.title = look.title;
   }
 
   /** Click on the cloud icon: switch between public links (tunnel up) and
-   * private links (tunnel down). Blinks blue while connecting. */
+   * private links (tunnel down). Blinks blue while connecting; in hub mode
+   * also while switching off, and after a switch-on until the hub confirms. */
   private async _toggleTunnel(): Promise<void> {
     if (this._tunnelToggling) {
       return;
@@ -3384,14 +3679,22 @@ export class ShareFilesPanel extends Widget {
       // No tunnel yet - the icon is the entry point to configure one.
       return this._showTunnelSetupDialog();
     }
-    const active = !!this._state.info?.tunnel_active;
+    // hub mode: a click switches off while the icon reads pressed - on, or a
+    // switch-on waiting for the hub - and on otherwise
+    const active = this._hubMode
+      ? hubCloudLook(this._state.info!, '').pressed
+      : !!this._state.info?.tunnel_active;
     this._tunnelToggling = true;
-    if (!active) {
+    if (this._hubMode) {
+      this._drawHubCloud(
+        hubCloudLook(this._state.info!, active ? 'off' : 'on')
+      );
+    } else if (!active) {
       this._cloudIndicator!.classList.remove('jp-mod-active');
       this._cloudIndicator!.classList.add('jp-mod-connecting');
       this._cloudIndicator!.innerHTML = '';
       this._cloudIndicator!.appendChild(this._svgNode(cloudIcon.svgstr));
-      this._cloudIndicator!.title = 'Connecting…';
+      this._cloudIndicator!.title = 'Switching Cloudflare sharing on';
     }
     try {
       const state = await setTunnel(this._serverSettings, { active: !active });
@@ -3399,10 +3702,7 @@ export class ShareFilesPanel extends Widget {
         this._state.info = { ...this._state.info, ...state };
       }
     } catch (err: any) {
-      Notification.error(
-        `Could not switch Cloudflare sharing: ${err?.message || err}`,
-        { autoClose: 8000 }
-      );
+      this._noteCloudSwitchFailure(err);
     } finally {
       this._tunnelToggling = false;
     }

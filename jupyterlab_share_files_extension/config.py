@@ -25,10 +25,11 @@ class ShareFilesConfig(Configurable):
 
     A relative path is resolved against the notebook root (the Jupyter server's
     `root_dir` - same folder the file browser starts in). An absolute path is
-    used as-is, but it MUST land inside the notebook root. The extension
-    refuses to start otherwise - shares outside the root are unreachable from
-    JupyterLab's file browser and would break the panel's drag-out, copy, and
-    "Show in File Browser" actions. The directory is created on demand.
+    used as-is, but it MUST land inside the notebook root. Otherwise the
+    server extension logs an error and registers no routes (JupyterLab itself
+    still starts) - shares outside the root are unreachable from JupyterLab's
+    file browser and would break the panel's drag-out, copy, and "Show in
+    File Browser" actions. The directory is created on demand.
     """
 
     shares_dir = Unicode(
@@ -39,8 +40,8 @@ class ShareFilesConfig(Configurable):
             "If empty (default), uses `uploads/` under the notebook root "
             "(Jupyter server's `root_dir`). Relative paths are resolved "
             "against the notebook root; absolute paths are used as-is. The "
-            "resolved path must live inside the notebook root or the "
-            "extension refuses to start."
+            "resolved path must live inside the notebook root; otherwise the "
+            "server extension logs an error and registers no routes."
         ),
     )
 
@@ -50,7 +51,8 @@ class ShareFilesConfig(Configurable):
         help=(
             "When True (default), files and folders deleted via the panel "
             "(whole shares/requests, removed share items, removed request "
-            "uploads) are sent to the OS trash via send2trash. When False, "
+            "uploads) and files an uploader removes from a request page are "
+            "sent to the OS trash via send2trash. When False, "
             "they are deleted permanently."
         ),
     )

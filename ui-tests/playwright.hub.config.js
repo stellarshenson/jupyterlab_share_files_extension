@@ -44,6 +44,9 @@ module.exports = {
         JUPYTERHUB_API_TOKEN: 'test-token',
         JUPYTERHUB_BASE_URL: '/',
         PYTHONPATH: REPO,
+        // the lab's wait for the hub to confirm a Cloudflare switch-on ends
+        // after 10 s instead of 120 s, so the timeout is testable
+        SHARE_FILES_CLOUD_CONFIRM_SECONDS: '10',
         // the cloud toggle persists to the CLI config file - keep it out of
         // the developer's real one
         XDG_CONFIG_HOME: path.join(os.tmpdir(), 'share-files-galata-hub')

@@ -59,7 +59,7 @@ cd ./ui-tests
 jlpm test:hub
 ```
 
-The mock speaks the hub's fileshare routes including the per-record cloud switch, the password requirement and the change stream; `/_control/*` is the test's side door (reset, capabilities, policy, upload, nudge, calls, streams). `MOCK_HUB_PORT` (default 8765) and `JUPYTER_TEST_PORT` (default 8888) move the ports when the defaults are taken. Both configurations serve the working tree's build through `labextensions/` (a symlink to the build output, so `jlpm build` first) and load the server extension from the repository through `PYTHONPATH`.
+The mock speaks the hub's fileshare routes including the per-record cloud switch, the password requirement, the change stream and the recipient page `/s/<id>`; `/_control/*` is the test's side door (reset, capabilities, policy, tunnel, page, cloudoff, upload, nudge, calls, streams). `tunnel` sets the tunnel base, its registration delay after the first switch-on and whether it ever registers; `page` sets the status the recipient page answers; `cloudoff` sets the status a Cloudflare switch off answers. `MOCK_HUB_PORT` (default 8765) and `JUPYTER_TEST_PORT` (default 8888) move the ports when the defaults are taken. The configuration sets `SHARE_FILES_CLOUD_CONFIRM_SECONDS=10` on the lab, so its wait for the hub to confirm a Cloudflare switch-on ends after 10s instead of 120s and the timeout is testable. Both configurations serve the working tree's build through `labextensions/` (a symlink to the build output, so `jlpm build` first) and load the server extension from the repository through `PYTHONPATH`.
 
 ## Update the tests snapshots
 

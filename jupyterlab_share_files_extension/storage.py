@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -26,6 +27,8 @@ try:
     from send2trash import send2trash as _send2trash
 except ImportError:  # pragma: no cover - send2trash is a hard dep, this is a safety net
     _send2trash = None
+
+log = logging.getLogger("jupyterlab_share_files_extension")
 
 
 def _remove(target: Path, use_trash: bool) -> None:
@@ -306,15 +309,22 @@ class BaseStore:
         """Resolve the on-disk content directory for a share/request id.
 
         Folders are named `<slug>-<id>` and sit next to a sibling
-        `<slug>-<id>.json` manifest. We resolve by scanning for a directory
-        ending in `-<id>`.
+        `<slug>-<id>.json` manifest. The folder beside the manifest wins, so
+        another directory ending in `-<id>` cannot stand in for it; a renamed
+        folder is found only while it is the one directory ending in `-<id>`.
         """
         if not re.fullmatch(r"[A-Z2-7]{6,16}", id_):
             raise NotFoundError(f"Invalid id: {id_}")
         if self.root.exists():
-            for child in self.root.iterdir():
-                if child.is_dir() and child.name.endswith("-" + id_):
-                    return child
+            paired = self.root / self._manifest_path_for(id_).name[: -len(".json")]
+            if paired.is_dir():
+                return paired
+            matches = [
+                child for child in self.root.iterdir()
+                if child.is_dir() and child.name.endswith("-" + id_)
+            ]
+            if len(matches) == 1:
+                return matches[0]
         # fall back to a synthetic path - used when creating a new entry
         return self.root / id_
 
@@ -754,17 +764,24 @@ class ConnectionStore:
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list):
-                    return data
-        except (OSError, json.JSONDecodeError):
-            pass
+        except OSError:
+            return []
+        except ValueError:  # invalid JSON or invalid UTF-8
+            data = None
+        if isinstance(data, list):
+            return data
+        # Corrupt: move it aside before starting empty, so the next _save
+        # cannot overwrite connections that may still be recoverable by hand
+        aside = self.path.with_name(self.path.name + ".corrupt")
+        os.replace(self.path, aside)
+        log.warning(f"{self.path} is not a valid connection list - moved to {aside}, starting with no connections")
         return []
 
     def _save(self, items: list[dict[str, Any]]) -> None:
         # Atomic temp+rename (and it mkdirs the parent, creating the storage
         # dir on first write). A plain truncate-in-place could be interrupted
-        # mid-write and leave an unparseable file, which _load silently reads
-        # back as [] - losing every connection the user had.
+        # mid-write and leave an unparseable file, which _load can only move
+        # aside - the panel would then show none of the user's connections.
         _atomic_write_json(self.path, items)
 
     @staticmethod

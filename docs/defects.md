@@ -35,6 +35,176 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - log: 2026-07-15T00:00:00Z @kj reported/fixed: adversarial review; jest 28 green
   - log: 2026-09-01T19:50:10Z @kj edited repro (added) and test-tags (added)
   - log: 2026-09-01T19:50:23Z @kj edited evidence (added)
+- [x] `DEF-PANEL-20` **cloud switches are mouse-only** - MAJOR; the header cloud icon is a span with a click listener - no tabIndex, role, aria-label or keydown - and a row's cloud switch sits only in the row context menu, which the keyboard cannot open; keyboard-only and screen-reader users cannot switch Cloudflare; deferred from the 2026-09-05 review; `src/widget.ts`
+  - evidence: ui-tests/tests/hub/hub-mode.spec.ts: 'the keyboard switches the cloud icon and opens a row context menu' (Tab to icon, focus ring, Enter on / Space off with aria-pressed, Tab to row header, focus kept across a hub-ring re-render, Shift+F10 + ArrowDown + Enter runs Share Through Cloudflare, ContextMenu key shows Hub Network Only), ui-tests/tests/keyboard.spec.ts: 'the cloud icon switches from the keyboard' (standalone, tunnel routes answered in the browser), ui-tests/tests/keyboard.spec.ts: 'a share row opens its context menu from the keyboard' (Shift+F10 and ContextMenu): Pre-fix: new hub test failed at role attribute (expected 'button', received none) - logs/galata-hub-keyboard-prefix.log; standalone keyboard.spec.ts both failed (role missing, tabindex missing) - logs/galata-keyboard-pre; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: Tab through the panel header; the cloud icon never takes focus
+  - test-tags: E2E
+  - log: 2026-09-15T18:52:44Z @kj added
+  - log: 2026-09-15T21:05:37Z @kj attempted: review round 1 found that focusable row headers made every re-render scroll back to a clicked row; the focus restore now passes preventScroll; keyboard.spec.ts scroll test failed before (285 -> 0), passes after
+  - log: 2026-09-15T21:40:00Z @kj closed: fixed
+- [x] `DEF-PANEL-31` **standalone cloud icon tooltip still a full sentence pair** - MINOR; the header cloud icon tooltip in standalone mode is still one or two full sentences; the Star Colonel's rule for the cloud icon is short, two lines at most; DEF-HUB-23 changed hub mode only; `src/widget.ts` \_updateCloudIndicator
+  - evidence: keyboard.spec.ts 'every cloud icon tooltip is short and two lines at most' failed before (a 65-character line), passes after for not configured, off, connecting and on; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: standalone lab, hover the header cloud icon in each state: not configured, off, on, connecting
+  - test-tags: E2E
+  - log: 2026-09-15T20:15:11Z @kj added
+  - log: 2026-09-15T20:15:11Z @kj reported: found by the wf_b57900bd-9fa workflow agents on 2026-09-15, confirmed by reading the code
+  - log: 2026-09-15T20:15:11Z @kj reported: "tooltip over cloud icon is too long, must be short and if longer - 2 lines"
+  - log: 2026-09-15T20:32:36Z @kj attempted: standalone tooltips two lines (state, then the click action), connecting one line, no URL; keyboard.spec.ts 'every cloud icon tooltip is short and two lines at most' failed before (line 65 chars), passes after
+  - log: 2026-09-15T21:40:00Z @kj closed: fixed
+- [x] `DEF-PANEL-32` **row buttons stay invisible when reached with Tab** - MINOR; Copy link and Delete on a row keep opacity 0 while they have keyboard focus, so a keyboard user focuses a button they cannot see; the rule shows them on hover only; `style/base.css`
+  - evidence: keyboard.spec.ts 'the row buttons show while they have keyboard focus' failed before (opacity 0), passes after for Copy link and Delete share; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: Tab through a share row; focus reaches Copy link and Delete but nothing is drawn
+  - test-tags: E2E
+  - log: 2026-09-15T20:15:11Z @kj added
+  - log: 2026-09-15T20:15:11Z @kj reported: found by the wf_b57900bd-9fa workflow agents on 2026-09-15, confirmed by reading the code
+  - log: 2026-09-15T20:32:36Z @kj attempted: row icon buttons opacity 1 under :focus-visible on the header or the button; keyboard.spec.ts row-button test failed before (opacity 0), passes after
+  - log: 2026-09-15T21:40:00Z @kj closed: fixed
+- [x] `DEF-PANEL-33` **focus lost after a keyboard-opened row menu closes** - MINOR; a row context menu opened with Shift+F10 or the ContextMenu key returns focus to the document body when it closes, not to the row header, so the keyboard user starts again from the top; Lumino does not restore focus; `src/widget.ts`
+  - evidence: keyboard.spec.ts 'a share row opens its context menu from the keyboard and gets the focus back' failed before (focus on body), passes after for Shift+F10 and the ContextMenu key; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: focus a row header, Shift+F10, Escape; document.activeElement is body
+  - test-tags: E2E
+  - log: 2026-09-15T20:15:11Z @kj added
+  - log: 2026-09-15T20:15:11Z @kj reported: found by the wf_b57900bd-9fa workflow agents on 2026-09-15, confirmed by reading the code
+  - log: 2026-09-15T20:32:36Z @kj attempted: keyboard-opened row menu refocuses its row header on aboutToClose (by data-row-key after a re-render); keyboard.spec.ts failed before (focus inactive), passes after for Shift+F10 and the ContextMenu key
+  - log: 2026-09-15T21:40:00Z @kj closed: fixed
+- [x] `DEF-PANEL-35` **entry buttons stay invisible when reached with Tab** - MINOR; in an expanded row, Remove and Fetch to current folder keep opacity 0 while they have keyboard focus, so a keyboard user focuses a button they cannot see; the rule shows them on hover only; same class as DEF-PANEL-32, which fixed the row header buttons only; `style/base.css` .jp-ShareFilesPanel-entryRemove
+  - evidence: keyboard.spec.ts 'the entry buttons show while they have keyboard focus' failed before (opacity 0), passes after; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - related: DEF-PANEL-32 - the same rule on the row header buttons
+  - repro: expand a share with one file, Tab to the file's Remove button; focus is there but nothing is drawn
+  - test-tags: E2E
+  - log: 2026-09-15T20:33:16Z @kj added
+  - log: 2026-09-15T20:33:16Z @kj reported: found by the agent fixing DEF-PANEL-32, confirmed in style/base.css
+  - log: 2026-09-15T20:34:53Z @kj attempted: .jp-ShareFilesPanel-entryRemove:focus-visible joins the hover rule; keyboard.spec.ts 'the entry buttons show while they have keyboard focus' failed before (opacity 0), passes after; keyboard.spec.ts 5 passed
+  - log: 2026-09-15T21:40:00Z @kj closed: fixed
+- [x] `DEF-PANEL-38` **keyboard user cannot save from a connected peer share** - MAJOR; connection rows and their entry rows take no keyboard focus and open no menu from the keyboard, so a keyboard-only owner cannot reach Save or Fetch; DEF-PANEL-20 covered share and request rows only; `src/widget.ts` connection row rendering
+  - evidence: connection rows take keyboard focus and open their menu with Shift+F10/ContextMenu; ui-tests/tests/keyboard.spec.ts 'a connected peer share opens its menus from the keyboard'; galata standalone 25 passed
+  - repro: connect a peer share, Tab through the panel; focus never reaches the connection row or its Save
+  - test-tags: E2E
+  - log: 2026-09-15T21:41:22Z @kj added
+  - log: 2026-09-15T21:41:22Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:24:04Z @kj closed
+- [x] `DEF-PANEL-39` **cloud icons render grey in every state** - MEDIUM; the on, waiting and hub-unavailable cloud icons render grey instead of green, blue and orange; states differ only by shape and blink, and under reduced motion waiting and on differ by 50 % opacity; cause: the SVG carries class jp-icon3, whose [fill] rule overrides fill=currentColor; `src/icons.ts`
+  - evidence: the cloud glyphs dropped jp-icon3 so fill: currentColor reaches them; the hub galata asserts the rendered fill equals the container colour in each state; galata hub 24 passed
+  - repro: hub or standalone lab, switch Cloudflare on; the header cloud is grey, not green
+  - test-tags: E2E
+  - log: 2026-09-15T21:41:22Z @kj added
+  - log: 2026-09-15T21:41:22Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:24:05Z @kj closed
+- [x] `DEF-PANEL-40` **keyboard focus lost on re-render and after a dialog closes** - MEDIUM; focus on a row button or entry button, or on the row that opened a dialog, goes to document.body when the panel re-renders or the dialog closes; only a focused row header gets its focus back; `src/widget.ts` \_render and the dialog callers
+  - evidence: \_keepFocus/\_restoreFocus return the focus after a dialog and after a re-render, and a confirmed Delete hands it to the neighbouring row; ui-tests/tests/keyboard.spec.ts 'the focus returns to the button a dialog was opened from' and 'a confirmed Delete hands the focus to the neighbouring row'; galata standalone 25 passed
+  - repro: Tab to a row's Copy link, open its dialog, press Escape; focus is on body
+  - test-tags: E2E
+  - log: 2026-09-15T21:41:23Z @kj added
+  - log: 2026-09-15T21:41:23Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:24:05Z @kj closed
+- [x] `DEF-PANEL-44` **waiting cloud icon announces not pressed and names no action** - MINOR; during the confirmation wait the header icon has aria-pressed false and its tooltip does not say what a click does, and a click can switch on or off depending on state; `src/api.ts` hubCloudLook waiting state
+  - evidence: the waiting state is its own look with aria-pressed mixed - a screen reader hears 'half pressed' instead of the identical 'pressed' a confirmed on reports; jest 54, galata hub 24 passed
+  - repro: hub mode, switch on while the tunnel is slow; a screen reader reads 'not pressed'
+  - test-tags: UNIT
+  - log: 2026-09-15T21:41:23Z @kj added
+  - log: 2026-09-15T21:41:23Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:24:36Z @kj closed
+- [x] `DEF-PANEL-45` **tabbing into a row's buttons hides the other button** - MINOR; when keyboard focus moves from the row header to Copy link, Delete becomes invisible again, so only the focused button of the pair is drawn; `style/base.css` row icon button focus rule
+  - evidence: row buttons reveal on hover and on keyboard focus only (:focus-visible and :has(:focus-visible)), so a clicked row does not stay lit and a tabbed-to button keeps its sibling drawn; keyboard.spec 'both row buttons stay drawn while one of them has the focus' and 'a clicked row's buttons hide again once the pointer leaves' (fails with the old selector); galata standalone 25 passed
+  - repro: focus a row header, Tab once; Delete is hidden while Copy link is focused
+  - test-tags: E2E
+  - log: 2026-09-15T21:41:23Z @kj added
+  - log: 2026-09-15T21:41:23Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:24:36Z @kj closed
+- [x] `DEF-PANEL-46` **link check failure shows raw exception text** - MINOR; a failed link check for a standalone or tunnel link shows errno or OpenSSL text and repeats the URL, for example a DNS failure; `jupyterlab_share_files_extension/routes.py` probe_link, `src/api.ts` linkCheckText
+  - evidence: probe_link answers one short phrase per error class (a TLS error, no address for the host name, a closed connection, a network error, no answer within 10 s, connection refused) and the dialog drops the redundant address when it is the one shown; pytest test_link_check_says_why_nothing_answered_in_plain_words, jest 54, galata hub 24 passed
+  - repro: tunnel link on a hostname that does not resolve, open the link dialog; the line shows the resolver error text
+  - test-tags: UNIT
+  - log: 2026-09-15T21:41:23Z @kj added
+  - log: 2026-09-15T21:41:23Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:25:06Z @kj closed
+- [x] `DEF-PANEL-47` **unconfirmed switch-on reason only in an 8 s toast** - MINOR; after an unconfirmed Cloudflare switch-on the reason appears only in a toast that closes after 8 s; afterwards it is only in the notification centre; `src/widget.ts` refresh
+  - evidence: the reason rides the header tooltip's second line and the failure toast now stays in the notification tray until dismissed (autoClose: false), so it survives past 8 s for keyboard and touch; galata hub 24 passed
+  - repro: hub mode, tunnel never registers, wait for the timeout while away from the screen; nothing in the panel says why Cloudflare is off
+  - test-tags: E2E
+  - log: 2026-09-15T21:41:23Z @kj added
+  - log: 2026-09-15T21:41:23Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:25:06Z @kj closed
+- [x] `DEF-PANEL-48` **required-password change dialog: rule only in the placeholder** - MINOR; under a password-required policy, a record without a password opens the change dialog with the rule only in the placeholder, and an empty untouched field is refused only after the dialog closes; `src/widget.ts` change-password dialog
+  - evidence: under a password-required policy the change dialog validates the field while open (ValidatedBody), the create dialog does the same, and the invalidation sentence appears only when a password exists; galata hub 'a record without a password shows the rule and keeps Save disabled', 24 passed
+  - repro: policy password_required, record without a password, open Change Password, press Save; the dialog closes and a warning follows
+  - test-tags: E2E
+  - log: 2026-09-15T21:41:23Z @kj added
+  - log: 2026-09-15T21:41:24Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:25:06Z @kj closed
+- [x] `DEF-PANEL-49` **link dialog during the wait does not say the link will change** - MINOR; while a switch-on waits for confirmation, the link dialog says the link works on the hub's network only without saying it moves to the Cloudflare hostname once confirmed; for a record that is off it no longer names Cloudflare as the reason; `src/widget.ts` \_showLinkDialog
+  - evidence: during the wait the link dialog says both facts: 'Works on the hub's network only - moves to the Cloudflare hostname once the hub confirms'; galata hub 'during the wait the link dialog says a switched-on link moves to the Cloudflare hostname', 24 passed
+  - repro: hub mode, switch on with a slow tunnel, open the link dialog during the wait
+  - test-tags: E2E
+  - log: 2026-09-15T21:41:24Z @kj added
+  - log: 2026-09-15T21:41:24Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:25:06Z @kj closed
+- [x] `DEF-PANEL-50` **keyboard-focused row can end below the visible list after a re-render** - MINOR; cause under investigation, not reproduced: with preventScroll a keyboard-focused row header can sit below the visible list after a re-render that grows content above it, until the next key press; `src/widget.ts` \_render focus restore
+  - evidence: reproduced by the r6 review: a keyboard-focused row could sit below the visible list after a re-render that grew content above it; \_restoreFocus scrolls it back into view with block:'nearest' when the keyboard put it there; keyboard.spec 'a keyboard-focused row stays in view when a re-render adds rows above it'; galata standalone 25 passed
+  - repro: cannot reproduce yet: focus a row near the bottom, trigger a re-render that adds rows above it
+  - test-tags: E2E
+  - log: 2026-09-15T21:41:24Z @kj added
+  - log: 2026-09-15T21:41:24Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:25:06Z @kj closed
+- [x] `DEF-PANEL-55` **focus restore after a keyboard menu builds a CSS selector from a peer's file name** - MAJOR; MAJOR; a peer's entry name with a double quote breaks the focus restore after Shift+F10 and a re-render: querySelector throws a DOMException inside a Lumino slot and the keyboard focus falls to the page body; a crafted name can land the focus on a different row; cause: \_attachKeyboardMenu builds `[data-row-key="..."]` from the peer-supplied name where \_restoreFocus and \_keepFocus use the safe \_byFocusKey helper the same change added; fix: use \_byFocusKey there too; `src/widget.ts` \_attachKeyboardMenu
+  - evidence: \_attachKeyboardMenu looks the replacement row up with the injection-safe \_byFocusKey instead of a querySelector built from the peer's name; the r6 review reproduced the DOMException and the cross-row landing in jsdom before the fix; keyboard.spec 15 passed
+  - repro: connect a peer whose manifest names a file with a double quote, open the row's menu with Shift+F10, let a re-render replace the row, press Escape; the focus is stranded
+  - test-tags: UNIT
+  - log: 2026-09-16T10:03:14Z @kj added
+  - log: 2026-09-16T11:25:41Z @kj closed
+- [x] `DEF-PANEL-56` **during the confirmation wait the link dialog stops saying the link works on the hub's network only** - MAJOR; MAJOR; after a copy during the Cloudflare confirmation wait the dialog shows only 'Link moves to the Cloudflare hostname once the hub confirms' over a link that still works on the hub's network only, so the owner can mail a link that fails outside; the two facts belong in one sentence until the wait ends; `src/widget.ts` \_showLinkDialog
+  - evidence: the moving sentence reads 'Works on the hub's network only - moves to the Cloudflare hostname once the hub confirms'; the galata pin asserts both facts and fails against the old text; galata hub 24 passed
+  - repro: hub mode; switch Cloudflare on and copy a link during the wait; the dialog does not say the copied link works on the hub's network only
+  - test-tags: E2E
+  - log: 2026-09-16T10:03:14Z @kj added
+  - log: 2026-09-16T11:25:41Z @kj closed
+- [x] `DEF-PANEL-58` **the keyboard focus falls to the page body after a confirmed Delete** - MINOR; MINOR; deleting a share or a request by keyboard refocuses the row's button before the row is removed, so after the re-render the focus has nowhere to return and the next Tab starts at the top of the application; fix: when the recorded row is gone, \_restoreFocus focuses the nearest surviving row; `src/widget.ts` \_restoreFocus
+  - evidence: \_render remembers the focused row's index and \_restoreFocus, when the row is gone, focuses the row that took its place; keyboard.spec 'a confirmed Delete hands the focus to the neighbouring row' fails without the fallback; galata standalone 25 passed
+  - repro: keyboard only: open a share row's Delete dialog, confirm, press Tab; the focus starts at the top of JupyterLab
+  - test-tags: E2E
+  - log: 2026-09-16T10:03:48Z @kj added
+  - log: 2026-09-16T11:25:41Z @kj closed
+- [x] `DEF-PANEL-59` **a row's buttons stay lit after a mouse click on the row** - MINOR; MINOR; a clicked row keeps its Copy link and Delete buttons drawn at full opacity while every other row shows them on hover only; cause: the rule uses :focus-within, which catches mouse focus on the focusable row header; fix: hover plus :focus-visible plus :has(:focus-visible); `style/base.css`
+  - evidence: the reveal rule is hover plus :focus-visible plus :has(:focus-visible); the keyboard.spec pin settles past the transition and fails with the old :focus-within selector (opacity stayed 1 after a click), passes with the fix; galata standalone 25 passed
+  - repro: click a share row to expand it and move the pointer away; the two buttons stay drawn
+  - test-tags: E2E
+  - log: 2026-09-16T10:03:48Z @kj added
+  - log: 2026-09-16T11:26:08Z @kj closed
+- [x] `DEF-PANEL-60` **a file row of the owner's own share has no keyboard menu** - MINOR; MINOR; an entry row inside the owner's own share or request takes no focus and answers no Shift+F10, so Copy to Current Folder, Show in File Browser and Copy Path are unreachable by keyboard, while the identical-looking row of a connected peer's share has both; fix: attach the same keyboard menu; `src/widget.ts` \_renderEntryRow
+  - evidence: the owner's own entry rows get the same \_attachKeyboardMenu as a peer's rows (tab stop, Shift+F10/ContextMenu, focus back on close); keyboard.spec 'a file row of the owner's own share opens its menu from the keyboard' fails without the attach; galata standalone 25 passed
+  - repro: keyboard only: expand the owner's own share and try to reach Copy Path on a file row
+  - test-tags: E2E
+  - log: 2026-09-16T10:03:48Z @kj added
+  - log: 2026-09-16T11:26:08Z @kj closed
+- [x] `DEF-PANEL-61` **setting a first password warns about invalidating unlocks that never happened** - MINOR; MINOR; the Set password dialog for a record that has no password says 'Changing it invalidates everyone who already unlocked with the old one' - there is no old password and nobody unlocked; fix: append that sentence only when a password exists; `src/widget.ts` password dialog
+  - evidence: the invalidation sentence is appended only when the record has a password; a first-time setter reads 'Your group requires a password.' and nothing else; galata hub 24 passed
+  - repro: hub mode under a password-required policy: open Set password on a record created without one and read the hint
+  - test-tags: E2E
+  - log: 2026-09-16T10:03:48Z @kj added
+  - log: 2026-09-16T11:26:08Z @kj closed
+- [x] `DEF-PANEL-62` **the reason a Cloudflare switch failed vanishes after 8 s** - MINOR; MINOR; the warning toast auto-closes and afterwards the reason lives only in the icon's native tooltip, reachable on pointer hover only - not on keyboard focus, not on touch; the notification centre keeps the warning, but a keyboard or touch owner who misses the toast has no reachable explanation; fix: the failure toast stays until dismissed; `src/widget.ts` cloud refusal notification
+  - evidence: the Cloudflare failure toast uses autoClose: false, so the reason stays in the notification tray until dismissed; galata hub 24 passed
+  - repro: hub mode: switch Cloudflare on, let the wait fail, wait 8 s, then look for the reason with the keyboard
+  - test-tags: E2E
+  - log: 2026-09-16T10:04:22Z @kj added
+  - log: 2026-09-16T11:26:08Z @kj closed
+- [x] `DEF-PANEL-63` **the hub-unavailable cloud misses the 3:1 contrast bar in the light theme** - MINOR; MINOR; the struck-through cloud paints in --jp-warn-color1 (#f57c00, about 2.7:1 on white), under the WCAG 1.4.11 non-text bar, in exactly the state that reports a problem; fix: --jp-warn-color0 (#e65100 in the light theme, about 3.8:1); `style/base.css`
+  - evidence: the unreachable cloud paints in --jp-warn-color0 (#e65100 in the light theme, about 3.8:1), over the WCAG 1.4.11 non-text bar in both themes; stylelint clean
+  - repro: light theme, hub unreachable: read the header cloud icon
+  - test-tags: MANUAL
+  - log: 2026-09-16T10:04:22Z @kj added
+  - log: 2026-09-16T11:26:08Z @kj closed
+- [x] `DEF-PANEL-64` **waiting and on announce the same to a screen reader** - MINOR; MINOR; during the confirmation wait the header cloud reports aria-pressed true, the same as a confirmed on, so a blind owner cannot tell 'links are public' from 'still waiting'; the sighted design keeps the two apart; fix: aria-pressed mixed for the wait, which the toggle's truthiness read already treats as on for a click; `src/api.ts` hubCloudLook
+  - evidence: the waiting look reports aria-pressed mixed, so a screen reader distinguishes the wait from a confirmed on while a click still ends the wait; jest pins waiting.pressed 'mixed' and the galata block asserts aria-pressed mixed during the wait; jest 54, galata hub 24 passed
+  - repro: screen reader: switch Cloudflare on and listen during the wait
+  - test-tags: UNIT
+  - log: 2026-09-16T10:04:22Z @kj added
+  - log: 2026-09-16T11:26:42Z @kj closed
+- [ ] `DEF-PANEL-70` **Deleting the only row drops keyboard focus to document.body** - MINOR; a keyboard-only owner who deletes their last share or request is returned to document.body and loses the panel context; the DEF-PANEL-58 fix hands focus to the neighbouring row, but a one-row list has no neighbour; the remedy needs a stable panel control as the empty-list focus target, and which element is a design decision (the connect row hides in hub mode, the drop zone hides when shares are off)
+  - repro: delete the panel's only share by keyboard (Shift+F10, Delete, confirm): focus lands on document.body
+  - test-tags: E2E
+  - root-cause: 2026-09-16T12:51:13Z @kj the post-delete focus restore looks for a neighbouring row and finds none; no empty-list focus target is designated
+  - log: 2026-09-16T12:51:13Z @kj added
 
 ## Public sharing `PUBLIC`
 
@@ -50,23 +220,32 @@ The unauthenticated public/\* surface - recipient pages, manifests, downloads an
   - log: 2026-09-01T19:50:24Z @kj edited evidence (added)
   - log: 2026-09-01T19:58:08Z @kj acc-crit link retargeted: the seven scoped acc-crit files were consolidated into docs/acc-crit.md; the criterion text is unchanged
 
-- [ ] `DEF-PUBLIC-10` **peer-controlled slug escapes the workspace root on Save All** - CRITICAL; `ConnectionSaveHandler` takes `share_slug` from the _remote peer's_ manifest and passes it to `_resolve_unique_target(dest_root, share_slug)`, which does a bare `target_dir / name`; per-entry names are validated but the slug is not, and the follow-up `wrap_dir.relative_to(workspace_root)` check is lexical so a non-normalised `../../` path passes and the handler returns `200 {"ok": true}`; a connected peer can write a tree anywhere the Jupyter process can write; note `_safe_name` is already imported into `routes.py` and never called; fix: validate the slug through `_safe_name` and re-check after `resolve()`; `jupyterlab_share_files_extension/routes.py`
-  - test-tags: MANUAL
+- [x] `DEF-PUBLIC-10` **peer-controlled slug escapes the workspace root on Save All** - CRITICAL; `ConnectionSaveHandler` takes `share_slug` from the _remote peer's_ manifest and passes it to `_resolve_unique_target(dest_root, share_slug)`, which does a bare `target_dir / name`; per-entry names are validated but the slug is not, and the follow-up `wrap_dir.relative_to(workspace_root)` check is lexical so a non-normalised `../../` path passes and the handler returns `200 {"ok": true}`; a connected peer can write a tree anywhere the Jupyter process can write; note `_safe_name` is already imported into `routes.py` and never called; fix: validate the slug through `_safe_name` and re-check after `resolve()`; `jupyterlab_share_files_extension/routes.py`
+  - evidence: test_save_all_never_writes_outside_the_target_folder, test_save_all_keeps_a_plain_slug_as_the_folder_name: Before the fix, 5 of the 6 parametrised cases failed: ../../escape wrote <tmp>/escape/hello.txt, ../outside wrote outside the workspace, /abs/escape tried to create /abs, and the `..` and `.` slugs with a missing target ; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test-tags: UNIT
   - repro: connect to a peer whose manifest sets share_slug to ../../escape, then press Save All
   - log: 2026-07-25T00:00:00Z @kj reported: adversarial review (architect) - verified live, wrote a file outside the workspace root; NOT fixed, needs its own change
   - log: 2026-09-01T19:49:55Z @kj edited severity
   - log: 2026-09-01T19:50:10Z @kj edited repro (added) and test-tags (added)
   - log: 2026-09-01T19:50:53Z @kj edited text
-- [ ] `DEF-PUBLIC-11` **planted directory can shadow a share's content** - MEDIUM; `_resolve_workspace_target_dir` blocks only a target equal to the shares dir itself, so a save into `uploads/shares` is accepted; combined with DEF-10 a peer chooses the folder name, and `BaseStore._path_for` resolves content by returning the first `iterdir()` hit ending in `-<id>`, so a planted `x-<id>` can shadow the real share and be served on the public download route; `jupyterlab_share_files_extension/routes.py`
-  - test-tags: MANUAL
+  - log: 2026-09-15T21:39:58Z @kj edited test-tags (replaced)
+  - log: 2026-09-15T21:39:58Z @kj closed: fixed
+- [x] `DEF-PUBLIC-11` **planted directory can shadow a share's content** - MEDIUM; `_resolve_workspace_target_dir` blocks only a target equal to the shares dir itself, so a save into `uploads/shares` is accepted; combined with DEF-10 a peer chooses the folder name, and `BaseStore._path_for` resolves content by returning the first `iterdir()` hit ending in `-<id>`, so a planted `x-<id>` can shadow the real share and be served on the public download route; `jupyterlab_share_files_extension/routes.py`
+  - evidence: test_target_inside_the_store_is_refused, test_symlink_into_the_store_is_refused, test_target_outside_the_store_is_accepted: Before the fix, 8 of the 11 tests failed; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test-tags: UNIT
   - repro: create uploads/shares/x-<id>/ by hand, then open the public download route for <id>
   - log: 2026-07-25T00:00:00Z @kj reported: adversarial review (architect); folds into the DEF-10 fix
   - log: 2026-09-01T19:50:10Z @kj edited repro (added) and test-tags (added)
-- [ ] `DEF-PUBLIC-12` **public handlers ignore use_trash** - MINOR; `_Base` passes the configured `use_trash` to its stores but `_PublicBase` does not, and `BaseStore.__init__` defaults it to `False` while the config trait defaults to `True`; an uploader removing their own file from the public page deletes it permanently, while the owner removing the same file from the panel sends it to trash - same operation, two policies; `jupyterlab_share_files_extension/routes.py`
-  - test-tags: MANUAL
+  - log: 2026-09-15T21:39:58Z @kj edited test-tags (replaced)
+  - log: 2026-09-15T21:39:58Z @kj closed: fixed
+- [x] `DEF-PUBLIC-12` **public handlers ignore use_trash** - MINOR; `_Base` passes the configured `use_trash` to its stores but `_PublicBase` does not, and `BaseStore.__init__` defaults it to `False` while the config trait defaults to `True`; an uploader removing their own file from the public page deletes it permanently, while the owner removing the same file from the panel sends it to trash - same operation, two policies; `jupyterlab_share_files_extension/routes.py`
+  - evidence: test_public_upload_removal_follows_use_trash: The test calls PublicRequestUploadHandler.delete with send2trash replaced by a recorder; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test-tags: UNIT
   - repro: with use_trash on, upload to a request then remove it from the public page; the file is gone, not trashed
   - log: 2026-07-25T00:00:00Z @kj reported: adversarial review (architect), not fixed
   - log: 2026-09-01T19:50:10Z @kj edited repro (added) and test-tags (added)
+  - log: 2026-09-15T21:39:58Z @kj edited test-tags (replaced)
+  - log: 2026-09-15T21:39:58Z @kj closed: fixed
 
 - [x] `DEF-PUBLIC-16` **public manifests and pages were cacheable** - MEDIUM; three consequences: a request manifest varies by cookie (it filters `uploaders` to the caller's own pool) yet carried an ETag, no `Cache-Control` and no `Vary: Cookie`, so a shared cache keyed on URL alone could serve one uploader's file list to another; a manifest reused under heuristic freshness shows a stale file list; and the recipient page bakes `password_required` into its HTML, so a page cached before the owner set a password skips the prompt; fix: `_UncachedPublicMixin` (no ETag, `Cache-Control: no-store, no-cache, max-age=0`) on both manifest and both page handlers, downloads deliberately left cacheable; clients also send `cache: 'no-store'` (`MANIFEST_FETCH` in `src/api.ts`, `manifestInit()` in `static/standalone.html`) against peers still running an older server; `jupyterlab_share_files_extension/routes.py`
   - evidence: tests/test_manifest_cache.py and ui-tests/tests/manifest-cache.spec.ts, verified bidirectionally - 4 pass with the fix, 3 fail without
@@ -114,29 +293,38 @@ The on-disk share, request and connection stores under shares_dir
   - log: 2026-07-25T00:00:00Z @kj reported/fixed: adversarial review (bug-hunter); `_atomic_write_json` type hint widened to accept a list
   - log: 2026-09-01T19:50:10Z @kj edited repro (added) and test-tags (added)
   - log: 2026-09-01T19:50:24Z @kj edited evidence (added)
-- [ ] `DEF-STORE-9` **corrupt connections.json is indistinguishable from an empty one** - MINOR; `ConnectionStore._load` catches `OSError`/`JSONDecodeError` and returns `[]`, so an unreadable file looks like "no connections" and the next `add` overwrites it; the DEF-8 fix makes corruption far less likely but does not make it recoverable; suggested fix: log and rename to `connections.json.corrupt` instead of collapsing both cases to `[]`; `jupyterlab_share_files_extension/storage.py`
-  - test-tags: MANUAL
+- [x] `DEF-STORE-9` **corrupt connections.json is indistinguishable from an empty one** - MINOR; `ConnectionStore._load` catches `OSError`/`JSONDecodeError` and returns `[]`, so an unreadable file looks like "no connections" and the next `add` overwrites it; the DEF-8 fix makes corruption far less likely but does not make it recoverable; suggested fix: log and rename to `connections.json.corrupt` instead of collapsing both cases to `[]`; `jupyterlab_share_files_extension/storage.py`
+  - evidence: test_corrupt_file_is_moved_aside_and_logged: Before the fix all 3 cases failed: truncated JSON and a JSON object left no .corrupt file, and binary garbage raised UnicodeDecodeError; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test-tags: UNIT
   - repro: corrupt connections.json by hand and reload the panel; it reads as empty and the next add overwrites
   - log: 2026-07-25T00:00:00Z @kj reported: adversarial review (bug-hunter + architect), not fixed - out of scope for the lazy-creation change
   - log: 2026-09-01T19:50:11Z @kj edited repro (added) and test-tags (added)
-- [ ] `DEF-STORE-13` **"refuses to start" on a bad shares_dir is not what happens** - MINOR; README and `config.py` promise the extension refuses to start when `shares_dir` resolves outside the notebook root, but `jupyter_server` catches the `StorageError` and logs a warning; worse, `setup_route_handlers` runs before the validating `resolve_shares_dir`, so routes are registered and every API call then 500s while `apply_autostart` never runs; `jupyterlab_share_files_extension/__init__.py`
-  - test-tags: MANUAL
+  - log: 2026-09-15T21:39:58Z @kj edited test-tags (replaced)
+  - log: 2026-09-15T21:39:58Z @kj closed: fixed
+- [x] `DEF-STORE-13` **"refuses to start" on a bad shares_dir is not what happens** - MINOR; README and `config.py` promise the extension refuses to start when `shares_dir` resolves outside the notebook root, but `jupyter_server` catches the `StorageError` and logs a warning; worse, `setup_route_handlers` runs before the validating `resolve_shares_dir`, so routes are registered and every API call then 500s while `apply_autostart` never runs; `jupyterlab_share_files_extension/__init__.py`
+  - evidence: test_load_with_shares_dir_outside_the_root_registers_no_route: Before the fix the test failed: StorageError was raised after 27 routes were registered; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test-tags: UNIT
   - repro: set shares_dir outside the notebook root and start the server; it starts, then every API call 500s
   - log: 2026-07-25T00:00:00Z @kj reported: adversarial review (architect), not fixed
   - log: 2026-09-01T19:50:11Z @kj edited repro (added) and test-tags (added)
+  - log: 2026-09-15T21:39:58Z @kj edited test-tags (replaced)
+  - log: 2026-09-15T21:39:58Z @kj closed: fixed
 
 ## Peer connections `PEER`
 
 Connecting to another user's link and keeping its state fresh
 
-- [ ] `DEF-PEER-14` **pasted link connects, then shows "offline" - the owner's server was stopped** - MAJOR; ROOT CAUSE CONFIRMED; a public link is served BY the owner's single-user JupyterLab, so it dies with that server. On JupyterHub the link goes Cloudflare edge -> hub -> `/user/<name>/`, and when the owner's server is stopped (idle culler, restart, crash) the hub answers **403 with no `Access-Control-Allow-Origin` header**; the browser therefore rejects the cross-origin response before JavaScript can read its status and `fetch` rejects with a bare `TypeError: Failed to fetch`, which `_refreshConnection` turned into a silent "offline" badge. Connecting still succeeds because `ConnectionsHandler.post` probes **server-side** (`_peer_fetch`, no CORS) - hence "it connects, then goes offline"; `src/widget.ts`, architectural
-  - test-tags: MANUAL
+- [x] `DEF-PEER-14` **pasted link connects, then shows "offline" - the owner's server was stopped** - MAJOR; ROOT CAUSE CONFIRMED; a public link is served BY the owner's single-user JupyterLab, so it dies with that server. On JupyterHub the link goes Cloudflare edge -> hub -> `/user/<name>/`, and when the owner's server is stopped (idle culler, restart, crash) the hub answers **403 with no `Access-Control-Allow-Origin` header**; the browser therefore rejects the cross-origin response before JavaScript can read its status and `fetch` rejects with a bare `TypeError: Failed to fetch`, which `_refreshConnection` turned into a silent "offline" badge. Connecting still succeeds because `ConnectionsHandler.post` probes **server-side** (`_peer_fetch`, no CORS) - hence "it connects, then goes offline"; `src/widget.ts`, architectural
+  - evidence: hub mode serves no public link from the user's server: hub_handlers mounts 12 api/\* routes and no public, static or connection route; links are the hub's /s/<id> (test_hub_mode_registers_no_public_and_no_static_route, test_every_hub_route_method_is_authenticated green); the owner's server being culled no longer takes a hub link down; standalone keeps the recorded cause by design; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - test-tags: UNIT
   - repro: connect to a peer link, stop the peer's server, wait one poll; the badge goes offline
   - log: 2026-08-05T00:00:00Z @kj reported: user - "paste a share or request link doesn't connect, it is offline - especially when I use cloudflare", then "session died (cloudflare) up again"
   - log: 2026-08-05T00:00:00Z @kj first hypothesis WRONG: tornado's 304 reaching the client (see DEF-16). Disproven in a real browser
   - log: 2026-08-05T00:00:00Z @kj root-caused: read the live tunnel ingress - path-restricted to `^(/user/[^/]+)?/jupyterlab-share-files-extension/public/.*` with `service: https://jupyterhub.lab.stellars-tech.eu`, so every public request is routed by the hub to the user's server. Verified on the wire: hub cannot route -> `403` with NO CORS header, `/hub/login` through the tunnel -> `404`. Verified in a real cross-origin browser fetch: owner's server running -> `{ok: true, status: 200}`; not routable -> `TypeError: Failed to fetch`
   - log: 2026-08-05T00:00:00Z @kj STILL OPEN: only the symptom is addressed (see DEF-15). An extension cannot stop the hub culling the server that hosts the link, so this stays open until the Public Zone Service lands. The badge now names the cause - "the peer's server is not answering. It is most likely stopped (JupyterHub stops idle servers); a share link only works while its owner's server is running" - plus a console warning with the link and error. The underlying architecture (public content served by a cullable per-user server) is what `docs/design-hub-public-zone.md` proposes to fix with a hub-level Public Zone Service; that remains unimplemented and is the real remedy
   - log: 2026-09-01T19:50:11Z @kj edited repro (added) and test-tags (added)
+  - log: 2026-09-15T21:39:59Z @kj edited test-tags (replaced)
+  - log: 2026-09-15T21:39:59Z @kj closed: fixed
 - [x] `DEF-PEER-15` **"offline" was an unattributable verdict** - MEDIUM; every peer-refresh failure (CORS rejection, mixed content, DNS, edge challenge page, expired unlock token, 404) collapsed into one badge with no log, so no user report of DEF-14 could be diagnosed; cause: bare `catch {}` in `_refreshConnection`, ratified by an acc-crit bullet that read "swallowed ... never trips the panel-level logic"; fix: log once per streak with the link and error, keep the reason in `offlineReasons` and show it in the badge tooltip; `src/widget.ts`
   - evidence: reason kept in offlineReasons and shown in the badge tooltip; jest specs cover offlineReason for TypeError, 401, 404 and placeholder inputs
   - test-tags: UNIT
@@ -144,6 +332,59 @@ Connecting to another user's link and keeping its state fresh
   - log: 2026-08-05T00:00:00Z @kj reported/fixed: adversarial review (architect) - "isolated from the panel-level logic" must not mean "unlogged"
   - log: 2026-09-01T19:50:11Z @kj edited repro (added) and test-tags (added)
   - log: 2026-09-01T19:50:24Z @kj edited evidence (added)
+- [x] `DEF-PEER-29` **save from a peer answers 500 when the notebook root is a symlink** - MEDIUM; the files are saved, then the request fails with HTTP 500 and the panel reports an error; likely cause: wrap_dir and target are not resolved while the root they are compared to is, so relative_to raises ValueError; fix: compare resolved paths on the three saved.append lines; `jupyterlab_share_files_extension/routes.py` ConnectionSaveHandler.post
+  - evidence: test_save_all_answers_200_when_the_root_is_a_symlink and test_save_all_answers_200_into_a_symlinked_folder_outside_the_root failed before (ValueError), pass after; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: start the lab with its root dir given as a symlink, Save All from a peer share; the files appear and the response is 500
+  - test-tags: UNIT
+  - log: 2026-09-15T19:11:23Z @kj added
+  - log: 2026-09-15T19:11:23Z @kj reported: found by the standalone-defects workflow agent (wf_b57900bd-9fa) while fixing DEF-PUBLIC-10, reproduced with the stub handler; pre-existing
+  - log: 2026-09-15T19:21:08Z @kj attempted: saved paths resolved before relative_to on the three saved.append lines; test_connection_save.py::test_save_all_answers_200_when_the_root_is_a_symlink failed with ValueError before, 16 passed after; closes after the full local CI run
+  - log: 2026-09-15T21:05:37Z @kj attempted: review round 1 found the first fix regressed a save into a symlinked folder outside the root (ValueError, 500 after writing); saved paths now relative to the unresolved root, which dest_root starts with; test_save_all_answers_200_into_a_symlinked_folder_outside_the_root failed before, 17 save tests pass
+  - log: 2026-09-15T21:40:00Z @kj closed: fixed
+- [x] `DEF-PEER-36` **save from a peer answers 500 after 20 s** - MAJOR; a save whose download from the peer takes longer than 20 s answers 500 'Unhandled error'; cause: \_peer_fetch uses tornado's default request_timeout of 20 s and maps only TLS and OS errors, so HTTPTimeoutError and a body over the 100 MiB max_body_size escape; fix: a named download timeout and those errors mapped to 502 with a plain reason; `jupyterlab_share_files_extension/routes.py` \_peer_fetch
+  - evidence: \_peer_fetch passes connect_timeout=20 s and request_timeout=300 s for downloads (20 s otherwise) and maps HTTPTimeoutError, HTTPStreamClosedError and an over-limit body to 502 with a plain reason; the tests failed before with tornado HTTPTimeoutError after 20 s and HTTPStreamClosedError, pass after; pytest 330 passed 8 skipped
+  - repro: connect a peer share whose zip takes more than 20 s to download, Save All; the panel shows an unhandled error
+  - test-tags: UNIT
+  - log: 2026-09-15T21:41:22Z @kj added
+  - log: 2026-09-15T21:41:22Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:24:04Z @kj closed
+- [x] `DEF-PEER-37` **save from a peer can exhaust the lab server's memory or disk** - MAJOR; Save extracts each zip member fully into memory, so a highly compressible or hostile peer zip can exhaust lab memory, and nothing caps the bytes written to disk; cause: \_extract_zip_into reads each member with read() and has no total limit; fix: stream each member to disk and stop at a cap on extracted bytes; `jupyterlab_share_files_extension/routes.py` \_extract_zip_into
+  - evidence: \_extract_zip_into copies each member in 1 MiB chunks and raises SaveTooLarge past PEER_SAVE_MAX_BYTES (1 GiB); the handler removes everything the save wrote and answers 502; the download body itself is capped at the same 1 GiB by a dedicated SimpleAsyncHTTPClient; tests failed before (whole-member reads, no limit), pass after; pytest 330 passed 8 skipped
+  - repro: peer share whose zip holds one 2 GB file of zeros, Save All; the lab server's memory climbs to the member size
+  - test-tags: UNIT
+  - log: 2026-09-15T21:41:22Z @kj added
+  - log: 2026-09-15T21:41:22Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:24:04Z @kj closed
+- [x] `DEF-PEER-51` **upload to a peer answers 500 after 20 s** - MAJOR; MAJOR; an upload to a connected request that takes longer than 20 s, or whose connection closes, answers 500 'Unhandled error'; cause: \_post_file keeps tornado's default request_timeout of 20 s and catches only ssl.SSLError, OSError and ConnectionError, so HTTPTimeoutError and HTTPStreamClosedError escape; the same gap DEF-PEER-36 closed on the download side; fix: an upload timeout and those errors mapped to 502 with a plain reason; `jupyterlab_share_files_extension/routes.py` \_post_file
+  - evidence: routes.py \_post_file now passes connect_timeout=PEER_TIMEOUT_SECONDS and request_timeout=PEER_TRANSFER_TIMEOUT_SECONDS (300 s, renamed from PEER_DOWNLOAD_TIMEOUT_SECONDS because it now bounds both directions) and maps HTTPTimeoutError and HTTPStreamClosedError to PeerUnavailable, which the upload handler answers as 502; test_an_upload_that_fails_says_why[_silent] and [_closes_at_once] raised tornado HTTPTimeoutError after 20 s and HTTPStreamClosedError before the fix, both pass after; 311 pytest passed 8 skipped
+  - repro: post to connections/<key>/upload with a peer that accepts the connection and never answers; the handler answers 500
+  - test-tags: UNIT
+  - log: 2026-09-15T23:35:49Z @kj added
+  - log: 2026-09-15T23:39:24Z @kj closed
+- [x] `DEF-PEER-52` **a zip a peer sends that is not readable answers 500 and leaves a folder behind** - MEDIUM; MEDIUM; when the peer's download is not a readable zip archive, Save answers 500 'Unhandled error' and the folder the save created stays in the workspace; cause: \_extract_zip_into creates the destination folder, then zipfile.ZipFile raises BadZipFile, which ConnectionSaveHandler.post does not catch; fix: catch it, remove what the save wrote and answer 502 with a plain reason; `jupyterlab_share_files_extension/routes.py` ConnectionSaveHandler.post
+  - evidence: ConnectionSaveHandler.post catches zipfile.BadZipFile and answers 502 'The peer did not send a readable zip archive' through \_failed, which removes what the save wrote; test_save_all_answers_502_when_the_peer_sends_something_that_is_not_a_zip raised BadZipFile before the fix and passes after; 311 pytest passed 8 skipped
+  - repro: post to connections/<key>/save against a peer whose download-all answers 200 with a body that is not a zip; the handler answers 500 and the folder stays
+  - test-tags: UNIT
+  - log: 2026-09-15T23:35:57Z @kj added
+  - log: 2026-09-15T23:39:24Z @kj closed
+- [x] `DEF-PEER-53` **a save that fails part way leaves the files it already wrote** - MINOR; MINOR; when a save of selected items fails on a later item (the peer does not have it, or the download fails), the items already written stay in the workspace while the panel reports only the error; the 1 GiB stop removes what it wrote, so the two failures behave differently; fix: one rule - a save that answers an error leaves nothing behind; `jupyterlab_share_files_extension/routes.py` ConnectionSaveHandler.post
+  - evidence: every error answer in ConnectionSaveHandler.post goes through \_failed, which removes the paths in 'saved' before writing the error, so a failed save leaves nothing; test_a_save_that_fails_part_way_leaves_nothing left notes.txt behind before the fix and passes after; 311 pytest passed 8 skipped
+  - repro: save two items from a peer where the second is not in the peer's manifest; the first item stays in the target folder and the answer is 404
+  - test-tags: UNIT
+  - log: 2026-09-15T23:35:57Z @kj added
+  - log: 2026-09-15T23:39:24Z @kj closed
+- [x] `DEF-PEER-57` **a peer that cannot be reached is reported with raw exception text** - MINOR; MINOR; a DNS failure or a refused connection on a save or an upload shows text like '[Errno -2] Name or service not known' in the panel, where the link check shows the short phrase for the same failure; cause: \_peer_fetch and \_post_file interpolate the exception into 'Could not reach the peer: ...'; fix: drop the interpolation; `jupyterlab_share_files_extension/routes.py` \_peer_fetch, \_post_file
+  - evidence: \_peer_fetch and \_post_file answer the short literal phrase 'Could not reach the peer' with no errno or URL text; test_a_stored_link_the_lab_cannot_parse_answers_502_with_the_reach_reason pins the exact string; pytest 330 passed 8 skipped
+  - repro: save from a peer whose host name does not resolve; the panel notification carries the errno text
+  - test-tags: UNIT
+  - log: 2026-09-16T10:03:48Z @kj added
+  - log: 2026-09-16T11:25:41Z @kj closed
+- [x] `DEF-PEER-68` **a corrupt bzip2 member blames the owner's workspace for the peer's archive** - MINOR; MINOR; a zip whose bzip2 member is corrupt answers 502 'Could not write the save to the workspace' - bz2 surfaces the codec fault as OSError, which the workspace-write clause catches, while deflate and LZMA corruptions answer 'The peer did not send a readable zip archive'; the save fails safely and removes what it wrote, only the reason misdirects the repair; fix: re-raise a codec OSError from the member read as BadZipFile, keeping the disk write outside the guard; `jupyterlab_share_files_extension/routes.py` \_extract_zip_into
+  - evidence: a codec OSError from the member read re-raises as BadZipFile while the disk write stays outside the guard, so a corrupt bzip2 member answers 'The peer did not send a readable zip archive' and a real disk error keeps the workspace reason; the live corrupt-bzip2 test failed with the workspace reason before the fix and passes after; pytest 330 passed 8 skipped
+  - repro: save from a peer whose zip has a byte-flipped bzip2 member; the 502 names the workspace
+  - test-tags: UNIT
+  - log: 2026-09-16T10:04:53Z @kj added
+  - log: 2026-09-16T11:26:42Z @kj closed
 
 ## Logging `LOGS`
 
@@ -156,3 +397,153 @@ Frontend console output - levels, prefixes and noise
   - log: 2026-07-15T00:00:00Z @kj reported/fixed: adversarial review; index.ts/request.ts prefixes left untouched (out of review scope)
   - log: 2026-09-01T19:50:11Z @kj edited repro (added) and test-tags (added)
   - log: 2026-09-01T19:50:24Z @kj edited evidence (added)
+
+## Hub mode `HUB`
+
+Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the change stream
+
+- [x] `DEF-HUB-18` **cloud link keeps the hub address** - MAJOR; hub mode, cloud sharing on: the share link does not carry the public hostname of the hub's Cloudflare tunnel; cause likely hub-side, see root-cause; `jupyterlab_share_files_extension/hub_routes.py`
+  - evidence: test_switch_on_waits_for_the_tunnel_link_and_rings_the_panels_once, ui-tests/tests/hub/hub-mode.spec.ts: switching Cloudflare on pulses the icon until the hub confirms, then every open panel shows the tunnel link: pytest test_switch_on_waits_for_the_tunnel_link_and_rings_the_panels_once green: the tunnel registers without a ring, then one lab ring, and api/shares shows the tunnel link; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - related: ACC-HUBM-121 - the criterion this breaks
+  - related: ACC-HUBM-136 - the change stream that no longer refetches the link
+  - related: ACC-HUBM-146 - the criterion that fixes it
+  - repro: hub mode, group prefers the public hostname, no record on Cloudflare yet: turn cloud sharing on, create a share, wait for the tunnel to register, open the link dialog without pressing Refresh
+  - test-tags: INTEGRATION, E2E
+  - root-cause: 2026-09-15T19:00:04Z @kj likely, against the deployed galaxahub v4.4.58: a cloud-on record's url uses the tunnel hostname once the tunnel reports registered (the group preference was removed in v4.4.58, so it is no longer a second cause); the lab reads the url right after the switch-on, before the tunnel registers, and the hub rings the change stream only on a record change or a serving flip, not on tunnel registration, so the panel keeps the hub address until something else changes
+  - root-cause: 2026-09-15T18:45:54Z @kj likely: the hub gives a cloud-on record the tunnel hostname only once its tunnel reports registered (`connector_serving`) and the group sets `file_sharing_prefer_public_hostname` (default false); the lab reads the link right after the switch-on, before the tunnel registers, and the hub rings the change stream only when `serving` flips (`fileshare_supervisor._set_state`), not when `connector_serving` or `hostname` change, so since 1.2.43 the panel never fetches the tunnel link; unconfirmed - a group without the preference gives the same symptom
+  - log: 2026-09-15T18:45:54Z @kj added
+  - log: 2026-09-15T18:45:58Z @kj reported: "the link for shared files does not get constructed with the public hostname set by cloudflare in the hub - while cloud sharing is enabled"
+  - log: 2026-09-15T21:39:59Z @kj closed: fixed
+- [x] `DEF-HUB-19` **hub outage gives no cue on Refresh** - MAJOR; hub unreachable: Refresh spins and stops with the last lists and no message; api/shares answers 502 hub_unavailable, the panel logs it to the console only and never reaches the cloud icon's unreachable state; deferred from the 2026-09-05 review; `src/widget.ts`
+  - evidence: ui-tests/tests/hub/hub-mode.spec.ts: a clicked Refresh during a hub outage warns once and the icon shows the hub unreachable: galata hub: with the outage simulated through page.route (api/info reports hub unavailable, lists answer 502), a clicked Refresh gives one warning notification and the jp-mod-unreachable icon; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: hub mode, stop the hub, press Refresh; nothing says the hub is down
+  - test-tags: E2E
+  - log: 2026-09-15T18:52:44Z @kj added
+  - log: 2026-09-15T21:39:59Z @kj closed: fixed
+- [x] `DEF-HUB-21` **switching the toggle off shows no busy state** - MINOR; the connecting state is set only inside `if (!active)` in `_toggleTunnel`, so while the lab switches every record off the icon stays static; deferred from the 2026-09-05 review; `src/widget.ts`
+  - evidence: ui-tests/tests/hub/hub-mode.spec.ts: switching Cloudflare off shows the busy icon while the lab switches the records: galata hub: the switch-off request is held with page.route; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: hub mode, several records on Cloudflare, click the icon to switch off on a slow hub; the icon does not change until done
+  - test-tags: E2E
+  - log: 2026-09-15T18:52:44Z @kj added
+  - log: 2026-09-15T21:39:59Z @kj closed: fixed
+- [x] `DEF-HUB-22` **policy refusal shown as an error on the switch, a warning on create** - MINOR; 403 cloud_not_configured is a group policy answer; `_setCloudFlow` and `_toggleTunnel` show Notification.error, the create path shows a warning; deferred from the 2026-09-05 review; `src/widget.ts`
+  - evidence: ui-tests/tests/hub/hub-mode.spec.ts: a policy refusal on a Cloudflare switch is a warning: galata hub, policy with Cloudflare off: the header icon click and the row's Share Through Cloudflare each add a warning notification; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: hub mode, policy with Cloudflare off, click the cloud icon; a red error toast appears
+  - test-tags: E2E
+  - log: 2026-09-15T18:52:44Z @kj added
+  - log: 2026-09-15T21:39:59Z @kj closed: fixed
+- [x] `DEF-HUB-23` **cloud icon tooltip too long, names the wrong action, hub-down looks like off** - MINOR; the tooltip is a full sentence pair - too long; it must be short, two lines at most; the on-state text says 'Click to keep them on the hub network only', and the hub-unreachable state removes jp-mod-active and draws the off silhouette, the same as off; `src/widget.ts` `_updateCloudIndicator`
+  - evidence: src/**tests** hub cloud icon, ui-tests/tests/hub/hub-mode.spec.ts: every cloud icon tooltip is two lines at most: jest 'hub cloud icon' green: all six states fit two lines of 45 characters or fewer, and the on/off text names the click action; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: hub mode, stop the hub, hover the cloud icon; it looks the same as Cloudflare off
+  - test-tags: E2E
+  - log: 2026-09-15T18:52:44Z @kj added
+  - log: 2026-09-15T18:52:57Z @kj edited title and text
+  - log: 2026-09-15T18:52:57Z @kj reported: "tooltip over cloud icon is too long, must be short and if longer - 2 lines"
+  - log: 2026-09-15T21:39:59Z @kj closed: fixed
+- [x] `DEF-HUB-24` **refused share row shows the raw slug** - MINOR; a refused hub share row reads 'refused: over_cap'; the sentence from hubReasonText is only in the hover; galata pins the slug text; deferred from the 2026-09-05 review; `src/widget.ts`, `ui-tests/tests/hub/hub-mode.spec.ts`
+  - evidence: ui-tests/tests/hub/hub-mode.spec.ts: 'share rows show staging, ready and refused states from the hub' (sentence text, two-line title with slug, one-line height): Pre-fix: expected 'The files are larger than your group allows for one share.', received 'refused: over_cap' (logs/galata-hub-keyboard-prefix.log); local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: mock hub refuses a share with over_cap; the row meta shows 'refused: over_cap'
+  - test-tags: E2E
+  - log: 2026-09-15T18:52:44Z @kj added
+  - log: 2026-09-15T21:40:00Z @kj closed: fixed
+- [x] `DEF-HUB-25` **change-password dialog offers a removal the policy refuses** - MINOR; under hub.password_required the dialog still says 'Leave empty to remove the password', and the hub then refuses the empty value with 400 password_required; deferred from the 2026-09-05 review; `src/widget.ts`
+  - evidence: ui-tests/tests/hub/hub-mode.spec.ts: 'a group policy that requires a password keeps the change dialog from removing it': Pre-fix: dialog text contained 'Leave empty to remove the password' (logs/galata-hub-keyboard-prefix.log); local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: hub mode, policy password_required, open Change Password on a share; the hint offers removal
+  - test-tags: E2E
+  - log: 2026-09-15T18:52:44Z @kj added
+  - log: 2026-09-15T21:40:00Z @kj closed: fixed
+- [x] `DEF-HUB-26` **relay reports connected after the hub answered 404** - MINOR; `Relay._run` returns on 404 but `_task` stays set, so `Relay.connected` reads true while no hub stream is held; only tests read the property; `jupyterlab_share_files_extension/hub_stream.py`
+  - evidence: test_relay_is_not_connected_after_the_hub_answered_404: test_relay_is_not_connected_after_the_hub_answered_404 failed (assert True is False) before the fix and passes after.; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: pytest: scripted hub answers 404 on stream, subscribe one queue, read RELAY.connected
+  - test-tags: UNIT
+  - log: 2026-09-15T18:52:44Z @kj added
+  - log: 2026-09-15T21:39:59Z @kj closed: fixed
+- [x] `DEF-HUB-27` **malformed hub status line stops the relay** - MINOR; `hold` reads `status.split()[1]` for a line starting with HTTP/; a status line with no code raises IndexError, which `hold` does not catch, so `Relay._run` dies and open panels get no rings and no poll fallback; `jupyterlab_share_files_extension/hub_stream.py`
+  - evidence: test_relay_retries_after_a_malformed_status_line: test_relay_retries_after_a_malformed_status_line (asyncio server answering 'HTTP/1.1\r\n\r\n') failed with IndexError before the fix; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: pytest: in-process server answers 'HTTP/1.1\r\n\r\n' on stream, subscribe, check the relay retries
+  - test-tags: UNIT
+  - log: 2026-09-15T18:52:44Z @kj added
+  - log: 2026-09-15T18:52:57Z @kj edited repro (replaced)
+  - log: 2026-09-15T21:39:59Z @kj closed: fixed
+- [x] `DEF-HUB-28` **link dialog says a working link is not reachable** - MAJOR; hub mode: the link dialog showed 'X Link is not reachable - the hub is not serving shares' (the X is the dialog's cross mark) while the link opened fine; api/link-check never tests the link - it answers reachable = capabilities.serving, the hub's deployment-wide verdict, and 'the hub is not serving shares' is the lab's own fallback text when the hub names no reason; `jupyterlab_share_files_extension/hub_routes.py` HubLinkCheckHandler, `src/widget.ts`
+  - evidence: the dialog probes only a tunnel link from the lab server and says a link on the hub's own address works on the hub's network only (the hub API origin answers /s/<id> with 302, checked live on hub:8080); hub galata 'the link dialog opens the link itself, whatever the hub serving verdict' green with serving false; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: hub mode, deployment with no shares: create the first share and open its link dialog at once; the check says not reachable while the link opens
+  - test-tags: INTEGRATION, E2E
+  - root-cause: 2026-09-15T19:00:04Z @kj likely: galaxahub caches serving on a 30 s supervisor tick; it starts as serving false (sidecar_not_serving) and an empty deployment reads serving false with no reason until the app for the first record is up, so a check right after the first create reads false while the link works a moment later; the dialog keeps that first result and the text names no cause
+  - log: 2026-09-15T19:00:04Z @kj added
+  - log: 2026-09-15T19:00:04Z @kj reported: "X Link is not reachable - the hub is not serving shares - wtf?" then "https://share.stellars-tech.com/s/<id> - link is fully reachable"; hub capabilities read a minute later: serving true, public_base_url http://hub:8080; the row: ready, cloud true, url on https://share.stellars-tech.com
+  - log: 2026-09-15T19:00:21Z @kj edited text
+  - log: 2026-09-15T21:05:37Z @kj attempted: review round 1 (wf_df3fab52-1f8) found the lab-side probe of a hub-address link always reads not reachable - the hub API origin answers /s/<id> with 302 to /hub/s/<id> (confirmed live on hub:8080); the link dialog now probes only a tunnel link and says a link on the browser origin works on the hub's network only; hub galata link-dialog tests updated
+  - log: 2026-09-15T21:39:59Z @kj closed: fixed
+- [x] `DEF-HUB-30` **stalled hub answers 500 and ends the cloud wait without switching back** - MEDIUM; a hub that does not answer within the request timeout gives the panel HTTP 500 instead of 502 hub_unavailable, and the confirmation wait stops without confirming or switching the records back off; cause: under tornado 6.5 fetch raises HTTPTimeoutError and HTTPStreamClosedError even with raise_error=False, and HubClient.request catches only OSError and ConnectionError, so its resp.code == 599 branch never runs; fix: map tornado.httpclient.HTTPClientError to HubUnavailable, and let the wait treat HubUnavailable as one failed check; `jupyterlab_share_files_extension/hub.py` HubClient.request, `hub_routes.py` CloudWait
+  - evidence: test_hub_client_maps_a_hub_that_never_answers_or_closes_to_unavailable, test_a_hub_that_never_answers_answers_502, test_a_check_the_hub_never_answers_fails_and_the_wait_still_goes_back_off failed before (HTTPTimeoutError, 500), pass after; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: hub that accepts the connection and never answers; call api/shares - 500; switch a record on - the wait ends and the record stays on
+  - test-tags: UNIT
+  - log: 2026-09-15T20:15:11Z @kj added
+  - log: 2026-09-15T20:15:11Z @kj reported: found by the wf_b57900bd-9fa workflow agents on 2026-09-15, confirmed by reading the code
+  - log: 2026-09-15T20:32:36Z @kj attempted: HubClient.request maps tornado HTTPClientError to HubUnavailable; 3 regression tests failed before (HTTPTimeoutError raised, 500 not 502, no PUT cloud false), pass after
+  - log: 2026-09-15T21:40:00Z @kj closed: fixed
+- [x] `DEF-HUB-41` **switch-back failure reported as 'The hub could not be reached.' when the hub answered** - MINOR; a Cloudflare switch-back the hub answers with a 4xx or 5xx is reported with the hub_unavailable reason, so the toast names a false cause and does not say the switch stayed on; the same convention applies to a failed default switch-on after create; `jupyterlab_share_files_extension/hub_routes.py` CloudWait.\_switch_back and \_apply_cloud_default
+  - evidence: an answered failure reports its own slug - cloud_not_switched_off for the wait's switch back, cloud_not_switched_on for a create's default switch on - instead of hub_unavailable; tests/test_hub_handlers.py and galata hub 24 passed
+  - repro: mock hub answers PUT cloud false with 500 after an unconfirmed switch-on; the toast says the hub could not be reached
+  - test-tags: UNIT, E2E
+  - log: 2026-09-15T21:41:23Z @kj added
+  - log: 2026-09-15T21:41:23Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:24:36Z @kj closed
+- [x] `DEF-HUB-42` **header shows Cloudflare on after a failed switch-back** - MINOR; after a switch-on that is not confirmed within 120 s and a switch-back that fails, the header icon shows green on while no link is on the tunnel, contrary to the design doc's 'a click never shows on before the confirmation'; cause: hubCloudLook reads tunnel_active and tunnel_waiting only; `src/api.ts` hubCloudLook, `docs/design-hub-public-zone.md` Header icon bullet
+  - evidence: after a failed switch back the header reason branch requires !tunnel_active, so the header keeps the on look the records still hold and the tooltip names the reason; jest 54, galata hub 24 passed
+  - repro: mock hub tunnel never registers and PUT cloud false fails; after the wait the header shows on
+  - test-tags: UNIT, E2E
+  - log: 2026-09-15T21:41:23Z @kj added
+  - log: 2026-09-15T21:41:23Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:24:36Z @kj closed
+- [x] `DEF-HUB-43` **header switch-on that fails partway leaves records on with no wait** - MINOR; a header Cloudflare switch-on that fails after switching some records on returns without starting the wait, reverting, or storing the default, so a record can stay on Cloudflare while the header reads off; `jupyterlab_share_files_extension/hub_routes.py` HubTunnelHandler.post
+  - evidence: a partial switch on registers the switched records with the wait and a header switch on also waits for records already on whose url is still the hub's own; galata hub 24 passed
+  - repro: two records, mock hub refuses PUT cloud true for the second; the first stays on, the header reads off
+  - test-tags: UNIT
+  - log: 2026-09-15T21:41:23Z @kj added
+  - log: 2026-09-15T21:41:23Z @kj reported: found by the five-lens adversarial review 2026-09-15 (wf_df3fab52-1f8 to wf_66f21fbb-bc0), confirmed by the adjudicator and deferred for the change budget
+  - log: 2026-09-16T11:24:36Z @kj closed
+- [x] `DEF-HUB-54` **one deleted record aborts the bulk Cloudflare switch and leaves the header wrong** - MAJOR; MAJOR; when one record of a bulk switch answers 404 - it was deleted in another open panel - the loop stops: on a switch off the default stays on while the earlier records are already off at the hub, on a switch on the later records stay off under an on header; cause: HubTunnelHandler.post accepts only 204 where CloudWait.\_switch_back accepts 204 and 404 for the same call; fix: accept 404 in the bulk loop too; `jupyterlab_share_files_extension/hub_routes.py` HubTunnelHandler.post
+  - evidence: the bulk switch accepts 404 as done, the same acceptance CloudWait.\_switch_back uses; test_a_record_gone_mid_switch_does_not_abort_the_bulk_switch failed with HTTP 404 escaping before the fix and passes after; pytest 330 passed 8 skipped
+  - repro: two panels open; delete a record in one and switch Cloudflare in the other; the switch stops at the deleted record and the header disagrees with the hub
+  - test-tags: UNIT, E2E
+  - log: 2026-09-16T10:03:14Z @kj added
+  - log: 2026-09-16T11:25:41Z @kj closed
+- [x] `DEF-HUB-65` **a refused Cloudflare switch names the failure but not what it means for the links** - MINOR; MINOR; 'The hub did not switch Cloudflare off.' and 'The hub did not switch Cloudflare on.' state the failed call and drop the consequence every sibling sentence carries, so the owner cannot tell whether the links are on the hub network or on Cloudflare; fix: append the consequence in the sibling pattern; `src/api.ts` hubReasonText
+  - evidence: the two refusal sentences carry the consequence in the sibling pattern: '...off - those links may still be on Cloudflare.' and '...on - this link works on the hub network only.'; jest pins both sentences; jest 54 passed
+  - repro: hub mode: let the hub refuse a switch and read the toast
+  - test-tags: UNIT
+  - log: 2026-09-16T10:04:23Z @kj added
+  - log: 2026-09-16T11:26:42Z @kj closed
+- [x] `DEF-HUB-66` **one Cloudflare reason sentence lives in two places and the copies drift** - MINOR; MINOR; the tooltip shortens cloud_not_confirmed by hand while the other reasons go through hubReasonText, and the two new sentences carry trailing full stops their siblings lack; fix: one sentence per reason in hubReasonText, the ternary removed; `src/api.ts` hubCloudLook, hubReasonText
+  - evidence: one short reason per slug lives in HUB_REASON_SHORT and the tooltip uses it for every slug - the cloud_not_confirmed ternary is gone and every tooltip line is at most 45 characters; jest tooltip pins, jest 54 passed
+  - repro: compare the tooltip after an unconfirmed switch-on with the one after a refused switch off
+  - test-tags: UNIT
+  - log: 2026-09-16T10:04:23Z @kj added
+  - log: 2026-09-16T11:26:42Z @kj closed
+- [x] `DEF-HUB-67` **the create dialog checks the required password only after it closes** - MINOR; MINOR; when the group policy requires a password and the generate-password route fails, the create dialog opens with an empty password field and Create enabled, and the refusal comes only after the owner typed a name and confirmed; the change dialog already validates while open; fix: the create dialog uses the same ValidatedBody; `src/widget.ts` create dialog
+  - evidence: the create dialog uses ValidatedBody when the policy requires a password, so an empty required field keeps Create disabled while the dialog is open, the change dialog's existing rule; galata hub 24 passed
+  - repro: hub mode under a password-required policy with the generate-password route failing: open New share; the password field is empty and Create is enabled
+  - test-tags: E2E
+  - log: 2026-09-16T10:04:53Z @kj added
+  - log: 2026-09-16T11:26:42Z @kj closed
+- [x] `DEF-HUB-69` **after a failed switch back the header reads exactly like a healthy on** - MINOR; MINOR; the header keeps the on look (the records stayed on, which is right) but the reason the switch back failed survives only in the notification centre once the toast closes, so a later look cannot tell a confirmed on from an on the lab failed to end; fix: the tooltip's second line names the reason while it stands; `src/api.ts` hubCloudLook
+  - evidence: while a reason stands the on look's tooltip reads 'Cloudflare sharing on - click to switch off' plus the short reason, so a failed switch back is distinguishable from a healthy on; jest pins both standing reasons; jest 54, galata hub 24 passed
+  - repro: hub mode: let the hub answer the switch back with an error, wait for the toast to close, read the header tooltip
+  - test-tags: UNIT
+  - log: 2026-09-16T10:04:53Z @kj added
+  - log: 2026-09-16T11:26:43Z @kj closed
+
+## Test suites `TESTS`
+
+Galata and pytest suites - isolation from the developer's machine and from real services
+
+- [x] `DEF-TESTS-34` **standalone galata reads the developer's real Cloudflare config** - MEDIUM; ui-tests/playwright.config.js starts the test lab without an XDG_CONFIG_HOME override, so tunnel.config_path() reads ~/.config/jupyterlab-share-files/config.json with real credentials and autostart; a local galata run can start a real tunnel and publish the test lab; the hub config already sets XDG_CONFIG_HOME to a temp dir; `ui-tests/playwright.config.js`
+  - evidence: jupyterlab_share_files_extension.spec.ts 'the test lab reads no Cloudflare configuration' failed before (tunnel_configured true from the real config), passes after with XDG_CONFIG_HOME set to a temp dir; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - repro: local machine with a configured tunnel and tunnelAutostart on, run the standalone galata suite; the test lab reads the real config
+  - test-tags: E2E
+  - log: 2026-09-15T20:15:11Z @kj added
+  - log: 2026-09-15T20:15:11Z @kj reported: found by the wf_b57900bd-9fa workflow agents on 2026-09-15, confirmed by reading the code
+  - log: 2026-09-15T20:32:36Z @kj attempted: standalone playwright webServer env sets XDG_CONFIG_HOME to a temp dir; 'the test lab reads no Cloudflare configuration' failed before (tunnel_configured true), passes after; standalone suite 14 passed
+  - log: 2026-09-15T21:40:00Z @kj closed: fixed
