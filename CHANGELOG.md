@@ -2,13 +2,39 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.46] - 2026-09-17
+
+Cloud confirmation, keyboard access, peer-save hardening and same-origin peer reads. 1.2.45 was never published; its version field came from a local reinstall.
+
+### Added
+
+- Hub mode: a Cloudflare switch on is confirmed against the hub's items (at most every 5 s for at most 120 s) before the panel reports it; not confirmed, the records and the default go back off and the header icon carries the reason; `api/info` and `api/tunnel` report `tunnel_waiting` and `tunnel_reason`
+- Link dialog: a link on the Cloudflare hostname is opened from the lab server and the dialog shows what answered (HTTP status, no answer, connection refused, no address, TLS error, closed connection, network error); a link on the hub's own address is not checked and the dialog says it works on the hub's network only
+- Keyboard: Tab reaches every share, request and connection row and a connected peer's entries, arrow keys move, Enter and Space act, Shift+F10 or the ContextMenu key opens the row menu, Delete removes a row after confirmation; focus survives re-renders and lands on the section header when a section's last row is deleted; section headers fold and unfold with Enter and Space and carry `role=button` and `aria-expanded`
+- Galata: an opt-in live-hub suite (`jlpm test:livehub`) runs five tests against the real galaxahub with the operator's credentials; the standalone suite's server carries galaxalab's Content-Security-Policy so the cross-origin regression stays covered
+- Server-side unlock token cache for password-protected peers, reused until 60 s before the token's expiry, so the panel's polls stay inside the peer's password cooldown
+
+### Changed
+
+- Peer reads: the panel reads a connected peer's manifest and downloads its files through the lab's own server (`api/connections/<key>/manifest`, `api/connections/<key>/download`), never straight from the browser, so a page policy of `default-src 'self'` cannot break connections; the offline badge and the download notification name the peer's answer (stopped server, removed record, rejected password)
+- Peer save: one download is capped at 1 GiB on a dedicated client, the manifest and entry names are gated before any write, a corrupt archive is named in one readable message, and a partial save is removed on every failure path
+- Peer answers keep their meaning at every step: a 401 says the password changed, a 404 says the owner removed the share or request, and other codes read `Remote unavailable (<code>)`, at the unlock as well as at the fetch
+- Galata harness: the server configuration copies the working-tree build under `.galata-root` instead of serving it through a symlink, which tornado 6.5.10 refuses
+
+### Fixed
+
+- Connected peers on another origin showed offline under a `default-src 'self'` Content-Security-Policy (DEF-PEER-72)
+- Deleting the only row of a section dropped keyboard focus to the document body (DEF-PANEL-70)
+- Connecting a password-protected peer showed it offline with "too many password attempts" on the first poll
+- Screen readers spoke the section header's twisty glyph before its name
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## [1.2.44] - 2026-09-05
 
 ### Changed
 
 - Republish of 1.2.43 with identical code; the release command was invoked again on a clean tree
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## [1.2.43] - 2026-09-05
 

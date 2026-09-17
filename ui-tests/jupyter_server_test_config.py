@@ -5,6 +5,7 @@ opens the server to the world and provide access to JupyterLab
 JavaScript objects through the global window variable.
 """
 import os
+import shutil
 import tempfile
 
 from jupyterlab.galata import configure_jupyter_server
@@ -27,12 +28,23 @@ c.ServerApp.port = int(os.environ.get("JUPYTER_TEST_PORT") or "8888")
 
 # Serve the working tree's labextension build (`jlpm build`) ahead of any
 # installed copy. Federated extensions resolve first-path-wins and their
-# static files are looked up by DIRECTORY name, so `labextensions/` holds a
-# symlink named after the package pointing at the build output. Galata's own
-# helper extension (set above, as a string) stays on the list, and on the
-# same class - a LabApp setting would shadow it.
+# static files are looked up by DIRECTORY name, so the build is copied into
+# a directory named after the package. A copy, not a symlink: tornado 6.5.10
+# refuses a static file whose real path leaves the served directory, and
+# jupyter_server's FileFindHandler does not turn on its follow_dir_symlinks
+# for this route. Without a build (CI installs the wheel) the installed copy
+# serves. Galata's own helper extension (set above, as a string) stays on
+# the list, and on the same class - a LabApp setting would shadow it.
+_BUILD = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "jupyterlab_share_files_extension",
+    "labextension",
+)
+_LABEXTENSIONS = tempfile.mkdtemp(prefix="labextensions-", dir=_GALATA_ROOT)
+if os.path.isfile(os.path.join(_BUILD, "package.json")):
+    shutil.copytree(_BUILD, os.path.join(_LABEXTENSIONS, "jupyterlab_share_files_extension"))
 c.LabServerApp.extra_labextensions_path = [
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "labextensions"),
+    _LABEXTENSIONS,
     c.LabServerApp.extra_labextensions_path,
 ]
 
