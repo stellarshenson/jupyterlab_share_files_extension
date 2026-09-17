@@ -79,14 +79,20 @@ The Cloudflare tunnel exposing share and request links beyond the hub, and the p
   - test-tags: MANUAL
   - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
   - log: 2026-09-01T19:56:34Z @kj edited test-tags (replaced)
-- [ ] `ACC-CLOUD-17` **Cloudflare link connects in the panel** - HIGH; pasting a Cloudflare link adds a working connection (manifest, pick-up, uploads) identically to a hub-local link; link persisted verbatim, never reconstructed
+- [x] `ACC-CLOUD-17` **Cloudflare link connects in the panel** - HIGH; pasting a Cloudflare link adds a working connection (manifest, pick-up, uploads) identically to a hub-local link; link persisted verbatim, never reconstructed
+  - evidence: 2026-09-17 two-lab check: lab B pasted lab A's Cloudflare link (https origin via the per-user tunnel); server-side connect probe, connections.json holds the pasted url byte for byte, manifest identical over the Cloudflare and the local origin, one file downloaded through the panel; panel reads now go through the lab server (DEF-PEER-72 closed) so the deployment CSP no longer blocks them - ui-tests/tests/peer-origin.spec.ts green under that CSP
+  - blocked-by: DEF-PEER-72 - the browser half of the connection is refused by the deployment's default-src 'self' policy
   - test-tags: MANUAL
   - log: 2026-09-01T19:55:03Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
   - log: 2026-09-01T19:57:19Z @kj edited test-tags (replaced)
-- [ ] `ACC-CLOUD-18` **HTTPS end to end behind the hub proxy** - HIGH; browser fetches (`credentials: 'omit'`) and server-side saves/uploads go to the stored `https://` Cloudflare origin; publicly trusted certificate, works with `verify_peer_tls = True`
+  - log: 2026-09-17T11:53:50Z @kj closed
+- [x] `ACC-CLOUD-18` **HTTPS end to end behind the hub proxy** - HIGH; browser fetches (`credentials: 'omit'`) and server-side saves/uploads go to the stored `https://` Cloudflare origin; publicly trusted certificate, works with `verify_peer_tls = True`
+  - evidence: 2026-09-17 two-lab check: server-side save and upload to the stored https Cloudflare origin with verify_peer_tls default True (Google Trust Services certificate), edge answers 404 for non-public paths; browser requests to the Cloudflare host carried no Cookie header with a decoy cookie planted; since DEF-PEER-72 the browser makes no cross-origin request at all - manifest and downloads are same-origin to the lab server, which keeps TLS verification
+  - blocked-by: DEF-PEER-72 - the browser fetches never leave the page under the deployment's policy; the server-side https saves and uploads were verified 2026-09-17
   - test-tags: MANUAL
   - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
   - log: 2026-09-01T19:57:19Z @kj edited test-tags (replaced)
+  - log: 2026-09-17T11:53:50Z @kj closed
 - [x] `ACC-CLOUD-19` **own Cloudflare links are self** - MEDIUM; `_own_link_prefixes` counts the configured public origin + own base path as self; pasting one's own Cloudflare link shows the "your own link" dialog, no loop connection
   - test-tags: UNIT
   - log: 2026-09-01T19:55:04Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
@@ -444,10 +450,12 @@ Per-uploader identity on request pages - the server-issued hash and the scoping 
   - test-tags: UNIT
   - log: 2026-06-12T00:00:00Z @kj implemented
   - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
-- [ ] `ACC-UPLDR-101` **Live verification** - MEDIUM; Playwright: two browser contexts upload to one request, each sees only its own files and can remove them; owner panel shows both `name (hash)` rows
+- [x] `ACC-UPLDR-101` **Live verification** - MEDIUM; Playwright: two browser contexts upload to one request, each sees only its own files and can remove them; owner panel shows both `name (hash)` rows
+  - evidence: live 2026-09-16 on a standalone 1.2.45 lab (port 8899, headless chromium 151): two browser contexts uploaded uploader-alpha.txt and uploader-beta.txt to request 5WPKUNAI; after reload each page listed only its own file; the page's Remove sent DELETE .../public/request/5WPKUNAI/upload?name=... (200) and removed only the caller's file, the store's uploader count fell by one; the owner panel expanded the request row to 'Uploader Alpha (bkwc)' and 'Uploader Beta (JD6P)' with one file each
   - test-tags: MANUAL
   - log: 2026-06-12T00:00:00Z @kj criterion added, pending live run
   - log: 2026-09-01T19:56:40Z @kj edited test-tags (replaced)
+  - log: 2026-09-17T08:04:31Z @kj closed
 
 ## Hub mode `HUBM`
 

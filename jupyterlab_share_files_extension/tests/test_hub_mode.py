@@ -117,7 +117,7 @@ def test_standalone_table_keeps_public_and_static_routes(standalone_env):
     assert any("/public/share/" in p for p in patterns)
     assert any(spec[1] is StaticFileHandler for spec in table)
     assert any(issubclass(spec[1], _PublicBase) for spec in table)
-    assert len(table) == 27
+    assert len(table) == 29
 
 
 @pytest.mark.parametrize("missing", ["JUPYTERHUB_API_TOKEN", "SHARE_FILES_HUB_API"])
@@ -183,7 +183,7 @@ def test_load_with_shares_dir_outside_the_root_registers_no_route(standalone_env
     assert len(errors) == 1 and "outside the notebook root" in errors[0]
 
     handlers, errors = load("uploads")
-    assert len(handlers) == 27
+    assert len(handlers) == 29
     assert len(called) == 1
     assert errors == []
 

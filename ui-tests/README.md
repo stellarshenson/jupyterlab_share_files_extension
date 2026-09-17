@@ -61,6 +61,16 @@ jlpm test:hub
 
 The mock speaks the hub's fileshare routes including the per-record cloud switch, the password requirement, the change stream and the recipient page `/s/<id>`; `/_control/*` is the test's side door (reset, capabilities, policy, tunnel, page, cloudoff, upload, nudge, calls, streams). `tunnel` sets the tunnel base, its registration delay after the first switch-on and whether it ever registers; `page` sets the status the recipient page answers; `cloudoff` sets the status a Cloudflare switch off answers. `MOCK_HUB_PORT` (default 8765) and `JUPYTER_TEST_PORT` (default 8888) move the ports when the defaults are taken. The configuration sets `SHARE_FILES_CLOUD_CONFIRM_SECONDS=10` on the lab, so its wait for the hub to confirm a Cloudflare switch-on ends after 10s instead of 120s and the timeout is testable. Both configurations serve the working tree's build through `labextensions/` (a symlink to the build output, so `jlpm build` first) and load the server extension from the repository through `PYTHONPATH`.
 
+## Live-hub suite
+
+`tests/livehub` drives a JupyterLab spawned from inside a hub-managed lab against the real hub that lab talks to: the configuration inherits the contract galaxahub injected into the shell (`SHARE_FILES_HUB_API`, `JUPYTERHUB_API_TOKEN`, the hub's base URL) and refuses to start without it. Nothing is mocked - the records exist on the hub until the tests delete them, and a Cloudflare switch-on waits for the hub's real tunnel (about 70 s), so the suite is slow and runs one test at a time. Every fixture carries the `livehub-` prefix; each test removes its own and the first sweeps any an aborted run left behind. Run it from a terminal inside the hub lab; it takes port 8898 unless `JUPYTER_TEST_PORT` says otherwise:
+
+```sh
+jlpm test:livehub
+```
+
+It covers what the mock cannot vouch for: the create, ready and delete round trip on the hub, the refusal reasons the hub relays, and the Cloudflare switch confirmed by the hub's tunnel with the link moving to the tunnel host and back. The mock-hub suite stays the place for the failure paths (a tunnel that never registers, a switch off the hub refuses, an outage), which a live hub cannot be asked to produce.
+
 ## Update the tests snapshots
 
 > All commands are assumed to be executed from the root directory

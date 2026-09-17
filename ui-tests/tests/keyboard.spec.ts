@@ -351,7 +351,8 @@ async function routePeer(page: any, entry: string): Promise<void> {
       }
     });
   });
-  await page.route(`${PEER}/manifest`, (route: any) =>
+  // the panel reads the peer through its own server (DEF-PEER-72)
+  await page.route(`**${API}/connections/peer-one/manifest*`, (route: any) =>
     route.fulfill({
       json: {
         id: 'peer-one',
@@ -540,6 +541,41 @@ test('a confirmed Delete hands the focus to the neighbouring row', async ({
   await expect(one).toHaveCount(0);
   // the row that took the deleted row's place holds the focus
   await expect(two).toBeFocused();
+});
+
+test('a confirmed Delete of the only row hands the focus to its section header', async ({
+  page
+}) => {
+  const name = `keyboard-delete-last-${Date.now()}`;
+  await createShare(page, name);
+  await openPanel(page);
+  // the other tests' rows are filtered away: this share is the only row
+  // (the filter box is hidden until the toolbar's Toggle filter shows it)
+  await page.locator(`${PANEL} button[title="Toggle filter"]`).click();
+  await page.locator(`${PANEL} .jp-ShareFilesPanel-filterInput`).fill(name);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-itemHeader`, {
+    hasText: name
+  });
+  await expect(page.locator(`${PANEL} [data-row-key]`)).toHaveCount(1);
+  await row.focus();
+  await page.keyboard.press('Tab'); // Copy link
+  await page.keyboard.press('Tab'); // Delete share
+  await page.keyboard.press('Enter');
+  const dialog = page.locator('.jp-Dialog');
+  await dialog.locator('button', { hasText: 'Delete' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(row).toHaveCount(0);
+  // no row is left: the section header keeps the focus in the panel, and
+  // Enter still folds the section
+  const header = page.locator(`${PANEL} .jp-ShareFilesPanel-sectionHeader`, {
+    hasText: 'My Shares'
+  });
+  await expect(header).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(header.locator('.jp-ShareFilesPanel-sectionTwisty')).toHaveText(
+    '▸'
+  );
+  await expect(header).toBeFocused();
 });
 
 test("a clicked row's buttons hide again once the pointer leaves", async ({

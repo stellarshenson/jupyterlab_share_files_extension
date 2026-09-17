@@ -29,7 +29,7 @@ except ImportError:  # a liblzma-less Python: LZMA members raise NotImplementedE
     lzma = None
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import tornado
 import tornado.httpclient
@@ -114,6 +114,37 @@ _PEER_CLIENT = tornado.simple_httpclient.SimpleAsyncHTTPClient(max_body_size=PEE
 # --------------------------------------------------------------------------- #
 
 
+# Unlock tokens for password-protected peers, keyed (link, password): the
+# peer signs its token on the password, so a changed password gives a new key
+# and the stale entry is never sent again. Process-local; a restart unlocks
+# once more.
+_PEER_TOKENS: dict[tuple[str, str], str] = {}
+
+# the peer answered 401 to the password the connection holds (or holds none
+# and the peer now wants one): the owner changed it since the connect
+PEER_PASSWORD_CHANGED = (
+    "The peer no longer accepts this connection's password - reconnect the link with the current one."
+)
+
+
+def _unlock_token(body: bytes) -> str:
+    """The token in a peer's unlock answer, '' when the body is not the
+    ``{"token": "<string>"}`` object this extension sends."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return ""
+    token = data.get("token") if isinstance(data, dict) else None
+    return token if isinstance(token, str) else ""
+
+
+def _token_expiry(token: str) -> int:
+    """The expiry a peer's ``<expiry>.<sig>`` unlock token carries, 0 when
+    it has none."""
+    head = token.split(".", 1)[0]
+    return int(head) if head.isdigit() else 0
+
+
 class _Base(APIHandler):
     """Common helpers: store factories, JSON body parsing, error reporting."""
 
@@ -186,13 +217,19 @@ class _Base(APIHandler):
                 ) from None
             raise PeerUnavailable("The peer closed the connection before the download finished") from None
 
-    async def _peer_auth_headers(self, conn: dict) -> dict:
+    async def _peer_auth_headers(self, conn: dict, fresh: bool = False) -> dict:
         """Unlock a password-protected peer resource before fetching from it.
 
         Connections to protected shares/requests persist the password; this
         trades it for a short-lived unlock token via the peer's public unlock
         endpoint and returns the ``X-Share-Token`` header to send on every
         subsequent peer fetch. Unprotected connections return no headers.
+
+        The token is kept per process until it expires: the peer charges
+        every unlock against its password limiter (a 1 s cooldown by
+        default), so the panel's 15 s polls must not unlock again and again
+        or a save right after a poll reads as a wrong password. ``fresh``
+        drops the kept token first, for a retry after the peer refused it.
         """
         password = conn.get("password") or ""
         if not password:
@@ -200,22 +237,27 @@ class _Base(APIHandler):
         link = (conn.get("link") or "").rstrip("/")
         if not link:
             return {}
+        cache_key = (link, password)
+        if fresh:
+            _PEER_TOKENS.pop(cache_key, None)
+        token = _PEER_TOKENS.get(cache_key)
+        if token and _token_expiry(token) > time.time() + 60:
+            return {"X-Share-Token": token}
         resp = await self._peer_fetch(
             link + "/unlock",
             method="POST",
             body=json.dumps({"password": password}),
             headers={"Content-Type": "application/json"},
         )
+        if resp.code == 429:
+            raise PeerUnavailable("too many password attempts - wait before retrying")
         if resp.code != 200:
-            raise PeerUnavailable(
-                "The peer rejected the stored password (the owner may have "
-                "changed it) - reconnect the link with the new password."
-            )
-        try:
-            token = json.loads(resp.body).get("token") or ""
-        except ValueError:
-            token = ""
-        return {"X-Share-Token": token} if token else {}
+            raise PeerUnavailable(PEER_PASSWORD_CHANGED)
+        token = _unlock_token(resp.body)
+        if not token:
+            return {}
+        _PEER_TOKENS[cache_key] = token
+        return {"X-Share-Token": token}
 
     @property
     def share_store(self) -> ShareStore:
@@ -1029,6 +1071,11 @@ class ConnectionsHandler(_Base):
                         "error": "wrong password",
                         "password_required": True,
                     })
+                # keep the token this unlock earned: the panel polls the new
+                # connection at once, inside the peer's cooldown
+                token = _unlock_token(unlock.body)
+                if token:
+                    _PEER_TOKENS[(link.rstrip("/"), password)] = token
         except PeerUnavailable as exc:
             return self.write_error_json(502, str(exc))
         entry = self.connection_store.add(
@@ -1190,8 +1237,12 @@ class ConnectionSaveHandler(_Base):
             auth_headers = await self._peer_auth_headers(conn)
             # Resolve share name for the wrapping folder when saving all
             manifest_resp = await self._peer_fetch(api_base + "/manifest", headers=auth_headers)
+            if manifest_resp.code == 401 and auth_headers:
+                # a kept token the peer no longer accepts: unlock once more
+                auth_headers = await self._peer_auth_headers(conn, fresh=True)
+                manifest_resp = await self._peer_fetch(api_base + "/manifest", headers=auth_headers)
             if manifest_resp.code != 200:
-                return self.write_error_json(502, f"Remote unavailable ({manifest_resp.code})")
+                return self.write_error_json(*_peer_answer(manifest_resp.code))
             try:
                 manifest = json.loads(manifest_resp.body)
             except ValueError:
@@ -1264,6 +1315,101 @@ class ConnectionSaveHandler(_Base):
             return self._failed(saved, 502, "Could not write the save to the workspace")
 
         self.write_json({"ok": True, "saved": saved})
+
+
+def _peer_answer(code: int) -> tuple[int, str]:
+    """The status and sentence the lab relays for a peer answer other than
+    200: the two the panel can act on keep their status, the rest is the
+    peer being unavailable."""
+    if code == 401:
+        return 401, PEER_PASSWORD_CHANGED
+    if code == 404:
+        return 404, "The owner has removed this share or request."
+    return 502, f"Remote unavailable ({code})"
+
+
+class _ConnectionPeerBase(_Base):
+    """A connected peer's public endpoint, read by THIS server for the panel.
+
+    The panel used to read a peer's manifest and files from the browser,
+    straight from the peer's origin and without credentials. A lab page served
+    with a Content-Security-Policy of ``default-src 'self'`` refuses that
+    fetch before it leaves the page, and so does a deployment's CORS rule, so
+    every connection read ``offline`` (DEF-PEER-72). Read here the request is
+    same-origin for the browser, the stored password unlocks a protected peer
+    as it does for a save, and the peer's origin never reaches the page.
+    """
+
+    async def _peer(self, key: str, suffix: str, download: bool = False):
+        """The peer's 200 answer for ``<link>/<suffix>``, or None when the
+        error was already written."""
+        try:
+            conn = self.connection_store.get(key)
+        except NotFoundError as exc:
+            self.write_error_json(404, str(exc))
+            return None
+        link = (conn.get("link") or "").rstrip("/")
+        if not link:
+            self.write_error_json(400, "Connection has no link - reconnect it")
+            return None
+        try:
+            headers = await self._peer_auth_headers(conn)
+            resp = await self._peer_fetch(link + "/" + suffix, download=download, headers=headers)
+            if resp.code == 401 and headers:
+                # a kept token the peer no longer accepts: unlock once more
+                headers = await self._peer_auth_headers(conn, fresh=True)
+                resp = await self._peer_fetch(
+                    link + "/" + suffix, download=download, headers=headers
+                )
+        except PeerUnavailable as exc:
+            self.write_error_json(502, str(exc))
+            return None
+        if resp.code != 200:
+            self.write_error_json(*_peer_answer(resp.code))
+            return None
+        return resp
+
+
+class ConnectionManifestHandler(_ConnectionPeerBase):
+    """api/connections/<key>/manifest - the peer's manifest, never stored by
+    a cache: it is per caller and changes on every add or remove."""
+
+    @tornado.web.authenticated
+    async def get(self, key):
+        resp = await self._peer(key, "manifest")
+        if resp is None:
+            return
+        try:
+            manifest = json.loads(resp.body)
+        except ValueError:
+            return self.write_error_json(502, "The peer answered with an unreadable manifest")
+        self.set_header("Cache-Control", "no-store")
+        self.write_json(manifest)
+
+
+class ConnectionDownloadHandler(_ConnectionPeerBase):
+    """api/connections/<key>/download?name=<entry> - one entry of a connected
+    share (a folder arrives as the zip the peer builds), handed to the browser
+    as an attachment. Buffered like a save, under the same size and time
+    limits; a browser download could not carry the unlock header, and the
+    query token the peer accepts would land in the page's history."""
+
+    @tornado.web.authenticated
+    async def get(self, key):
+        name = self.get_argument("name", default="")
+        if not name:
+            return self.write_error_json(400, "Missing 'name'")
+        resp = await self._peer(key, "download/" + quote(name, safe="/"), download=True)
+        if resp is None:
+            return
+        self.set_header(
+            "Content-Disposition", "attachment; filename*=UTF-8''" + quote(name.rsplit("/", 1)[-1])
+        )
+        self.set_header("Cache-Control", "no-store")
+        # APIHandler.finish sets the Content-Type itself; hand it the peer's
+        self.finish(
+            resp.body, set_content_type=resp.headers.get("Content-Type") or "application/octet-stream"
+        )
 
 
 class ConnectionUploadHandler(_Base):
@@ -1416,6 +1562,8 @@ async def _post_file(
         raise PeerUnavailable(f"The peer did not answer within {waited:g} s") from None
     except HTTPStreamClosedError:
         raise PeerUnavailable("The peer closed the connection before the upload finished") from None
+    if resp.code == 401:
+        raise PeerUnavailable(PEER_PASSWORD_CHANGED)
     if resp.code >= 400:
         raise PeerUnavailable(f"Upload failed: {resp.code}")
     return resp.body or b""
@@ -1793,6 +1941,8 @@ def setup_route_handlers(web_app, config: ShareFilesConfig | None = None):
         (url_path_join(base_url, ns, "api", "connections"), ConnectionsHandler),
         (url_path_join(base_url, ns, "api", "connections", r"([^/]+)", "save"), ConnectionSaveHandler),
         (url_path_join(base_url, ns, "api", "connections", r"([^/]+)", "upload"), ConnectionUploadHandler),
+        (url_path_join(base_url, ns, "api", "connections", r"([^/]+)", "manifest"), ConnectionManifestHandler),
+        (url_path_join(base_url, ns, "api", "connections", r"([^/]+)", "download"), ConnectionDownloadHandler),
         (url_path_join(base_url, ns, "api", "connections", r"([^/]+)"), ConnectionItemHandler),
         # public unlock (password attempt; rate limited)
         (url_path_join(base_url, ns, "public", r"(share|request)", r"([A-Z2-7]{6,16})", "unlock"), PublicUnlockHandler),

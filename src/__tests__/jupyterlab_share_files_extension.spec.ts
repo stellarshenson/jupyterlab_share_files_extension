@@ -12,44 +12,23 @@ import {
   linkCheckText,
   streamUrl,
   linkRef,
+  connectionDownloadUrl,
   offlineReason,
-  remoteDownloadAllUrl,
-  remoteDownloadUrl,
   type IExtensionInfo
 } from '../api';
 import { clearClip, getClip, setClip } from '../clipboard';
 
 describe('api URL helpers', () => {
-  const link =
-    'https://hub.example.com/user/alice/jupyterlab-share-files-extension/public/share/A3KM7X2P';
+  // the browser never touches the peer's origin: a connected entry is
+  // downloaded through our own server (DEF-PEER-72)
+  const settings = { baseUrl: 'https://hub.example.com/user/me/' } as any;
+  const key = 'share:https://peer.example.com:A3KM7X2P';
 
-  it('builds a remote download URL for a named entry', () => {
-    expect(remoteDownloadUrl(link, 'train.csv')).toBe(
-      link + '/download/train.csv'
+  it('builds the download URL on our own server, key and name encoded', () => {
+    expect(connectionDownloadUrl(settings, key, 'my file.csv')).toBe(
+      'https://hub.example.com/user/me/jupyterlab-share-files-extension/api/connections/' +
+        'share%3Ahttps%3A%2F%2Fpeer.example.com%3AA3KM7X2P/download?name=my%20file.csv'
     );
-  });
-
-  it('URL-encodes entry names with spaces', () => {
-    expect(remoteDownloadUrl(link, 'my file.csv')).toBe(
-      link + '/download/my%20file.csv'
-    );
-  });
-
-  it('URL-encodes special characters in entry names', () => {
-    expect(remoteDownloadUrl(link, 'a&b.txt')).toBe(
-      link + '/download/a%26b.txt'
-    );
-  });
-
-  it('builds a download-all URL', () => {
-    expect(remoteDownloadAllUrl(link)).toBe(link + '/download-all');
-  });
-
-  it('strips trailing slash from the link before appending', () => {
-    expect(remoteDownloadUrl(link + '/', 'x.txt')).toBe(
-      link + '/download/x.txt'
-    );
-    expect(remoteDownloadAllUrl(link + '/')).toBe(link + '/download-all');
   });
 });
 
@@ -513,47 +492,6 @@ describe('connection link resolution', () => {
   });
 });
 
-describe('connected-share entry download', () => {
-  // Locks the URL + filename the panel builds for a connected (peer) share
-  // entry. The download itself runs with `credentials: 'omit'` + a Blob (see
-  // widget._downloadRemote) so a credentialed navigation can never trigger
-  // JupyterHub's spawn-as-owner screen when the owner's server is offline.
-  function downloadUrl(baseLink: string, name: string): string {
-    return (
-      baseLink.replace(/\/$/, '') + '/download/' + encodeURIComponent(name)
-    );
-  }
-  function downloadName(entry: {
-    name: string;
-    type: 'file' | 'directory';
-  }): string {
-    return entry.name + (entry.type === 'directory' ? '.zip' : '');
-  }
-
-  const baseLink =
-    'https://hub.example.com/user/alice/jupyterlab-share-files-extension/public/share/ABCDEFGH';
-
-  it('builds a download URL under the owner /user/<name>/ prefix', () => {
-    const url = downloadUrl(baseLink, 'train.csv');
-    expect(url).toBe(baseLink + '/download/train.csv');
-    expect(url).toContain('/user/alice/');
-  });
-
-  it('URL-encodes entry names', () => {
-    expect(downloadUrl(baseLink, 'my file.csv')).toBe(
-      baseLink + '/download/my%20file.csv'
-    );
-  });
-
-  it('names a file download as-is', () => {
-    expect(downloadName({ name: 'data.csv', type: 'file' })).toBe('data.csv');
-  });
-
-  it('names a directory download with a .zip suffix', () => {
-    expect(downloadName({ name: 'logs', type: 'directory' })).toBe('logs.zip');
-  });
-});
-
 describe('share clipboard', () => {
   // The extension-owned clipboard that bridges file-browser <-> panel copy and
   // paste, since JupyterLab's native file-browser clipboard is private. The
@@ -595,38 +533,21 @@ describe('share clipboard', () => {
 });
 
 describe('offline reason for a peer refresh failure', () => {
-  it('lists candidate causes for a bare TypeError without asserting one', () => {
+  it('reads a bare TypeError as our own server not answering', () => {
     const reason = offlineReason(new TypeError('Failed to fetch'));
     expect(reason).toContain('Failed to fetch');
-    expect(reason).toContain("owner's server is running");
-    // must not assert a single cause - a wrong one misdirects the next reader
-    expect(reason).toContain('Most often');
-    expect(reason).toContain('this machine being offline');
+    expect(reason).toContain("this lab's own server did not answer");
   });
 
-  it('blames local connectivity when our own server is unreachable too', () => {
-    const reason = offlineReason(new TypeError('Failed to fetch'), true);
-    expect(reason).toContain('local connectivity');
-    expect(reason).not.toContain('JupyterHub stops');
-  });
-
-  it('explains a 401 as a password problem, not unreachability', () => {
-    const reason = offlineReason(
-      new Error('Could not load share (status 401)')
-    );
-    expect(reason).toContain('rejected the stored password');
-  });
-
-  it('explains a 404 as a removed resource', () => {
-    const reason = offlineReason(
-      new Error('Could not load request (status 404)')
-    );
-    expect(reason).toContain('removed this share or request');
+  it("relays the server's sentence about the peer as fact", () => {
+    const sentence = 'The owner has removed this share or request.';
+    expect(offlineReason(new Error(sentence))).toBe(sentence);
   });
 
   it('never surfaces a useless placeholder string', () => {
     for (const bad of [undefined, null, {}, new Error('')]) {
       const reason = offlineReason(bad);
+      expect(reason).not.toBe('');
       expect(reason).not.toContain('undefined');
       expect(reason).not.toContain('[object Object]');
     }

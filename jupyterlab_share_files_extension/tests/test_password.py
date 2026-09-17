@@ -369,12 +369,15 @@ def test_connect_to_protected_share_with_wrong_password_rejected(workspace):
 
 
 def test_connect_to_protected_share_with_password_verifies_and_stores(workspace):
+    # a live-shaped token, and a pasted link with a trailing slash: the kept
+    # token must sit under the key the polls read (link without the slash)
+    token = f"{int(time.time()) + 3600}.sig"
     handler = _connections_handler(
         workspace,
-        {"link": PEER_LINK, "password": "open-sesame"},
+        {"link": PEER_LINK + "/", "password": "open-sesame"},
         {
             "manifest": _PeerResponse(401),
-            "unlock": _PeerResponse(200, json.dumps({"token": "tok"}).encode()),
+            "unlock": _PeerResponse(200, json.dumps({"token": token}).encode()),
         },
     )
     asyncio.run(handler.post())
@@ -385,6 +388,8 @@ def test_connect_to_protected_share_with_password_verifies_and_stores(workspace)
     # ...and persisted with the connection for later save/upload unlocks
     stored = ConnectionStore(str(workspace)).list()[0]
     assert stored["password"] == "open-sesame"
+    # the token it earned is kept for the panel's first poll
+    assert routes._PEER_TOKENS.pop((PEER_LINK, "open-sesame")) == token
 
 
 def test_connect_to_open_share_skips_unlock(workspace):

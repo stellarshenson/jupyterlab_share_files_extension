@@ -174,7 +174,7 @@ A lab spawned by galaxahub carries `SHARE_FILES_PUBLIC_ZONE=hub`, the path of th
 A link is served by the JupyterLab server that created it, so it works only while that server is running.
 
 - **Owner's server stopped** - the link stops answering; on JupyterHub the idle culler stops unused servers, so a link can go dead without anyone touching it
-- **In the panel** a connected peer then shows `offline`; hover the badge for the reason (the hub's reply carries no CORS headers, so the browser reports only a generic failure and the panel names the likely causes)
+- **In the panel** a connected peer then shows `offline`; hover the badge for the reason - the panel's own server reads the peer, so the badge names the peer's answer (stopped server, removed record, rejected password), and a page policy such as `default-src 'self'` cannot stop the read
 - **For recipients** the page cannot load until the owner's server is back
 
 ## Releases

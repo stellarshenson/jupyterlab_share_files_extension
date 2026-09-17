@@ -44,5 +44,18 @@ c.FileContentsManager.delete_to_trash = False
 c.AsyncFileContentsManager.delete_to_trash = False
 c.AsyncLargeFileManager.delete_to_trash = False
 
+# The Content-Security-Policy galaxalab's /galaxalab/etc/jupyter/jupyter_lab_config.py
+# puts on every lab page, verbatim. The panel must work under it: a connected
+# peer on another origin is read through this server, never straight from the
+# browser (DEF-PEER-72).
+c.ServerApp.tornado_settings = {
+    "headers": {
+        "Content-Security-Policy": (
+            "frame-ancestors 'self'; default-src 'self' 'unsafe-inline' 'unsafe-eval' "
+            "data: blob:; img-src * data: blob: 'unsafe-inline' 'unsafe-eval';"
+        )
+    }
+}
+
 # Uncomment to set server log level to debug level
 # c.ServerApp.log_level = "DEBUG"

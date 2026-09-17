@@ -20,12 +20,12 @@ import {
   addConnection,
   addShareItems,
   checkLink,
+  connectionDownloadUrl,
   createRequest,
   createShare,
   deleteRequest,
   deleteShare,
-  fetchRemoteRequest,
-  fetchRemoteShare,
+  fetchConnectionManifest,
   fetchRequestUpload,
   generatePassword,
   getInfo,
@@ -49,7 +49,6 @@ import {
   setTunnel,
   streamUrl,
   setupTunnel,
-  unlockRemote,
   uploadToConnection
 } from './api';
 import { clearClip, getClip, setClip } from './clipboard';
@@ -908,6 +907,8 @@ export class ShareFilesPanel extends Widget {
     // the focused row's place in the list, so a row the rebuild drops (a
     // confirmed delete) can hand the focus to its neighbour
     let focusedIndex = -1;
+    // and the section it sits in, for a delete that leaves no row at all
+    let focusedSection = '';
     if (focusedKey) {
       const row = active?.closest<HTMLElement>('[data-row-key]');
       if (row) {
@@ -915,6 +916,11 @@ export class ShareFilesPanel extends Widget {
           this._body.querySelectorAll<HTMLElement>('[data-row-key]')
         ).indexOf(row);
       }
+      focusedSection =
+        active
+          ?.closest('.jp-ShareFilesPanel-section')
+          ?.querySelector<HTMLElement>('.jp-ShareFilesPanel-sectionHeader')
+          ?.dataset.focusKey || '';
     }
     this._body.innerHTML = '';
     const visibleShares = this._applyNameFilter(this._state.shares);
@@ -954,7 +960,7 @@ export class ShareFilesPanel extends Widget {
       this._connectRow.style.display = hub ? 'none' : '';
     }
     if (focusedKey) {
-      this._restoreFocus(focusedKey, byKeyboard, focusedIndex);
+      this._restoreFocus(focusedKey, byKeyboard, focusedIndex, focusedSection);
     }
   }
 
@@ -972,13 +978,17 @@ export class ShareFilesPanel extends Widget {
     return null;
   }
 
-  /** Put the focus back on what `key` names after a re-render. Keyboard
-   * focus also scrolls back into view when rows added above have pushed the
-   * element out of the list; a clicked row keeps the scroll position. */
+  /** Put the focus back on what `key` names after a re-render - the element
+   * itself, else the row that took a deleted row's place, else the header of
+   * the section the row sat in, so a keyboard user who deletes the last row
+   * stays in the panel (DEF-PANEL-70). Keyboard focus also scrolls back into
+   * view when rows added above have pushed the element out of the list; a
+   * clicked row keeps the scroll position. */
   private _restoreFocus(
     key: string,
     byKeyboard: boolean,
-    fallbackIndex = -1
+    fallbackIndex = -1,
+    fallbackSection = ''
   ): void {
     let el = this._byFocusKey(key);
     if (!el && fallbackIndex >= 0) {
@@ -986,6 +996,10 @@ export class ShareFilesPanel extends Widget {
       const rows =
         this._body?.querySelectorAll<HTMLElement>('[data-row-key]') || [];
       el = rows[Math.min(fallbackIndex, rows.length - 1)] || null;
+    }
+    if (!el && fallbackSection) {
+      // no row at all - the section header, by its own focus key
+      el = this._byFocusKey(fallbackSection);
     }
     if (!el) {
       return;
@@ -1038,6 +1052,19 @@ export class ShareFilesPanel extends Widget {
     const header = document.createElement('div');
     header.className = 'jp-ShareFilesPanel-sectionHeader';
     header.title = expanded ? 'Click to collapse' : 'Click to expand';
+    // focusable by script only (see `_restoreFocus`) and named across a
+    // re-render; Enter and Space toggle it like a click
+    header.tabIndex = -1;
+    header.dataset.focusKey = `section:${key}`;
+    header.setAttribute('role', 'button');
+    header.setAttribute('aria-expanded', String(expanded));
+    header.addEventListener('keydown', evt => {
+      if (evt.key === 'Enter' || evt.key === ' ') {
+        evt.preventDefault();
+        this._state.expanded[key] = !this._state.expanded[key];
+        this._render();
+      }
+    });
     const caret = document.createElement('span');
     caret.className = 'jp-ShareFilesPanel-sectionTwisty';
     caret.textContent = expanded ? '▾' : '▸'; // ▾ / ▸
@@ -1677,11 +1704,6 @@ export class ShareFilesPanel extends Widget {
       list.appendChild(empty);
       return list;
     }
-    const baseLink = (share.link || '').replace(/\/$/, '');
-    // Protected share: ride the unlock token on download URLs (?t=) - plain
-    // <a>/fetch downloads cannot carry headers.
-    const token = this._unlockTokens.get(conn.key) || '';
-    const tokenQs = token ? '?t=' + encodeURIComponent(token) : '';
     for (const entry of share.entries) {
       const row = document.createElement('div');
       row.className = 'jp-ShareFilesPanel-entry jp-mod-clickable';
@@ -1701,8 +1723,11 @@ export class ShareFilesPanel extends Widget {
       size.className = 'jp-ShareFilesPanel-entrySize';
       size.textContent = this._formatSize(entry.size);
       row.appendChild(size);
-      const url =
-        baseLink + '/download/' + encodeURIComponent(entry.name) + tokenQs;
+      const url = connectionDownloadUrl(
+        this._serverSettings,
+        conn.key,
+        entry.name
+      );
       row.title = this._entryTooltip(entry, false);
       row.classList.add('jp-mod-clickable');
       row.addEventListener('dblclick', evt => {
@@ -1890,20 +1915,23 @@ export class ShareFilesPanel extends Widget {
   }
 
   /**
-   * Download a file from a connected peer's public endpoint WITHOUT credentials.
-   *
-   * Uses `fetch(..., { credentials: 'omit' })` then a Blob download instead of
-   * navigating the top window. On JupyterHub this is critical: a credentialed
-   * navigation (e.g. `window.open`) to a peer's `/user/<owner>/...` link whose
-   * server is offline makes the Hub offer to spawn/access the owner's server as
-   * the current (admin) user. Omitting credentials means the request can never
-   * trigger that flow - it just fails cleanly when the owner is offline.
+   * Download a file of a connected peer through our server's download route
+   * (see `connectionDownloadUrl`) and hand it to the browser as a Blob
+   * download. A navigation to the URL would leave the panel and could not
+   * report a failure; the fetch reports one as a notification.
    */
   private async _downloadRemote(url: string, filename: string): Promise<void> {
     try {
-      const r = await fetch(url, { credentials: 'omit' });
+      const r = await fetch(url);
       if (!r.ok) {
-        throw new Error(`status ${r.status}`);
+        // our server answers every failure with {error: <sentence>}
+        let reason = `status ${r.status}`;
+        try {
+          reason = (await r.json()).error || reason;
+        } catch {
+          // not a JSON body - the status is all there is
+        }
+        throw new Error(reason);
       }
       const blob = await r.blob();
       const href = URL.createObjectURL(blob);
@@ -1917,7 +1945,7 @@ export class ShareFilesPanel extends Widget {
       URL.revokeObjectURL(href);
     } catch (err: any) {
       Notification.error(
-        `Could not download "${filename}" - the owner's server may be offline`
+        `Could not download "${filename}" - ${offlineReason(err)}`
       );
     }
   }
@@ -2754,28 +2782,24 @@ export class ShareFilesPanel extends Widget {
     }
     const link = conn.link || this._linkFor(conn);
     try {
-      const token = await this._tokenFor(conn, link);
-      let data: IRemoteShare | IRemoteRequest;
-      if (conn.kind === 'share') {
-        data = await fetchRemoteShare(link, token);
-      } else {
-        data = await fetchRemoteRequest(link, token);
-      }
+      // read by our own server - same-origin, whatever policy the page carries
+      const data = await fetchConnectionManifest(
+        this._serverSettings,
+        conn.key
+      );
       this._state.connectionData.set(conn.key, data);
       this._state.offlineKeys.delete(conn.key);
       this._state.offlineReasons.delete(conn.key);
       this._loggedOfflineKeys.delete(conn.key);
     } catch (err: any) {
-      // a stale unlock token (expiry / password change) also lands here -
-      // drop it so the next poll re-unlocks with the stored password
-      this._unlockTokens.delete(conn.key);
       this._state.offlineKeys.add(conn.key);
-      // Every distinct failure collapses into one "offline" badge - a CORS
-      // rejection, a mixed-content block, DNS, an edge challenge page, a 401
-      // from an expired token, a 404. Without the reason a user report of
-      // "it just shows offline" cannot be diagnosed at all, so record it
-      // (once per streak) and keep it for the badge tooltip.
-      const reason = offlineReason(err, this._networkOffline);
+      // Every distinct failure collapses into one "offline" badge - our
+      // server's 502 for a peer it could not reach, its 401 for a rejected
+      // password, its 404 for a removed record, or our server not answering
+      // at all. Without the reason a user report of "it just shows offline"
+      // cannot be diagnosed, so record it (once per streak) and keep it for
+      // the badge tooltip.
+      const reason = offlineReason(err);
       this._state.offlineReasons.set(conn.key, reason);
       // Log once per (link, reason) so a 15s poll does not flood the console,
       // while a peer that starts failing differently - or the same failure on
@@ -2788,28 +2812,6 @@ export class ShareFilesPanel extends Widget {
           err
         );
       }
-    }
-  }
-
-  /** Unlock token for a password-protected connection ('' when none needed).
-   * Tokens are cached per connection and re-fetched when the cached one
-   * stops working (expiry, password change on the owner's side). */
-  private async _tokenFor(conn: IConnection, link: string): Promise<string> {
-    if (!conn.password) {
-      return '';
-    }
-    const cached = this._unlockTokens.get(conn.key);
-    if (cached) {
-      return cached;
-    }
-    try {
-      const token = await unlockRemote(link, conn.password);
-      this._unlockTokens.set(conn.key, token);
-      return token;
-    } catch {
-      // wrong/changed password or rate limit - fetches will 401 and the
-      // connection shows offline; reconnecting with the new password repairs
-      return '';
     }
   }
 
@@ -3888,6 +3890,4 @@ export class ShareFilesPanel extends Widget {
   /** Last (link, reason) logged per connection, so a 15s poll does not flood
    * the console while a changed failure still gets its own line. */
   private _loggedOfflineKeys = new Map<string, string>();
-  /** Unlock tokens for password-protected connections, keyed by conn.key. */
-  private _unlockTokens = new Map<string, string>();
 }

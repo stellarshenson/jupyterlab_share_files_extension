@@ -17,8 +17,9 @@ const BASE_URL = `http://localhost:${PORT}`;
 
 module.exports = {
   ...baseConfig,
-  // tests/hub runs under playwright.hub.config.js against a mock hub
-  testIgnore: '**/hub/**',
+  // tests/hub runs under playwright.hub.config.js against a mock hub,
+  // tests/livehub under playwright.livehub.config.js against the real one
+  testIgnore: ['**/hub/**', '**/livehub/**'],
   use: { ...baseConfig.use, baseURL: BASE_URL },
   webServer: {
     command: 'jupyter lab --config jupyter_server_test_config.py',

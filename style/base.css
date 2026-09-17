@@ -285,6 +285,13 @@
   outline-offset: -1px;
 }
 
+/* keyboard focus on a section header (it takes the focus when the last row
+   of its section is deleted); inset for the same reason */
+.jp-ShareFilesPanel-sectionHeader:focus-visible {
+  outline: 1px solid var(--jp-brand-color1);
+  outline-offset: -1px;
+}
+
 .jp-ShareFilesPanel-itemTwisty {
   flex: 0 0 auto;
   width: 14px;

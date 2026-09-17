@@ -200,11 +200,13 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - test-tags: UNIT
   - log: 2026-09-16T10:04:22Z @kj added
   - log: 2026-09-16T11:26:42Z @kj closed
-- [ ] `DEF-PANEL-70` **Deleting the only row drops keyboard focus to document.body** - MINOR; a keyboard-only owner who deletes their last share or request is returned to document.body and loses the panel context; the DEF-PANEL-58 fix hands focus to the neighbouring row, but a one-row list has no neighbour; the remedy needs a stable panel control as the empty-list focus target, and which element is a design decision (the connect row hides in hub mode, the drop zone hides when shares are off)
+- [x] `DEF-PANEL-70` **Deleting the only row drops keyboard focus to document.body** - MINOR; a keyboard-only owner who deletes their last share or request is returned to document.body and loses the panel context; the DEF-PANEL-58 fix hands focus to the neighbouring row, but a one-row list has no neighbour; the remedy needs a stable panel control as the empty-list focus target, and which element is a design decision (the connect row hides in hub mode, the drop zone hides when shares are off)
+  - evidence: widget.ts: section headers get tabIndex -1 and focus key section:<key>, _render remembers the focused row's section, _restoreFocus falls back to that header when no row is left, Enter and Space fold the section; galata keyboard.spec.ts 'a confirmed Delete of the only row hands the focus to its section header' green in the full standalone run (27 passed 2026-09-17)
   - repro: delete the panel's only share by keyboard (Shift+F10, Delete, confirm): focus lands on document.body
   - test-tags: E2E
   - root-cause: 2026-09-16T12:51:13Z @kj the post-delete focus restore looks for a neighbouring row and finds none; no empty-list focus target is designated
   - log: 2026-09-16T12:51:13Z @kj added
+  - log: 2026-09-17T11:53:50Z @kj closed
 
 ## Public sharing `PUBLIC`
 
@@ -385,6 +387,13 @@ Connecting to another user's link and keeping its state fresh
   - test-tags: UNIT
   - log: 2026-09-16T10:04:53Z @kj added
   - log: 2026-09-16T11:26:42Z @kj closed
+- [x] `DEF-PEER-72` **Connected peers on another origin show offline under a default-src 'self' Content-Security-Policy** - MAJOR; the panel reads a connected peer's manifest and downloads its files straight from the browser (src/api.ts fetchRemoteShare/fetchRemoteRequest, widget.ts _downloadRemote); a lab page served with Content-Security-Policy default-src 'self' and no connect-src refuses every fetch to the peer's origin before it leaves the page (console: 'Refused to connect because it violates the document's Content Security Policy'), so the connection shows OFFLINE with 'Loading...' and no file list; the server-side paths (connect probe, save, upload via _peer_fetch) work through the same link; seen 2026-09-17 on a standalone lab in the galaxalab image, whose /galaxalab/etc/jupyter/jupyter_lab_config.py:75 sets that header for every lab including the hub-managed ones; a same-origin peer is unaffected ('self' covers it); fix options: read the manifest through the lab server (it already fetches it at connect time) and download through it or via a same-origin route, or document the connect-src the deployment must allow
+  - evidence: peer manifest and download reads moved into the lab server (routes.py ConnectionManifestHandler, ConnectionDownloadHandler at api/connections/<key>/manifest|download); browser-direct helpers removed from api.ts and widget.ts; pytest tests/test_connection_proxy.py 11 green (343 passed, 8 skipped total), jest 47 green; galata standalone server now carries galaxalab's default-src 'self' CSP and tests/peer-origin.spec.ts proves the browser fetch is refused while the panel lists and downloads the peer file through its server - standalone 27 passed 2026-09-17, mock-hub 24, live-hub 5
+  - test-tags: UNIT, E2E
+  - repro: jupyter lab --ServerApp.tornado_settings="{'headers': {'Content-Security-Policy': \"default-src 'self'\"}}", paste a share link of another origin into the panel: OFFLINE badge, entries never load; the same lab with only frame-ancestors in the policy lists the entries
+  - log: 2026-09-17T08:25:57Z @kj added
+  - log: 2026-09-17T11:53:50Z @kj edited test-tags (added)
+  - log: 2026-09-17T11:53:50Z @kj closed
 
 ## Logging `LOGS`
 
@@ -534,6 +543,12 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - test-tags: UNIT
   - log: 2026-09-16T10:04:53Z @kj added
   - log: 2026-09-16T11:26:43Z @kj closed
+- [ ] `DEF-HUB-71` **Cloud switch on both fixture records flipped back off within 15 min after a hub redeployment** - MEDIUM; live hub 2026-09-16 17:22: POST api/shares/<id>/cloud and api/requests/<id>/cloud {cloud:true} both answered 200, api/shares and api/requests then listed both records cloud true on https://share.stellars-tech.com; by 17:37 the hub's own GET items listed both cloud false on http://hub:8080 with the lab idle; a direct PUT shares/<id>/cloud {cloud:true} at the hub at 17:58 stayed on for 16 h; likely cause: a hub redeployment in the window (see root-cause and log); a hub-side writer of cloud false does not exist, the lab's only unattended writer is CloudWait._switch_back at the 120 s bound
+  - root-cause: 2026-09-17T08:12:44Z @kj likely cause: a hub redeployment in the window (the operator's account); the hub tree has one writer of the cloud field, the PUT handler the lab calls, and the reaper's re_evaluate copies the record whole; the lab's own writers are record creation, the panel's tunnel toggle and CloudWait._switch_back (hub_routes.py) - the last fires when a switched-on record still shows a hub url at the 120 s bound, which is what a hub that comes back with its tunnel connector still starting reports (galaxahub record_base_url falls back to the hub origin while the tunnel is down); needs the wait still pending at that moment; discriminate by restarting the hub within 120 s of a switch-on
+  - repro: switch two fresh records on through the lab API, restart the hub within 120 s, poll the hub's GET items every 5 s for 5 min
+  - log: 2026-09-17T08:04:31Z @kj added
+  - log: 2026-09-17T08:35:22Z @kj hypothesis from the operator: galaxahub was redeployed in the 17:22-17:37 window; a restart brings the hub back with its tunnel connector still starting, so records already switched on report hub urls, and a CloudWait still pending at the 120 s bound switches them off (hub_routes.py _switch_back); the direct hub PUT at 17:58 and both fixtures stayed on for 16 h afterwards, so no periodic reset exists; the supervisor-tick suspicion is dropped - its re_evaluate copies the record whole
+  - log: 2026-09-17T08:35:22Z @kj edited title and text and repro (replaced)
 
 ## Test suites `TESTS`
 
