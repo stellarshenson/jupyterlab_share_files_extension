@@ -207,6 +207,12 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - root-cause: 2026-09-16T12:51:13Z @kj the post-delete focus restore looks for a neighbouring row and finds none; no empty-list focus target is designated
   - log: 2026-09-16T12:51:13Z @kj added
   - log: 2026-09-17T11:53:50Z @kj closed
+- [ ] `DEF-PANEL-74` **Row twisty glyph is read out by screen readers** - MINOR; each row header (widget.ts share, request and connection renderers) carries a twisty span with the glyph ▸ or ▾ and no aria-hidden, and the header itself has no role and no aria-expanded, so a screen reader speaks 'black right-pointing small triangle' before every row name; the section header was fixed in r9 (role=button, aria-expanded, aria-hidden glyph) but that shape does not transfer: the row header holds the Copy link and Delete buttons, and role=button on a container of interactive content is invalid ARIA; hiding the glyph alone would silence the only expanded/collapsed cue a row gives; the fix re-models the row header's accessible structure (a dedicated toggle control or treeitem semantics) across the three renderers, the CSS and the keyboard spec
+  - repro: with a screen reader, Tab onto any row in the panel: the glyph name is spoken before the row name
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-17T17:20:06Z @kj the row header is a div with tabIndex 0 and data-row-key only; the glyph span is plain content
+  - log: 2026-09-17T17:20:06Z @kj added
+  - log: 2026-09-17T17:20:18Z @kj edited text
 
 ## Public sharing `PUBLIC`
 
@@ -394,6 +400,12 @@ Connecting to another user's link and keeping its state fresh
   - log: 2026-09-17T08:25:57Z @kj added
   - log: 2026-09-17T11:53:50Z @kj edited test-tags (added)
   - log: 2026-09-17T11:53:50Z @kj closed
+- [ ] `DEF-PEER-73` **Connect accepts a link whose manifest probe answered 404** - MINOR; the connect handler (routes.py ConnectionsHandler.post) probes the peer's manifest and acts only on 401 (password); a 404 (the owner removed the share or request) falls through and the connection is stored; the panel then lists it offline with 'The owner has removed this share or request.' instead of refusing the paste; pre-existing, named inside the r9 review's MAJOR (unlock answers relayed as a password change, fixed) and deferred: refusing a 404 probe at connect is a new branch on the connect path
+  - repro: delete a share on lab A, paste its link into lab B's connect box: the connection is added and shows offline with the removal sentence
+  - test-tags: UNIT
+  - root-cause: 2026-09-17T17:20:06Z @kj the probe branch reads only probe.code == 401; every other code, 404 included, reaches connection_store.add
+  - log: 2026-09-17T17:20:06Z @kj added
+  - log: 2026-09-17T17:20:18Z @kj edited text
 
 ## Logging `LOGS`
 

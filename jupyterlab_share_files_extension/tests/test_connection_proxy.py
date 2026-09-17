@@ -195,6 +195,17 @@ def test_a_rate_limited_unlock_says_to_wait(tmp_path):
     assert handler.payload == {"error": "too many password attempts - wait before retrying"}
 
 
+def test_a_removed_protected_share_is_named_at_the_unlock(tmp_path):
+    # the peer answers 404 before it reads the password: the removal, not
+    # a password change, is what the owner reads
+    handler, key = _manifest(
+        tmp_path, password="pw", answers={"unlock": _PeerResponse(404, b"")}
+    )
+    asyncio.run(handler.get(key))
+    assert handler.status == 502
+    assert handler.payload == {"error": "The owner has removed this share or request."}
+
+
 @pytest.mark.parametrize(
     "code, status, words",
     [

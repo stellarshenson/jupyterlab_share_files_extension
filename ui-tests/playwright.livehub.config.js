@@ -46,6 +46,9 @@ module.exports = {
       // the hub variables come from the process environment; only the mode
       // is pinned, so a lab whose env lost it still comes up in hub mode
       SHARE_FILES_PUBLIC_ZONE: 'hub',
+      // the server reads the port from this variable; without it the lab
+      // binds 8888 while Playwright waits on PORT
+      JUPYTER_TEST_PORT: PORT,
       PYTHONPATH: REPO,
       // the hub copies a share's bytes out of the owner's workspace volume,
       // resolving the panel's paths against that volume's root - the test

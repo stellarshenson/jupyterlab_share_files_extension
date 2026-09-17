@@ -252,7 +252,9 @@ class _Base(APIHandler):
         if resp.code == 429:
             raise PeerUnavailable("too many password attempts - wait before retrying")
         if resp.code != 200:
-            raise PeerUnavailable(PEER_PASSWORD_CHANGED)
+            # 401 is the password; 404 the owner removed the share; the rest
+            # is the peer being unavailable - the same reading as a fetch
+            raise PeerUnavailable(_peer_answer(resp.code)[1])
         token = _unlock_token(resp.body)
         if not token:
             return {}

@@ -1068,6 +1068,8 @@ export class ShareFilesPanel extends Widget {
     const caret = document.createElement('span');
     caret.className = 'jp-ShareFilesPanel-sectionTwisty';
     caret.textContent = expanded ? '▾' : '▸'; // ▾ / ▸
+    // decoration: aria-expanded carries the state, the glyph has no name
+    caret.setAttribute('aria-hidden', 'true');
     header.appendChild(caret);
     const title = document.createElement('span');
     title.className = 'jp-ShareFilesPanel-sectionTitle';
