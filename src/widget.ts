@@ -121,6 +121,10 @@ export interface IShareFilesSettings {
    * Standalone only: a hub-managed lab refreshes on the hub's change stream
    * and polls only while the hub offers none. */
   pollIntervalSeconds: number;
+  /** GB one download from a connected share may carry - a save into the
+   * workspace or an item handed to the browser; sent with each request, the
+   * server enforces it. */
+  peerDownloadMaxGb: number;
 }
 
 export interface IShareFilesPanelOptions {
@@ -305,13 +309,14 @@ export class ShareFilesPanel extends Widget {
   async createShareFlow(paths: string[]): Promise<void> {
     if (!this._settings.enableShares) {
       Notification.warning(
-        'File sharing is disabled in Settings. Enable it to create a share.'
+        'File sharing is disabled in Settings. Enable it to create a share.',
+        { autoClose: 5000 }
       );
       return;
     }
     const refusedShare = this._hubRefusal('share');
     if (refusedShare) {
-      Notification.warning(refusedShare);
+      Notification.warning(refusedShare, { autoClose: 5000 });
       return;
     }
     const suggested = this._suggestName(paths);
@@ -342,10 +347,10 @@ export class ShareFilesPanel extends Widget {
         paths,
         password
       );
-      await this._copyLinkToClipboard(share.link);
+      const copied = await this._copyLinkToClipboard(share.link);
       Notification.update({
         id: pending,
-        message: `Share "${share.name}" created - link copied`,
+        message: `Share "${share.name}" created${copied ? ' - link copied' : ''}`,
         type: 'success',
         autoClose: 5000
       });
@@ -367,13 +372,14 @@ export class ShareFilesPanel extends Widget {
   async createRequestFlow(): Promise<void> {
     if (!this._settings.enableRequests) {
       Notification.warning(
-        'File requests are disabled in Settings. Enable them to create a request.'
+        'File requests are disabled in Settings. Enable them to create a request.',
+        { autoClose: 5000 }
       );
       return;
     }
     const refusedRequest = this._hubRefusal('request');
     if (refusedRequest) {
-      Notification.warning(refusedRequest);
+      Notification.warning(refusedRequest, { autoClose: 5000 });
       return;
     }
     const spec = await this._promptForNameAndPassword(
@@ -406,9 +412,13 @@ export class ShareFilesPanel extends Widget {
     this._render();
     try {
       await addShareItems(this._serverSettings, shareId, paths);
-      Notification.success(`${paths.length} item(s) added`);
+      Notification.success(`${paths.length} item(s) added`, {
+        autoClose: 5000
+      });
     } catch (err: any) {
-      Notification.error(`Could not add items: ${err.message || err}`);
+      Notification.error(`Could not add items: ${err.message || err}`, {
+        autoClose: 8000
+      });
     } finally {
       this._state.busyKeys.delete(shareId);
       await this.refresh();
@@ -424,9 +434,13 @@ export class ShareFilesPanel extends Widget {
     this._render();
     try {
       await uploadToConnection(this._serverSettings, connectionKey, paths, '');
-      Notification.success(`${paths.length} item(s) uploaded`);
+      Notification.success(`${paths.length} item(s) uploaded`, {
+        autoClose: 5000
+      });
     } catch (err: any) {
-      Notification.error(`Upload failed: ${err.message || err}`);
+      Notification.error(`Upload failed: ${err.message || err}`, {
+        autoClose: 8000
+      });
     } finally {
       this._state.busyKeys.delete(connectionKey);
       await this.refresh();
@@ -560,10 +574,12 @@ export class ShareFilesPanel extends Widget {
     return err instanceof ServerConnection.NetworkError;
   }
 
-  /** Submit a link to connect to. Used by the connect input. */
-  async connectToLink(link: string): Promise<void> {
+  /** Submit a link to connect to. Used by the connect input. Resolves true
+   * when the connection was stored, false when it was refused, failed or
+   * the password prompt was cancelled - the input keeps the link then. */
+  async connectToLink(link: string): Promise<boolean> {
     if (!link) {
-      return;
+      return false;
     }
     // Refuse to connect to ourselves - that produces a loop and is never
     // useful. On JupyterHub, two users share the same host but live at
@@ -588,7 +604,7 @@ export class ShareFilesPanel extends Widget {
             'or paste a link from someone else.',
           buttons: [Dialog.okButton({ label: 'OK' })]
         });
-        return;
+        return false;
       }
     } catch {
       // malformed URL - let the backend handle the error message
@@ -610,16 +626,19 @@ export class ShareFilesPanel extends Widget {
               : 'This link is password protected'
           );
           if (entered === null) {
-            return; // cancelled
+            return false; // cancelled
           }
           password = entered;
           continue;
         }
-        Notification.error(`Could not connect: ${err.message || err}`);
-        return;
+        Notification.error(`Could not connect: ${err.message || err}`, {
+          autoClose: 8000
+        });
+        return false;
       }
     }
     await this.refresh();
+    return true;
   }
 
   /** Prompt for the password of a protected link being connected to. */
@@ -873,8 +892,10 @@ export class ShareFilesPanel extends Widget {
       const link = connectInput.value.trim();
       if (link) {
         connectBtn.disabled = true;
-        void this.connectToLink(link).then(() => {
-          connectInput.value = '';
+        void this.connectToLink(link).then(connected => {
+          if (connected) {
+            connectInput.value = '';
+          }
           connectBtn.disabled = false;
         });
       }
@@ -1123,9 +1144,15 @@ export class ShareFilesPanel extends Widget {
     const header = document.createElement('div');
     header.className = 'jp-ShareFilesPanel-itemHeader';
 
-    const twisty = document.createElement('span');
+    // the row's toggle is its own button: the header holds buttons, so it
+    // cannot be one itself, and a name on the button keeps the glyph
+    // unspoken. Its click bubbles to the header's toggle below.
+    const twisty = document.createElement('button');
     twisty.className = 'jp-ShareFilesPanel-itemTwisty';
     twisty.textContent = expanded ? '▾' : '▸';
+    twisty.setAttribute('aria-label', expanded ? 'Collapse' : 'Expand');
+    twisty.setAttribute('aria-expanded', String(expanded));
+    twisty.dataset.focusKey = `share:${share.id}/toggle`;
     header.appendChild(twisty);
 
     const name = document.createElement('span');
@@ -1342,7 +1369,12 @@ export class ShareFilesPanel extends Widget {
   private _renderUpRow(shareId: string, currentSubPath: string): HTMLElement {
     const row = document.createElement('div');
     row.className = 'jp-ShareFilesPanel-entry jp-mod-clickable';
-    row.title = 'Double-click to go up one level';
+    row.title = 'Double-click or Enter to go up one level';
+    // the keyboard's double-click: the row takes focus and Enter goes up;
+    // the key lets the re-render after _goUp give the focus back to the
+    // row ('..' is not an entry name, so it collides with no entry key)
+    row.tabIndex = 0;
+    row.dataset.rowKey = `share:${shareId}/..`;
     const indent = document.createElement('span');
     indent.className = 'jp-ShareFilesPanel-entryIndent';
     row.appendChild(indent);
@@ -1355,12 +1387,17 @@ export class ShareFilesPanel extends Widget {
     name.className = 'jp-ShareFilesPanel-entryName';
     name.textContent = '..';
     row.appendChild(name);
-    const handler = (ev: MouseEvent) => {
+    const handler = (ev: Event) => {
       ev.preventDefault();
       ev.stopPropagation();
       this._goUp(shareId, currentSubPath);
     };
     row.addEventListener('dblclick', handler);
+    row.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter') {
+        handler(ev);
+      }
+    });
     return row;
   }
 
@@ -1413,7 +1450,9 @@ export class ShareFilesPanel extends Widget {
       this._state.subEntries.set(subPath, entries);
     } catch (err: any) {
       this._state.subEntries.set(subPath, []);
-      Notification.error(`Could not list folder: ${err.message || err}`);
+      Notification.error(`Could not list folder: ${err.message || err}`, {
+        autoClose: 8000
+      });
     }
     this._render();
   }
@@ -1445,9 +1484,13 @@ export class ShareFilesPanel extends Widget {
     const header = document.createElement('div');
     header.className = 'jp-ShareFilesPanel-itemHeader';
 
-    const twisty = document.createElement('span');
+    // the row's toggle, as the share row
+    const twisty = document.createElement('button');
     twisty.className = 'jp-ShareFilesPanel-itemTwisty';
     twisty.textContent = expanded ? '▾' : '▸';
+    twisty.setAttribute('aria-label', expanded ? 'Collapse' : 'Expand');
+    twisty.setAttribute('aria-expanded', String(expanded));
+    twisty.dataset.focusKey = `request:${req.id}/toggle`;
     header.appendChild(twisty);
 
     const name = document.createElement('span');
@@ -1608,9 +1651,13 @@ export class ShareFilesPanel extends Widget {
     const header = document.createElement('div');
     header.className = 'jp-ShareFilesPanel-itemHeader';
 
-    const twisty = document.createElement('span');
+    // the row's toggle, as the share row
+    const twisty = document.createElement('button');
     twisty.className = 'jp-ShareFilesPanel-itemTwisty';
     twisty.textContent = expanded ? '▾' : '▸';
+    twisty.setAttribute('aria-label', expanded ? 'Collapse' : 'Expand');
+    twisty.setAttribute('aria-expanded', String(expanded));
+    twisty.dataset.focusKey = `conn:${conn.key}/toggle`;
     header.appendChild(twisty);
 
     const data = this._state.connectionData.get(conn.key);
@@ -1728,7 +1775,8 @@ export class ShareFilesPanel extends Widget {
       const url = connectionDownloadUrl(
         this._serverSettings,
         conn.key,
-        entry.name
+        entry.name,
+        this._settings.peerDownloadMaxGb
       );
       row.title = this._entryTooltip(entry, false);
       row.classList.add('jp-mod-clickable');
@@ -1841,11 +1889,19 @@ export class ShareFilesPanel extends Widget {
     this._state.busyKeys.add(connKey);
     this._render();
     try {
-      await saveFromConnection(this._serverSettings, connKey, destDir, [name]);
-      Notification.success(`Saved "${name}"`);
+      await saveFromConnection(
+        this._serverSettings,
+        connKey,
+        destDir,
+        [name],
+        this._settings.peerDownloadMaxGb
+      );
+      Notification.success(`Saved "${name}"`, { autoClose: 5000 });
       await this._revealInFileBrowser(destDir);
     } catch (err: any) {
-      Notification.error(`Could not save "${name}": ${err.message || err}`);
+      Notification.error(`Could not save "${name}": ${err.message || err}`, {
+        autoClose: 8000
+      });
     } finally {
       this._state.busyKeys.delete(connKey);
       this._render();
@@ -1870,18 +1926,20 @@ export class ShareFilesPanel extends Widget {
         this._serverSettings,
         conn.key,
         destDir,
-        [entry.name]
+        [entry.name],
+        this._settings.peerDownloadMaxGb
       );
       const saved = res.saved && res.saved[0];
       if (entry.type === 'directory') {
-        Notification.success(`Saved "${entry.name}"`);
+        Notification.success(`Saved "${entry.name}"`, { autoClose: 5000 });
         await this._revealInFileBrowser(destDir);
       } else if (saved) {
         await this._commands.execute('docmanager:open', { path: saved });
       }
     } catch (err: any) {
       Notification.error(
-        `Could not open "${entry.name}": ${err.message || err}`
+        `Could not open "${entry.name}": ${err.message || err}`,
+        { autoClose: 8000 }
       );
     } finally {
       this._state.busyKeys.delete(conn.key);
@@ -1918,38 +1976,17 @@ export class ShareFilesPanel extends Widget {
 
   /**
    * Download a file of a connected peer through our server's download route
-   * (see `connectionDownloadUrl`) and hand it to the browser as a Blob
-   * download. A navigation to the URL would leave the panel and could not
-   * report a failure; the fetch reports one as a notification.
+   * (see `connectionDownloadUrl`) by clicking a hidden anchor: the browser
+   * streams it to disk itself, and lists a failed download on a 4xx/5xx.
    */
-  private async _downloadRemote(url: string, filename: string): Promise<void> {
-    try {
-      const r = await fetch(url);
-      if (!r.ok) {
-        // our server answers every failure with {error: <sentence>}
-        let reason = `status ${r.status}`;
-        try {
-          reason = (await r.json()).error || reason;
-        } catch {
-          // not a JSON body - the status is all there is
-        }
-        throw new Error(reason);
-      }
-      const blob = await r.blob();
-      const href = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = href;
-      a.download = filename;
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(href);
-    } catch (err: any) {
-      Notification.error(
-        `Could not download "${filename}" - ${offlineReason(err)}`
-      );
-    }
+  private _downloadRemote(url: string, filename: string): void {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   }
 
   private _renderEntryRow(
@@ -2000,7 +2037,7 @@ export class ShareFilesPanel extends Widget {
     }
     if (onFetch) {
       const btn = document.createElement('button');
-      btn.className = 'jp-ShareFilesPanel-entryRemove';
+      btn.className = 'jp-ShareFilesPanel-entryRemove jp-mod-fetch';
       btn.title = 'Fetch to current folder';
       btn.dataset.focusKey = `${focusKey}/fetch`;
       btn.appendChild(this._svgNode(downloadIcon.svgstr));
@@ -2024,13 +2061,21 @@ export class ShareFilesPanel extends Widget {
         // fires without one
         evt => this._openEntryContextMenu(evt, entry) as Menu
       );
-      row.addEventListener('dblclick', evt => {
+      const open = (evt: Event) => {
         evt.preventDefault();
         evt.stopPropagation();
         if (entry.type === 'directory' && onOpenFolder) {
           onOpenFolder(entry);
         } else {
           void this._openEntry(entry);
+        }
+      };
+      row.addEventListener('dblclick', open);
+      // the keyboard's double-click: Enter on the focused row itself, not on
+      // a button inside it (a button's Enter is its click)
+      row.addEventListener('keydown', evt => {
+        if (evt.key === 'Enter' && evt.target === row) {
+          open(evt);
         }
       });
       this._attachEntryDragSource(row, entry);
@@ -2171,7 +2216,9 @@ export class ShareFilesPanel extends Widget {
     try {
       await this._commands.execute('docmanager:open', { path: entry.path });
     } catch (err: any) {
-      Notification.error(`Could not open: ${err.message || err}`);
+      Notification.error(`Could not open: ${err.message || err}`, {
+        autoClose: 8000
+      });
     }
   }
 
@@ -2294,7 +2341,7 @@ export class ShareFilesPanel extends Widget {
           const url = String(args.url || '');
           const filename = String(args.filename || 'download');
           if (url) {
-            void this._downloadRemote(url, filename);
+            this._downloadRemote(url, filename);
           }
         }
       });
@@ -2423,9 +2470,13 @@ export class ShareFilesPanel extends Widget {
         await Promise.all(paths.map(p => this._contents.delete(p)));
         clearClip();
       }
-      Notification.success(`${paths.length} item(s) added`);
+      Notification.success(`${paths.length} item(s) added`, {
+        autoClose: 5000
+      });
     } catch (err: any) {
-      Notification.error(`Could not paste: ${err.message || err}`);
+      Notification.error(`Could not paste: ${err.message || err}`, {
+        autoClose: 8000
+      });
     } finally {
       this._state.busyKeys.delete(shareId);
       await this.refresh();
@@ -2451,9 +2502,13 @@ export class ShareFilesPanel extends Widget {
         await Promise.all(paths.map(p => this._contents.delete(p)));
         clearClip();
       }
-      Notification.success(`${paths.length} item(s) uploaded`);
+      Notification.success(`${paths.length} item(s) uploaded`, {
+        autoClose: 5000
+      });
     } catch (err: any) {
-      Notification.error(`Could not paste: ${err.message || err}`);
+      Notification.error(`Could not paste: ${err.message || err}`, {
+        autoClose: 8000
+      });
     } finally {
       this._state.busyKeys.delete(connKey);
       await this.refresh();
@@ -2468,9 +2523,13 @@ export class ShareFilesPanel extends Widget {
     try {
       await this._contents.copy(sourcePath, target);
       const dest = target ? `./${target}/` : './';
-      Notification.success(`Copied ${entryName} → ${dest}`);
+      Notification.success(`Copied ${entryName} → ${dest}`, {
+        autoClose: 5000
+      });
     } catch (err: any) {
-      Notification.error(`Could not copy: ${err.message || err}`);
+      Notification.error(`Could not copy: ${err.message || err}`, {
+        autoClose: 8000
+      });
     }
   }
 
@@ -2491,7 +2550,9 @@ export class ShareFilesPanel extends Widget {
         await this._revealInFileBrowser(dir, name);
       }
     } catch (err: any) {
-      Notification.error(`Could not navigate: ${err.message || err}`);
+      Notification.error(`Could not navigate: ${err.message || err}`, {
+        autoClose: 8000
+      });
     }
   }
 
@@ -2666,7 +2727,9 @@ export class ShareFilesPanel extends Widget {
     try {
       await removeShareItems(this._serverSettings, shareId, [name]);
     } catch (err: any) {
-      Notification.error(`Could not remove: ${err.message || err}`);
+      Notification.error(`Could not remove: ${err.message || err}`, {
+        autoClose: 8000
+      });
     } finally {
       this._state.busyKeys.delete(shareId);
       await this.refresh();
@@ -2688,7 +2751,9 @@ export class ShareFilesPanel extends Widget {
         name
       );
     } catch (err: any) {
-      Notification.error(`Could not remove: ${err.message || err}`);
+      Notification.error(`Could not remove: ${err.message || err}`, {
+        autoClose: 8000
+      });
     } finally {
       this._state.busyKeys.delete(requestId);
       await this.refresh();
@@ -2714,9 +2779,13 @@ export class ShareFilesPanel extends Widget {
         this._getCurrentDir(),
         req.name
       );
-      Notification.success(`Fetched ${entry.name} to ${res.path}`);
+      Notification.success(`Fetched ${entry.name} to ${res.path}`, {
+        autoClose: 5000
+      });
     } catch (err: any) {
-      Notification.error(`Could not fetch: ${err.message || err}`);
+      Notification.error(`Could not fetch: ${err.message || err}`, {
+        autoClose: 8000
+      });
     } finally {
       this._state.busyKeys.delete(req.id);
       this._render();
@@ -2725,8 +2794,11 @@ export class ShareFilesPanel extends Widget {
 
   private async _deleteShare(id: string): Promise<void> {
     const restore = this._keepFocus();
+    // the dialog names the share so an owner with similar names is not
+    // confirming blind
+    const name = this._state.shares.find(s => s.id === id)?.name;
     const result = await showDialog({
-      title: 'Delete share?',
+      title: name ? `Delete share "${name}"?` : 'Delete share?',
       body: 'This will remove the share permanently. The link will stop working.',
       buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Delete' })]
     });
@@ -2737,15 +2809,18 @@ export class ShareFilesPanel extends Widget {
     try {
       await deleteShare(this._serverSettings, id);
     } catch (err: any) {
-      Notification.error(`Could not delete: ${err.message || err}`);
+      Notification.error(`Could not delete: ${err.message || err}`, {
+        autoClose: 8000
+      });
     }
     await this.refresh();
   }
 
   private async _deleteRequest(id: string): Promise<void> {
     const restore = this._keepFocus();
+    const name = this._state.requests.find(r => r.id === id)?.name;
     const result = await showDialog({
-      title: 'Delete request?',
+      title: name ? `Delete request "${name}"?` : 'Delete request?',
       body: 'This will remove the request and any uploads permanently.',
       buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Delete' })]
     });
@@ -2756,7 +2831,9 @@ export class ShareFilesPanel extends Widget {
     try {
       await deleteRequest(this._serverSettings, id);
     } catch (err: any) {
-      Notification.error(`Could not delete: ${err.message || err}`);
+      Notification.error(`Could not delete: ${err.message || err}`, {
+        autoClose: 8000
+      });
     }
     await this.refresh();
   }
@@ -2765,7 +2842,9 @@ export class ShareFilesPanel extends Widget {
     try {
       await removeConnection(this._serverSettings, conn.key);
     } catch (err: any) {
-      Notification.error(`Could not disconnect: ${err.message || err}`);
+      Notification.error(`Could not disconnect: ${err.message || err}`, {
+        autoClose: 8000
+      });
     }
     await this.refresh();
   }
@@ -2991,7 +3070,8 @@ export class ShareFilesPanel extends Widget {
         })
         .catch((err: any) => {
           Notification.error(
-            `Could not generate a password: ${err?.message || err}`
+            `Could not generate a password: ${err?.message || err}`,
+            { autoClose: 8000 }
           );
         });
     });
@@ -3139,7 +3219,9 @@ export class ShareFilesPanel extends Widget {
         autoClose: 4000
       });
     } catch (err: any) {
-      Notification.error(`Could not save password: ${err.message || err}`);
+      Notification.error(`Could not save password: ${err.message || err}`, {
+        autoClose: 8000
+      });
     }
     await this.refresh();
   }
@@ -3521,7 +3603,7 @@ export class ShareFilesPanel extends Widget {
         continue;
       }
       if (last > prev && last > seen) {
-        Notification.info(`New upload to "${req.name}"`);
+        Notification.info(`New upload to "${req.name}"`, { autoClose: 5000 });
         this._state.lastSeenUploads.set(req.id, last);
       }
     }
@@ -3691,12 +3773,16 @@ export class ShareFilesPanel extends Widget {
       this._drawHubCloud(
         hubCloudLook(this._state.info!, active ? 'off' : 'on')
       );
-    } else if (!active) {
+    } else {
+      // stopping the connector takes up to five seconds: the icon shows the
+      // switch in flight both ways
       this._cloudIndicator!.classList.remove('jp-mod-active');
       this._cloudIndicator!.classList.add('jp-mod-connecting');
       this._cloudIndicator!.innerHTML = '';
       this._cloudIndicator!.appendChild(this._svgNode(cloudIcon.svgstr));
-      this._cloudIndicator!.title = 'Switching Cloudflare sharing on';
+      this._cloudIndicator!.title = active
+        ? 'Switching Cloudflare sharing off'
+        : 'Switching Cloudflare sharing on';
     }
     try {
       const state = await setTunnel(this._serverSettings, { active: !active });
@@ -3743,6 +3829,10 @@ export class ShareFilesPanel extends Widget {
       const inp = document.createElement('input');
       inp.type = type;
       inp.value = value;
+      // label and input are siblings; the for/id pair is what names the
+      // input for a screen reader
+      inp.id = `jp-ShareFilesPanel-setup-${label.replace(/\W+/g, '-').toLowerCase()}`;
+      lab.htmlFor = inp.id;
       inp.style.cssText =
         'width: 100%;' +
         ' padding: 6px 8px;' +

@@ -10,15 +10,17 @@ The public endpoints rely on the share/request ID being secret (8-char base32).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import hmac
-import io
 import json
 import os
 import re
 import shutil
 import socket
 import ssl
+import tempfile
 import time
 import zipfile
 import zlib
@@ -29,15 +31,17 @@ except ImportError:  # a liblzma-less Python: LZMA members raise NotImplementedE
     lzma = None
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import tornado
 import tornado.httpclient
+import tornado.httputil
 import tornado.simple_httpclient
 import tornado.ioloop
 import tornado.web
 from jupyter_server.base.handlers import APIHandler
 from jupyter_server.utils import url_path_join
+from tornado.iostream import StreamClosedError
 from tornado.simple_httpclient import HTTPStreamClosedError, HTTPTimeoutError
 from tornado.web import StaticFileHandler
 
@@ -56,6 +60,7 @@ from .storage import (
     generate_password,
     mint_uploader_hash,
     resolve_shares_dir,
+    settle_mode,
     verify_password,
 )
 
@@ -92,21 +97,27 @@ class PeerUnavailable(Exception):
 
 
 class SaveTooLarge(Exception):
-    """A save from a connected peer passed PEER_SAVE_MAX_BYTES."""
+    """A save from a connected peer passed the download limit, unpacked."""
 
 
-# seconds a download from, or an upload to, a connected peer may take
-PEER_TRANSFER_TIMEOUT_SECONDS = 300
+class RelayAbandoned(Exception):
+    """The browser gave up on a download the lab was relaying from a peer."""
+
+
+# seconds a download from a connected peer may take, for every GB of its
+# limit and at least for one: the 10 GB default allows 3000 s
+PEER_DOWNLOAD_SECONDS_PER_GB = 300
+# seconds an upload to a connected peer may take, for every GB of the file
+# and at least for one: a 2 GB file is allowed 600 s
+PEER_UPLOAD_SECONDS_PER_GB = 300
+# GB one download from a connected peer may carry - a save, unpacked, or one
+# entry handed to the browser - when the request names no limit; the panel
+# sends the Settings Editor's choice (peerDownloadMaxGb) with every request
+PEER_DOWNLOAD_DEFAULT_GB = 10
+GB = 1000**3
 # seconds a connected peer has to accept the connection, and to answer any
 # request other than a download or an upload
 PEER_TIMEOUT_SECONDS = 20
-# bytes one save from a connected peer may write, unpacked - and the largest
-# body a peer fetch may carry, so the download of a save can reach the same
-# limit; tornado takes max_body_size only at client construction
-PEER_SAVE_MAX_BYTES = 1024**3
-# one dedicated client: the AsyncHTTPClient() singleton is shared with the
-# hub client and keeps tornado's 100 MiB default body cap
-_PEER_CLIENT = tornado.simple_httpclient.SimpleAsyncHTTPClient(max_body_size=PEER_SAVE_MAX_BYTES)
 
 
 # --------------------------------------------------------------------------- #
@@ -164,24 +175,89 @@ class _Base(APIHandler):
     def verify_peer_tls(self) -> bool:
         return _verify_peer_tls_setting(self)
 
-    async def _peer_fetch(self, url: str, download: bool = False, **kwargs):
+    @contextlib.contextmanager
+    def _spool(self):
+        """A file for one download from a peer, under the store's ``tmp``
+        folder so it lands on the workspace disk; removed on exit."""
+        tmp = resolve_shares_dir(self.workspace_root, self.shares_dir) / "tmp"
+        tmp.mkdir(parents=True, exist_ok=True)
+        spool = tempfile.NamedTemporaryFile(dir=tmp, prefix="download-", suffix=".part", delete=False)
+        try:
+            with spool:
+                yield spool
+        finally:
+            # after the close: Windows refuses to remove a name still open
+            Path(spool.name).unlink(missing_ok=True)
+
+    async def _peer_fetch(self, url: str, spool=None, max_bytes: int = 0, started=None, **kwargs):
         """Fetch a connected peer's public endpoint server-side.
 
-        Honours the `verify_peer_tls` config (self-signed peers need it off)
-        and converts TLS / connection errors, a timeout, a closed connection
-        and an answer over the client's body size limit - which
-        `raise_error=False` does NOT suppress - into a `PeerUnavailable` the
-        handler maps to a 502. A download may take
-        PEER_TRANSFER_TIMEOUT_SECONDS, any other request PEER_TIMEOUT_SECONDS.
+        A download names a ``spool`` - a binary file the body is written to
+        as it arrives, never held in memory - and the ``max_bytes`` it may
+        carry; it may take PEER_DOWNLOAD_SECONDS_PER_GB for every GB of that
+        limit and at least for one, any other request PEER_TIMEOUT_SECONDS. ``started`` is a
+        future the caller may pass: it resolves with the peer's headers the
+        moment a 200 within the limit is announced, so the caller can relay
+        the spool while the body is still arriving. Honours the
+        `verify_peer_tls` config (self-signed peers need it off) and converts
+        TLS / connection errors, a timeout, a closed connection and an answer
+        over the limit - which `raise_error=False` does NOT suppress - into a
+        `PeerUnavailable` the handler maps to a 502.
         """
-        client = _PEER_CLIENT
-        request_timeout = PEER_TRANSFER_TIMEOUT_SECONDS if download else PEER_TIMEOUT_SECONDS
-        lengths = []  # the Content-Length the peer announced
+        writes = []  # what the spool raised: the workspace or the browser, not the peer
+        if spool is None:
+            client = tornado.httpclient.AsyncHTTPClient()
+            request_timeout = PEER_TIMEOUT_SECONDS
+        else:
 
-        def note_length(line: str) -> None:
-            name, _, value = line.partition(":")
-            if name.lower() == "content-length" and value.strip().isdigit():
-                lengths.append(int(value))
+            def store(chunk: bytes) -> None:
+                try:
+                    if spool.closed:
+                        # the relay closed it: nothing wants the rest
+                        raise RelayAbandoned()
+                    spool.write(chunk)
+                    # flushed, so a reader tailing the spool sees the chunk
+                    # and a disk that fills inside it raises here
+                    spool.flush()
+                except (OSError, RelayAbandoned) as exc:
+                    writes.append(exc)
+                    raise
+
+            # tornado takes max_body_size only at client construction, and
+            # the shared client keeps its 100 MiB default: one client per
+            # download, closed after it
+            client = tornado.simple_httpclient.SimpleAsyncHTTPClient(
+                force_instance=True, max_body_size=max_bytes
+            )
+            # the floor holds when the limit is what a save has left
+            request_timeout = PEER_DOWNLOAD_SECONDS_PER_GB * max(1.0, max_bytes / GB)
+            kwargs["streaming_callback"] = store
+            # every answer lands in the spool, a 401's body too: a retry
+            # with a fresh unlock starts it empty
+            spool.seek(0)
+            spool.truncate()
+        lengths = []  # the Content-Length the peer announced
+        block = []  # the status line and the header lines of the answer being read
+
+        def note_headers(line: str) -> None:
+            if line != "\r\n":
+                block.append(line)
+                name, _, value = line.partition(":")
+                if name.lower() == "content-length" and value.strip().isdigit():
+                    lengths.append(int(value))
+                return
+            # the empty line ends the block: a 200 the limit allows starts
+            # the relay, once; a 401 leaves it for the retry, an over-limit
+            # announcement for the 502 below
+            status = block[0].split(" ", 2)[1]
+            if (
+                started is not None
+                and not started.done()
+                and status == "200"
+                and (not lengths or lengths[-1] <= max_bytes)
+            ):
+                started.set_result(tornado.httputil.HTTPHeaders.parse("".join(block[1:])))
+            block.clear()
 
         try:
             return await client.fetch(
@@ -190,7 +266,7 @@ class _Base(APIHandler):
                 validate_cert=self.verify_peer_tls,
                 connect_timeout=PEER_TIMEOUT_SECONDS,
                 request_timeout=request_timeout,
-                header_callback=note_length,
+                header_callback=note_headers,
                 **kwargs,
             )
         except ssl.SSLError as exc:
@@ -208,14 +284,29 @@ class _Base(APIHandler):
             waited = request_timeout if "during request" in str(exc) else PEER_TIMEOUT_SECONDS
             raise PeerUnavailable(f"The peer did not answer within {waited:g} s") from None
         except HTTPStreamClosedError:
+            if writes:
+                # the spool refused a chunk, or the relay was abandoned:
+                # tornado logged the error, closed the connection and raised
+                # its own
+                raise writes[0] from None
             # tornado closes the connection itself, with the same error, when
             # the announced body passes its size limit
-            limit = client.max_body_size or client.max_buffer_size
-            if lengths and lengths[-1] > limit:
+            if spool is not None and lengths and lengths[-1] > max_bytes:
                 raise PeerUnavailable(
-                    f"The peer's download is larger than the {limit / 1024**3:g} GiB limit for one save"
+                    f"The peer's download is larger than the {max_bytes / GB:g} GB limit"
+                ) from None
+            if spool is not None and not lengths:
+                # a chunked body - every folder and Save All zip - that passes
+                # the limit is closed with this same error, and nothing tells
+                # the two apart
+                raise PeerUnavailable(
+                    f"The peer's download passed the {max_bytes / GB:g} GB limit, "
+                    "or the peer closed the connection before it finished"
                 ) from None
             raise PeerUnavailable("The peer closed the connection before the download finished") from None
+        finally:
+            if spool is not None:
+                client.close()
 
     async def _peer_auth_headers(self, conn: dict, fresh: bool = False) -> dict:
         """Unlock a password-protected peer resource before fetching from it.
@@ -282,6 +373,28 @@ class _Base(APIHandler):
         self.finish(json.dumps(payload))
 
 
+class _ZipSink:
+    """The write-only stream a streamed zip is built on: zipfile appends to
+    ``buf`` and the handler takes it after every chunk. No seek and no tell,
+    so zipfile writes data descriptors instead of seeking back to fix up
+    each member's header."""
+
+    def __init__(self):
+        self.buf = bytearray()
+
+    def write(self, data) -> int:
+        self.buf += data
+        return len(data)
+
+    def flush(self) -> None:
+        pass
+
+    def take(self) -> bytes:
+        out = bytes(self.buf)
+        self.buf.clear()
+        return out
+
+
 class _PublicBase(tornado.web.RequestHandler):
     """Unauthenticated base for standalone pages and cross-peer endpoints.
 
@@ -292,6 +405,54 @@ class _PublicBase(tornado.web.RequestHandler):
 
     def check_xsrf_cookie(self):  # noqa: D401
         return None
+
+    async def _serve_zip(self, directory: Path, name: str, prefix: str):
+        """Stream ``directory`` as ``<name>.zip``, members named under
+        ``prefix`` ('' for bare relative names). Every chunk read goes
+        through zipfile's compressor and straight to the response, so one
+        chunk and the compressor's state are all that is held; no
+        Content-Length, the archive's size is known only at its end."""
+        self.set_header("Content-Type", "application/zip")
+        # RFC 5987 form: a plain filename= is latin-1 only, and tornado refuses
+        # a header value with a character above U+00FF
+        self.set_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(name + ".zip"))
+        sink = _ZipSink()
+        try:
+            with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED) as zf:
+                for root, _dirs, files in os.walk(directory):
+                    for fname in files:
+                        abs_path = os.path.join(root, fname)
+                        arcname = os.path.join(prefix, os.path.relpath(abs_path, directory))
+                        # a date outside zip's 1980-2107 range is clamped, as
+                        # every archiver does, instead of failing the folder
+                        info = zipfile.ZipInfo.from_file(abs_path, arcname, strict_timestamps=False)
+                        info.compress_type = zipfile.ZIP_DEFLATED
+                        with zf.open(info, "w") as dst, open(abs_path, "rb") as src:
+                            while chunk := src.read(_EXTRACT_CHUNK_BYTES):
+                                dst.write(chunk)
+                                self.write(sink.take())
+                                await self.flush()
+        except (OSError, ValueError):
+            # zipfile refuses a member whose name is not UTF-8 with a ValueError
+            if not self._headers_written:
+                # the first member failed before any byte was out: a status
+                # line is the only way the browser can name the failure, and
+                # the answer is the sentence every public error carries, not
+                # the archive
+                self.clear_header("Content-Disposition")
+                self.set_header("Content-Type", "application/json")
+                self.set_status(500)
+                self.finish(json.dumps({"error": "Could not read the folder"}))
+                return
+            # a member vanished under the walk, or the browser gave up: bytes
+            # are out, so the closed connection is what marks the download
+            # failed - a finished answer would pass a cut archive as complete
+            self.request.connection.close()
+            return
+        # the central directory, written when the archive closed
+        self.write(sink.take())
+        await self.flush()
+        self.finish()
 
     def set_default_headers(self):
         # Cooperative call so this class never terminates the chain. Note the
@@ -633,7 +794,7 @@ class TunnelHandler(_Base):
         self.write_json(_tunnel_state(self))
 
     @tornado.web.authenticated
-    def post(self):
+    async def post(self):
         from .tunnel import (
             _load_config,
             set_tunnel_autostart,
@@ -646,17 +807,33 @@ class TunnelHandler(_Base):
             return self.write_error_json(
                 400, "Cloudflare sharing is not configured (run cloudflare setup)"
             )
-        if "autostart" in body:
-            set_tunnel_autostart(bool(body["autostart"]))
-        if body.get("active") is True:
-            share_config: ShareFilesConfig = self.settings.get("share_files_config")
-            retries = share_config.cloudflared_retries if share_config else 3
-            try:
-                tunnel_start(retries)
-            except RuntimeError as exc:
-                return self.write_error_json(400, str(exc))
-        elif body.get("active") is False:
-            tunnel_stop()
+        # off the event loop, as the setup handler runs: starting the
+        # connector sleeps 2 s per attempt and stopping it polls for 5 s
+        loop = tornado.ioloop.IOLoop.current()
+        try:
+            if "autostart" in body:
+                set_tunnel_autostart(bool(body["autostart"]))
+            if body.get("active") is True:
+                share_config: ShareFilesConfig = self.settings.get("share_files_config")
+                retries = share_config.cloudflared_retries if share_config else 3
+                result = await loop.run_in_executor(None, tunnel_start, retries)
+                if not result["daemon_running"]:
+                    # links marked public with no connector serving them would
+                    # show a green cloud over a dead hostname: back to private
+                    # links, and the sentence names the log
+                    await loop.run_in_executor(None, tunnel_stop)
+                    return self.write_error_json(
+                        400, f"cloudflared did not start - see {result['connector_log']}"
+                    )
+            elif body.get("active") is False:
+                await loop.run_in_executor(None, tunnel_stop)
+        except RuntimeError as exc:
+            return self.write_error_json(400, str(exc))
+        except OSError as exc:
+            # the configuration file could not be written (a read-only disk)
+            return self.write_error_json(
+                500, f"Could not write the Cloudflare configuration: {exc.strerror}"
+            )
         self.write_json(_tunnel_state(self))
 
 
@@ -1045,11 +1222,14 @@ class ConnectionsHandler(_Base):
                 400,
                 "That link points to your own server - it's already in your panel.",
             )
-        # Probe the peer: protected resources answer 401 on the bare manifest.
+        # Probe the peer: protected resources answer 401 on the bare manifest,
+        # a removed one 404 and is refused with the sentence the polls give.
         # With a password given, verify it via the peer's unlock endpoint so a
         # wrong password is caught at connect time, not at first download.
         try:
             probe = await self._peer_fetch(link.rstrip("/") + "/manifest")
+            if probe.code == 404:
+                return self.write_error_json(*_peer_answer(probe.code))
             if probe.code == 401:
                 if not password:
                     self.set_status(401)
@@ -1134,7 +1314,6 @@ def _resolve_workspace_target_dir(workspace_root: str, target_dir: str, shares_d
     return resolved
 
 
-# bytes a save from a connected peer may write, unpacked
 # bytes copied from a zip member to disk at a time
 _EXTRACT_CHUNK_BYTES = 1024 * 1024
 
@@ -1146,8 +1325,20 @@ _ZIP_UNREADABLE = (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.e
 )
 
 
-def _extract_zip_into(zip_bytes: bytes, dest_dir: Path, max_bytes: int) -> int:
-    """Extract a zip archive into dest_dir, return the bytes written.
+def _download_limit(max_gb) -> int:
+    """Bytes one download from a peer may carry: the request's ``max_gb``
+    (the panel's setting), PEER_DOWNLOAD_DEFAULT_GB when the request names
+    none - the CLI's pick-up, an older panel."""
+    try:
+        gb = float(max_gb)
+    except (TypeError, ValueError):
+        gb = 0.0
+    return int((gb if gb > 0 else PEER_DOWNLOAD_DEFAULT_GB) * GB)
+
+
+def _extract_zip_into(zip_file, dest_dir: Path, max_bytes: int) -> int:
+    """Extract a zip archive (a path or a seekable binary file) into
+    dest_dir, return the bytes written.
 
     Strips path components that escape the destination. Each member is
     copied to disk in chunks; passing ``max_bytes`` raises `SaveTooLarge`
@@ -1155,7 +1346,7 @@ def _extract_zip_into(zip_bytes: bytes, dest_dir: Path, max_bytes: int) -> int:
     """
     written = 0
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+    with zipfile.ZipFile(zip_file) as zf:
         for info in zf.infolist():
             if info.is_dir():
                 continue
@@ -1167,7 +1358,14 @@ def _extract_zip_into(zip_bytes: bytes, dest_dir: Path, max_bytes: int) -> int:
             if not target.is_relative_to(dest_dir.resolve()):
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info) as src, open(target, "wb") as out:
+            try:
+                src = zf.open(info)
+            except OSError as exc:
+                # an end record pointing the central directory before the
+                # archive's start: the spool's seek refuses (a BytesIO
+                # raised ValueError) - the archive, not the workspace
+                raise zipfile.BadZipFile(str(exc)) from None
+            with src, open(target, "wb") as out:
                 while True:
                     try:
                         chunk = src.read(_EXTRACT_CHUNK_BYTES)
@@ -1230,8 +1428,9 @@ class ConnectionSaveHandler(_Base):
             api_base = host + url_path_join(base_url, EXTENSION_NAMESPACE, "public", "share", share_id)
 
         saved: list[str] = []
+        limit = _download_limit(body.get("max_gb"))
         # bytes this save may still write
-        left = PEER_SAVE_MAX_BYTES
+        left = limit
         # Peer fetches can fail on TLS (self-signed) or connection - map those
         # to a clean 502 rather than an unhandled 500.
         try:
@@ -1262,16 +1461,19 @@ class ConnectionSaveHandler(_Base):
 
             if names is None:
                 # Save All - download zip, extract into <dest_root>/<share-slug>/
-                zip_resp = await self._peer_fetch(api_base + "/download-all", download=True, headers=auth_headers)
-                if zip_resp.code != 200:
-                    return self._failed(saved, 502, f"Could not download share ({zip_resp.code})")
-                wrap_dir = _resolve_unique_target(dest_root, share_slug)
-                # `.` and `..` pass _safe_name - check where the folder really
-                # lands after resolve(), not how its path reads
-                if wrap_dir.resolve().parent != dest_root.resolve():
-                    return self._failed(saved, 502, f"The peer sent an unsafe folder name: {share_slug}")
-                saved.append(str(wrap_dir.relative_to(self.workspace_root)))
-                _extract_zip_into(zip_resp.body, wrap_dir, left)
+                with self._spool() as spool:
+                    zip_resp = await self._peer_fetch(
+                        api_base + "/download-all", spool=spool, max_bytes=left, headers=auth_headers
+                    )
+                    if zip_resp.code != 200:
+                        return self._failed(saved, 502, f"Could not download share ({zip_resp.code})")
+                    wrap_dir = _resolve_unique_target(dest_root, share_slug)
+                    # `.` and `..` pass _safe_name - check where the folder
+                    # really lands after resolve(), not how its path reads
+                    if wrap_dir.resolve().parent != dest_root.resolve():
+                        return self._failed(saved, 502, f"The peer sent an unsafe folder name: {share_slug}")
+                    saved.append(str(wrap_dir.relative_to(self.workspace_root)))
+                    _extract_zip_into(spool, wrap_dir, left)
             else:
                 if not isinstance(names, list) or not names:
                     return self._failed(saved, 400, "'names' must be a non-empty list")
@@ -1284,27 +1486,29 @@ class ConnectionSaveHandler(_Base):
                     if entry is None:
                         return self._failed(saved, 404, f"Not in share: {name}")
                     url = api_base + "/download/" + tornado.escape.url_escape(name)
-                    resp = await self._peer_fetch(url, download=True, headers=auth_headers)
-                    if resp.code != 200:
-                        return self._failed(saved, 502, f"Could not download {name} ({resp.code})")
-                    if entry.get("type") == "directory":
-                        wrap_dir = _resolve_unique_target(dest_root, name)
-                        saved.append(str(wrap_dir.relative_to(self.workspace_root)))
-                        left -= _extract_zip_into(resp.body, wrap_dir, left)
-                    else:
-                        if len(resp.body) > left:
-                            raise SaveTooLarge()
-                        left -= len(resp.body)
-                        target = _resolve_unique_target(dest_root, name)
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        saved.append(str(target.relative_to(self.workspace_root)))
-                        with open(target, "wb") as f:
-                            f.write(resp.body)
+                    with self._spool() as spool:
+                        resp = await self._peer_fetch(url, spool=spool, max_bytes=left, headers=auth_headers)
+                        if resp.code != 200:
+                            return self._failed(saved, 502, f"Could not download {name} ({resp.code})")
+                        if entry.get("type") == "directory":
+                            wrap_dir = _resolve_unique_target(dest_root, name)
+                            saved.append(str(wrap_dir.relative_to(self.workspace_root)))
+                            left -= _extract_zip_into(spool, wrap_dir, left)
+                        else:
+                            # the fetch capped the file at `left` bytes
+                            left -= spool.tell()
+                            target = _resolve_unique_target(dest_root, name)
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            saved.append(str(target.relative_to(self.workspace_root)))
+                            # closed first: Windows refuses to move a name still open
+                            spool.close()
+                            shutil.move(spool.name, target)
+                            settle_mode(target)
         except PeerUnavailable as exc:
             return self._failed(saved, 502, str(exc))
         except SaveTooLarge:
             return self._failed(
-                saved, 502, f"The share is larger than {PEER_SAVE_MAX_BYTES / 1024**3:g} GiB when unpacked"
+                saved, 502, f"The share is larger than {limit / GB:g} GB when unpacked"
             )
         except _ZIP_UNREADABLE:
             # DEF-PEER-52: the peer answered 200 with something that is not a
@@ -1342,9 +1546,12 @@ class _ConnectionPeerBase(_Base):
     as it does for a save, and the peer's origin never reaches the page.
     """
 
-    async def _peer(self, key: str, suffix: str, download: bool = False):
+    async def _peer(self, key: str, suffix: str, **fetch):
         """The peer's 200 answer for ``<link>/<suffix>``, or None when the
-        error was already written."""
+        error was already written; ``fetch`` reaches `_peer_fetch`. A
+        failure after a ``started`` future in ``fetch`` resolved is raised
+        instead: the browser is receiving the body, no answer can be written.
+        """
         try:
             conn = self.connection_store.get(key)
         except NotFoundError as exc:
@@ -1356,14 +1563,15 @@ class _ConnectionPeerBase(_Base):
             return None
         try:
             headers = await self._peer_auth_headers(conn)
-            resp = await self._peer_fetch(link + "/" + suffix, download=download, headers=headers)
+            resp = await self._peer_fetch(link + "/" + suffix, headers=headers, **fetch)
             if resp.code == 401 and headers:
                 # a kept token the peer no longer accepts: unlock once more
                 headers = await self._peer_auth_headers(conn, fresh=True)
-                resp = await self._peer_fetch(
-                    link + "/" + suffix, download=download, headers=headers
-                )
+                resp = await self._peer_fetch(link + "/" + suffix, headers=headers, **fetch)
         except PeerUnavailable as exc:
+            started = fetch.get("started")
+            if started is not None and started.done():
+                raise
             self.write_error_json(502, str(exc))
             return None
         if resp.code != 200:
@@ -1390,28 +1598,68 @@ class ConnectionManifestHandler(_ConnectionPeerBase):
 
 
 class ConnectionDownloadHandler(_ConnectionPeerBase):
-    """api/connections/<key>/download?name=<entry> - one entry of a connected
-    share (a folder arrives as the zip the peer builds), handed to the browser
-    as an attachment. Buffered like a save, under the same size and time
-    limits; a browser download could not carry the unlock header, and the
-    query token the peer accepts would land in the page's history."""
+    """api/connections/<key>/download?name=<entry>&max_gb=<limit> - one entry
+    of a connected share (a folder arrives as the zip the peer builds),
+    handed to the browser as an attachment. Spooled to disk like a save,
+    under the same size and time limits, and relayed from the spool as the
+    peer's body lands on it; a browser download could not carry the unlock
+    header, and the query token the peer accepts would land in the page's
+    history."""
 
     @tornado.web.authenticated
     async def get(self, key):
         name = self.get_argument("name", default="")
         if not name:
             return self.write_error_json(400, "Missing 'name'")
-        resp = await self._peer(key, "download/" + quote(name, safe="/"), download=True)
-        if resp is None:
-            return
-        self.set_header(
-            "Content-Disposition", "attachment; filename*=UTF-8''" + quote(name.rsplit("/", 1)[-1])
-        )
-        self.set_header("Cache-Control", "no-store")
+        max_bytes = _download_limit(self.get_argument("max_gb", default=""))
+        started = asyncio.get_running_loop().create_future()
+        with self._spool() as spool:
+            fetch = asyncio.ensure_future(
+                self._peer(
+                    key, "download/" + quote(name, safe="/"), spool=spool, max_bytes=max_bytes, started=started
+                )
+            )
+            await asyncio.wait({fetch, started}, return_when=asyncio.FIRST_COMPLETED)
+            if not started.done():
+                # the fetch ended before a 200 the limit allows: the answer
+                # is already written, nothing reached the browser
+                await fetch
+                return
+            headers = started.result()
+            content_type = headers.get("Content-Type") or "application/octet-stream"
+            # a folder arrives as the zip the peer builds; the browser takes
+            # this header over the anchor's download attribute
+            filename = name.rsplit("/", 1)[-1] + (".zip" if content_type == "application/zip" else "")
+            self.set_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(filename))
+            self.set_header("Cache-Control", "no-store")
+            self.set_header("Content-Type", content_type)
+            if "Content-Length" in headers:
+                # the browser shows progress and detects a short body
+                self.set_header("Content-Length", headers["Content-Length"])
+            try:
+                with open(spool.name, "rb") as tail:
+                    while True:
+                        chunk = tail.read(_EXTRACT_CHUNK_BYTES)
+                        if chunk:
+                            self.write(chunk)
+                            await self.flush()
+                        elif fetch.done():
+                            break
+                        else:
+                            await asyncio.sleep(0.05)
+            except StreamClosedError:
+                # the browser gave up: a closed spool ends the fetch at the
+                # peer's next chunk, and nothing else can be answered
+                spool.close()
+            try:
+                await fetch
+            except (PeerUnavailable, OSError, RelayAbandoned):
+                # bytes are out, so no JSON answer can follow: the closed
+                # connection is what marks the download failed
+                self.request.connection.close()
+                return
         # APIHandler.finish sets the Content-Type itself; hand it the peer's
-        self.finish(
-            resp.body, set_content_type=resp.headers.get("Content-Type") or "application/octet-stream"
-        )
+        self.finish(set_content_type=content_type)
 
 
 class ConnectionUploadHandler(_Base):
@@ -1459,7 +1707,7 @@ class ConnectionUploadHandler(_Base):
             # is captured from the response and persisted for next time.
             uploader_hash = conn.get("uploader_hash") or ""
 
-            async def post_one(filename: str, data: bytes) -> None:
+            async def post_one(path: Path, filename: str) -> None:
                 nonlocal uploader_hash
                 headers = dict(auth_headers or {})
                 if uploader_hash:
@@ -1469,8 +1717,8 @@ class ConnectionUploadHandler(_Base):
                 resp_body = await _post_file(
                     client,
                     upload_url,
+                    path,
                     filename,
-                    data,
                     validate_cert=self.verify_peer_tls,
                     headers=headers,
                 )
@@ -1495,14 +1743,10 @@ class ConnectionUploadHandler(_Base):
                         for fname in files:
                             abs_path = os.path.join(root, fname)
                             rel_name = os.path.join(src.name, os.path.relpath(abs_path, src))
-                            with open(abs_path, "rb") as f:
-                                data = f.read()
-                            await post_one(rel_name.replace(os.sep, "/"), data)
+                            await post_one(Path(abs_path), rel_name.replace(os.sep, "/"))
                             sent.append(rel_name)
                 else:
-                    with open(src, "rb") as f:
-                        data = f.read()
-                    await post_one(src.name, data)
+                    await post_one(src, src.name)
                     sent.append(src.name)
         except PeerUnavailable as exc:
             return self.write_error_json(502, str(exc))
@@ -1513,39 +1757,44 @@ class ConnectionUploadHandler(_Base):
 async def _post_file(
     client,
     url: str,
+    path: Path,
     filename: str,
-    data: bytes,
     validate_cert: bool = True,
     headers: dict | None = None,
 ) -> bytes:
-    """Send a single file as multipart/form-data POST. Returns the response body.
+    """POST one file as the raw body under ``X-Filename`` - the wire shape
+    the hub's fileshare service and PublicRequestUploadHandler take - read
+    from ``path`` in chunks as it is sent, never held whole. Returns the
+    response body.
 
-    An upload may take PEER_TRANSFER_TIMEOUT_SECONDS. A timeout and a closed
-    connection - which `raise_error=False` does NOT suppress - become a
-    `PeerUnavailable` the handler maps to a 502.
+    An upload may take PEER_UPLOAD_SECONDS_PER_GB for every GB of the file,
+    and at least for one. A timeout and a closed connection - which
+    `raise_error=False` does NOT suppress - become a `PeerUnavailable` the
+    handler maps to a 502.
     """
-    boundary = "----shareFilesBoundary" + os.urandom(8).hex()
-    body_parts = [
-        f"--{boundary}\r\n".encode(),
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode(),
-        b"Content-Type: application/octet-stream\r\n\r\n",
-        data,
-        f"\r\n--{boundary}--\r\n".encode(),
-    ]
-    body = b"".join(body_parts)
+    size = path.stat().st_size
+    request_timeout = PEER_UPLOAD_SECONDS_PER_GB * max(1.0, size / GB)
+
+    async def produce(write) -> None:
+        with open(path, "rb") as f:
+            while chunk := f.read(_EXTRACT_CHUNK_BYTES):
+                await write(chunk)
+
     try:
         resp = await client.fetch(
             url,
             method="POST",
             headers={
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "X-Filename": quote(filename),
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(size),
                 **(headers or {}),
             },
-            body=body,
+            body_producer=produce,
             raise_error=False,
             validate_cert=validate_cert,
             connect_timeout=PEER_TIMEOUT_SECONDS,
-            request_timeout=PEER_TRANSFER_TIMEOUT_SECONDS,
+            request_timeout=request_timeout,
         )
     except ssl.SSLError as exc:
         raise PeerUnavailable(
@@ -1558,9 +1807,7 @@ async def _post_file(
     except HTTPTimeoutError as exc:
         # tornado says "Timeout during request" when the answer ran out of
         # time, otherwise the connection did not open in time
-        waited = (
-            PEER_TRANSFER_TIMEOUT_SECONDS if "during request" in str(exc) else PEER_TIMEOUT_SECONDS
-        )
+        waited = request_timeout if "during request" in str(exc) else PEER_TIMEOUT_SECONDS
         raise PeerUnavailable(f"The peer did not answer within {waited:g} s") from None
     except HTTPStreamClosedError:
         raise PeerUnavailable("The peer closed the connection before the upload finished") from None
@@ -1748,7 +1995,7 @@ class PublicRequestManifestHandler(_UncachedPublicMixin, _PublicBase):
 
 
 class PublicShareDownloadHandler(_PublicBase):
-    def get(self, id_, sub_path):
+    async def get(self, id_, sub_path):
         if not _password_gate(self, self.share_store, id_):
             return
         try:
@@ -1758,36 +2005,25 @@ class PublicShareDownloadHandler(_PublicBase):
             self.finish("Not found")
             return
         if target.is_dir():
-            self._serve_zip(target, target.name)
+            await self._serve_zip(target, target.name, target.name)
         else:
-            self._serve_file(target)
+            await self._serve_file(target)
 
-    def _serve_file(self, path: Path):
+    async def _serve_file(self, path: Path):
         self.set_header("Content-Type", "application/octet-stream")
-        self.set_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        self.set_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(path.name))
+        self.set_header("Content-Length", str(path.stat().st_size))
+        # flushed chunk by chunk: without the flush tornado keeps the whole
+        # file in its write buffer until finish()
         with open(path, "rb") as f:
-            while True:
-                chunk = f.read(64 * 1024)
-                if not chunk:
-                    break
+            while chunk := f.read(_EXTRACT_CHUNK_BYTES):
                 self.write(chunk)
+                await self.flush()
         self.finish()
-
-    def _serve_zip(self, directory: Path, name: str):
-        self.set_header("Content-Type", "application/zip")
-        self.set_header("Content-Disposition", f'attachment; filename="{name}.zip"')
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, _dirs, files in os.walk(directory):
-                for fname in files:
-                    abs_path = os.path.join(root, fname)
-                    arcname = os.path.join(name, os.path.relpath(abs_path, directory))
-                    zf.write(abs_path, arcname)
-        self.finish(buf.getvalue())
 
 
 class PublicShareDownloadAllHandler(_PublicBase):
-    def get(self, id_):
+    async def get(self, id_):
         if not _password_gate(self, self.share_store, id_):
             return
         try:
@@ -1797,17 +2033,7 @@ class PublicShareDownloadAllHandler(_PublicBase):
             self.set_status(404)
             self.finish("Not found")
             return
-        name = manifest.get("slug") or id_
-        self.set_header("Content-Type", "application/zip")
-        self.set_header("Content-Disposition", f'attachment; filename="{name}.zip"')
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, _dirs, files in os.walk(data_dir):
-                for fname in files:
-                    abs_path = os.path.join(root, fname)
-                    arcname = os.path.relpath(abs_path, data_dir)
-                    zf.write(abs_path, arcname)
-        self.finish(buf.getvalue())
+        await self._serve_zip(data_dir, manifest.get("slug") or id_, "")
 
 
 def _uploader_cookie_name(id_: str) -> str:
@@ -1823,49 +2049,112 @@ def _uploader_hash_from_cookie(handler, id_: str) -> str:
     return raw
 
 
+@tornado.web.stream_request_body
 class PublicRequestUploadHandler(_PublicBase):
-    def post(self, id_):
+    """One file per POST, the raw body under ``X-Filename`` (percent-encoded
+    UTF-8, '/' for folder uploads) - the wire shape the hub's fileshare
+    service takes. The body is spooled to the store's ``tmp`` folder as it
+    arrives and moved into the request once complete, so an upload is never
+    held in memory and jupyter_server's 512 MiB body limit does not apply.
+    """
+
+    def initialize(self):
+        self._spool = None
+
+    def prepare(self):
+        if self.request.method != "POST":
+            return
+        id_ = self.path_args[0]
         if not _password_gate(self, self.request_store, id_):
             return
         if not self.request_store.exists(id_):
             self.set_status(404)
             self.finish(json.dumps({"error": "not found"}))
             return
-        uploader_name = self.get_argument("uploader", default="anonymous")
         # identity comes from the cookie, never from the client's parameters;
         # first upload mints a hash and sets the cookie on the response
-        uploader_hash = _uploader_hash_from_cookie(self, id_)
-        if not uploader_hash:
-            uploader_hash = mint_uploader_hash()
+        self._uploader_hash = _uploader_hash_from_cookie(self, id_)
+        if not self._uploader_hash:
+            self._uploader_hash = mint_uploader_hash()
             self.set_cookie(
                 _uploader_cookie_name(id_),
-                uploader_hash,
+                self._uploader_hash,
                 httponly=True,
                 expires_days=365,
                 samesite="Lax",
             )
-        files = self.request.files.get("file") or self.request.files.get("files") or []
-        if not files:
+        try:
+            self._filename = unquote(self.request.headers.get("X-Filename", ""), errors="strict")
+        except UnicodeDecodeError:
+            self._filename = ""
+        if not self._filename:
             self.set_status(400)
             self.finish(json.dumps({"error": "no file"}))
             return
-        for f in files:
-            filename = f.get("filename") or "upload.bin"
-            data = f.get("body") or b""
-            try:
-                self.request_store.add_upload(
-                    id_, uploader_hash, uploader_name, filename, data
-                )
-            except StorageError as exc:
-                self.set_status(400)
-                self.finish(json.dumps({"error": str(exc)}))
-                return
+        tmp = resolve_shares_dir(self.workspace_root, self.shares_dir) / "tmp"
+        tmp.mkdir(parents=True, exist_ok=True)
+        free = shutil.disk_usage(tmp).free
+        length = self.request.headers.get("Content-Length", "")
+        if length.isdigit() and int(length) > free:
+            self.set_status(413)
+            self.finish(json.dumps({"error": "Not enough space"}))
+            return
+        # tornado reads the body after prepare(): the limit set here replaces
+        # the server's default for this request
+        self.request.connection.set_max_body_size(free)
+        self._spool = tempfile.NamedTemporaryFile(dir=tmp, prefix="upload-", suffix=".part", delete=False)
+
+    def _refuse_store(self):
+        # answered now: tornado closes the connection under the rest of the
+        # body, as prepare()'s 413 does, so the recipient's upload stops
+        self.set_status(500)
+        self.finish(json.dumps({"error": "Could not store the upload"}))
+
+    def data_received(self, chunk):
+        try:
+            self._spool.write(chunk)
+        except OSError:
+            self._refuse_store()
+
+    def post(self, id_):
+        try:
+            self._spool.close()
+        except OSError:
+            # the disk refused the last buffered bytes
+            return self._refuse_store()
+        uploader_name = self.get_argument("uploader", default="anonymous")
+        try:
+            self.request_store.add_upload(
+                id_, self._uploader_hash, uploader_name, self._filename, Path(self._spool.name)
+            )
+        except StorageError as exc:
+            self.set_status(400)
+            self.finish(json.dumps({"error": str(exc)}))
+            return
         self.set_header("Content-Type", "application/json")
         self.finish(json.dumps({
             "ok": True,
-            "count": len(files),
-            "me": {"hash": uploader_hash, "name": uploader_name},
+            "count": 1,
+            "me": {"hash": self._uploader_hash, "name": uploader_name},
         }))
+
+    def _drop_spool(self):
+        # a failed upload, or one whose client dropped mid-body, leaves
+        # nothing in tmp
+        if self._spool is not None:
+            try:
+                self._spool.close()
+            except OSError:
+                pass  # the disk refused the buffered tail; the file goes anyway
+            Path(self._spool.name).unlink(missing_ok=True)
+
+    def on_finish(self):
+        self._drop_spool()
+
+    def on_connection_close(self):
+        # the base marks the body future closed so the pending post() unwinds
+        super().on_connection_close()
+        self._drop_spool()
 
     def delete(self, id_):
         """Remove one of the caller's own uploads - identity from the cookie only."""

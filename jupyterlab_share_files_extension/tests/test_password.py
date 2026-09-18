@@ -403,6 +403,19 @@ def test_connect_to_open_share_skips_unlock(workspace):
     assert not any(url.endswith("/unlock") for url, _ in handler.fetched)
 
 
+def test_connect_to_removed_share_is_refused(workspace):
+    handler = _connections_handler(
+        workspace,
+        {"link": PEER_LINK, "password": "x"},
+        {"manifest": _PeerResponse(404)},
+    )
+    asyncio.run(handler.post())
+    assert handler.status == 404
+    assert handler.payload["error"] == "The owner has removed this share or request."
+    assert ConnectionStore(str(workspace)).list() == []
+    assert not any(url.endswith("/unlock") for url, _ in handler.fetched)
+
+
 def test_connect_rate_limited_peer_maps_to_429(workspace):
     handler = _connections_handler(
         workspace,

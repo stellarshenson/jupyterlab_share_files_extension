@@ -42,7 +42,23 @@ async function api(
   );
 }
 
-test('a peer on another origin lists its files and downloads under a default-src self policy', async ({
+/** Set the download limit through the settings registry, the way the
+ * Settings editor does - the panel picks it up on the registry's changed
+ * signal. */
+async function setDownloadLimit(page: any, gb: number): Promise<void> {
+  await page.evaluate(async (g: number) => {
+    const registry = await (window as any).galata.getPlugin(
+      '@jupyterlab/apputils-extension:settings'
+    );
+    await registry.set(
+      'jupyterlab_share_files_extension:plugin',
+      'peerDownloadMaxGb',
+      g
+    );
+  }, gb);
+}
+
+test('a peer on another origin lists, saves and downloads its files under a default-src self policy, with the download limit setting', async ({
   page,
   tmpPath
 }) => {
@@ -105,13 +121,36 @@ test('a peer on another origin lists its files and downloads under a default-src
       return { status: r.status, cache: r.headers.get('cache-control') };
     }, conn.data.key);
     expect(viaServer).toEqual({ status: 200, cache: 'no-store' });
-    // Download from the entry's menu arrives through our server as well
+    // the Settings editor's download limit travels with the save, which
+    // lands the file through our server's spool
+    await setDownloadLimit(page, 2);
     await entry.click({ button: 'right' });
-    const download = page.waitForEvent('download');
+    const saving = page.waitForResponse((r: any) =>
+      /\/connections\/[^/]+\/save(\?|$)/.test(r.url())
+    );
+    await page
+      .locator('.lm-Menu .lm-Menu-item', { hasText: 'Save to Current Folder' })
+      .click();
+    const saveResponse = await saving;
+    expect(saveResponse.request().postDataJSON().max_gb).toBe(2);
+    expect(saveResponse.status()).toBe(200);
+    const saved = (await saveResponse.json()).saved[0];
+    expect(await page.contents.fileExists(saved)).toBe(true);
+    await page.contents.deleteFile(saved);
+    // Download from the entry's menu arrives through our server as well,
+    // under the same limit. The browser fetches the anchor itself, so the
+    // download event is the only trace of the request
+    await entry.click({ button: 'right' });
+    const downloading = page.waitForEvent('download');
     await page
       .locator('.lm-Menu .lm-Menu-item', { hasText: 'Download' })
       .click();
-    expect((await download).suggestedFilename()).toBe('peer.txt');
+    const download = await downloading;
+    expect(download.url()).toContain('/connections/');
+    expect(download.url()).toContain('&max_gb=2');
+    expect(download.suggestedFilename()).toBe('peer.txt');
+    // the event fires for a 4xx answer too: only a finished file proves it
+    expect(await download.failure()).toBeNull();
   } finally {
     await api(
       page,

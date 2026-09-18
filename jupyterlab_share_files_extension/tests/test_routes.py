@@ -188,15 +188,7 @@ async def test_create_request_and_upload(jp_fetch, jp_root_dir):
     assert req["name"] == "Homework"
     assert req["upload_count"] == 0
 
-    # upload via the public endpoint
-    boundary = "----testBoundary"
-    body = (
-        f"--{boundary}\r\n"
-        'Content-Disposition: form-data; name="file"; filename="solution.py"\r\n'
-        "Content-Type: text/plain\r\n\r\n"
-        "print('hello')\r\n"
-        f"--{boundary}--\r\n"
-    ).encode()
+    # upload via the public endpoint: the raw file under X-Filename
     upload_resp = await jp_fetch(
         "jupyterlab-share-files-extension",
         "public",
@@ -204,8 +196,8 @@ async def test_create_request_and_upload(jp_fetch, jp_root_dir):
         request_id,
         "upload",
         method="POST",
-        body=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        body=b"print('hello')\n",
+        headers={"Content-Type": "application/octet-stream", "X-Filename": "solution.py"},
     )
     assert upload_resp.code == 200
 

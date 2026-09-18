@@ -59,8 +59,9 @@ CLOUD_KEY = "hub_cloud"
 
 # The wait for the hub to confirm a Cloudflare switch-on (CloudWait): the
 # hub's items are read at most every CONFIRM_POLL_SECONDS, for at most
-# CONFIRM_TIMEOUT_SECONDS. CONFIRM_TIMEOUT_VAR overrides the bound - the
-# hub-mode galata suite sets it to test the timeout.
+# CONFIRM_TIMEOUT_SECONDS - twice that when the hub comes back from an
+# outage mid-wait. CONFIRM_TIMEOUT_VAR overrides the bound - the hub-mode
+# galata suite sets it to test the timeout.
 CONFIRM_POLL_SECONDS = 5
 CONFIRM_TIMEOUT_VAR = "SHARE_FILES_CLOUD_CONFIRM_SECONDS"
 CONFIRM_TIMEOUT_SECONDS = float(os.environ.get(CONFIRM_TIMEOUT_VAR) or 120)
@@ -235,6 +236,10 @@ class CloudWait:
     it is, with reason ``hub_unavailable`` when the hub did not answer and
     ``cloud_not_switched_off`` when it answered other than 204 or 404. A
     record switched off or removed during the wait needs no confirmation.
+    A hub that stopped answering during the wait reports its own origin
+    when it answers again, until its tunnel connector registers, so its
+    first answer back restarts the bound; the restart happens once per
+    wait, so a hub that goes down again does not extend it further.
     """
 
     def __init__(self):
@@ -269,10 +274,19 @@ class CloudWait:
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + CONFIRM_TIMEOUT_SECONDS
+        unreachable = restarted = False
         try:
             while self._records:
                 await asyncio.sleep(max(0.0, min(CONFIRM_POLL_SECONDS, deadline - loop.time())))
-                self._settle(await self._items())
+                items = await self._items()
+                # a hub back from an outage reports its own origin until its
+                # tunnel registers: its first answer restarts the bound, once
+                if items is None:
+                    unreachable = True
+                elif unreachable and not restarted:
+                    deadline = loop.time() + CONFIRM_TIMEOUT_SECONDS
+                    restarted = True
+                self._settle(items)
                 if self._records and loop.time() >= deadline:
                     await self._switch_back()
         finally:

@@ -31,6 +31,7 @@ interface IPluginSettings {
   showHiddenFiles: boolean;
   tunnelAutostart: boolean;
   pollIntervalSeconds: number;
+  peerDownloadMaxGb: number;
 }
 
 const DEFAULT_SETTINGS: IPluginSettings = {
@@ -38,7 +39,8 @@ const DEFAULT_SETTINGS: IPluginSettings = {
   enableRequests: true,
   showHiddenFiles: true,
   tunnelAutostart: false,
-  pollIntervalSeconds: 15
+  pollIntervalSeconds: 15,
+  peerDownloadMaxGb: 10
 };
 
 /**
@@ -320,7 +322,9 @@ const plugin: JupyterFrontEndPlugin<void> = {
           showHiddenFiles: settings.get('showHiddenFiles').composite as boolean,
           tunnelAutostart: settings.get('tunnelAutostart').composite as boolean,
           pollIntervalSeconds:
-            (settings.get('pollIntervalSeconds').composite as number) || 15
+            (settings.get('pollIntervalSeconds').composite as number) || 15,
+          peerDownloadMaxGb:
+            (settings.get('peerDownloadMaxGb').composite as number) || 10
         };
         panel.updateSettings(next);
       };

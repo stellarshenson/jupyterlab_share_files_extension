@@ -537,14 +537,17 @@ export function removeConnection(
  * @param names - undefined or null means "save all" (downloads the whole share
  *   into a folder named after the share). Otherwise a list of entry names from
  *   the remote share's top level.
+ * @param maxGb - GB the save may carry, unpacked (the peerDownloadMaxGb
+ *   setting); the server stops past it and leaves nothing behind.
  */
 export function saveFromConnection(
   s: ServerConnection.ISettings,
   key: string,
   targetDir: string,
-  names: string[] | null
+  names: string[] | null,
+  maxGb: number
 ): Promise<{ ok: boolean; saved: string[] }> {
-  const body: any = { target_dir: targetDir };
+  const body: any = { target_dir: targetDir, max_gb: maxGb };
   if (names !== null) {
     body.names = names;
   }
@@ -612,11 +615,13 @@ export async function fetchConnectionManifest(
 }
 
 /** Same-origin download URL for one entry of a connected share - our server
- * fetches it from the peer (`api/connections/<key>/download`). */
+ * fetches it from the peer (`api/connections/<key>/download`), at most
+ * `maxGb` (the peerDownloadMaxGb setting). */
 export function connectionDownloadUrl(
   serverSettings: ServerConnection.ISettings,
   key: string,
-  entryName: string
+  entryName: string,
+  maxGb: number
 ): string {
   return (
     URLExt.join(
@@ -626,6 +631,6 @@ export function connectionDownloadUrl(
       'connections',
       encodeURIComponent(key),
       'download'
-    ) + `?name=${encodeURIComponent(entryName)}`
+    ) + `?name=${encodeURIComponent(entryName)}&max_gb=${maxGb}`
   );
 }

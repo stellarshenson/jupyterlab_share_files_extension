@@ -334,6 +334,10 @@ class TestShareStore:
 # --------------------------------------------------------------------------- #
 
 
+def _mode(path):
+    return path.stat().st_mode & 0o777
+
+
 class TestRequestStore:
     def test_create_returns_empty(self, tmp_path):
         store = RequestStore(str(tmp_path))
@@ -353,6 +357,26 @@ class TestRequestStore:
         assert uploaders[0]["hash"] == "HASH01"
         assert uploaders[0]["name"] == "alice"
         assert uploaders[0]["entries"][0]["name"] == "answer.py"
+
+    def test_add_upload_moves_a_spooled_path_into_place(self, tmp_path):
+        """A Path is renamed onto the reserved name - the bytes are not
+        copied and nothing stays behind in the spool folder."""
+        store = RequestStore(str(tmp_path))
+        req = store.create("inbox")
+        spool_dir = tmp_path / SHARES_DIR_NAME / "tmp"
+        spool_dir.mkdir(parents=True)
+        spool = spool_dir / "upload-abc.part"
+        spool.write_bytes(b"streamed")
+        spool.chmod(0o600)  # as tempfile creates it
+        store.add_upload(req["id"], "HASH01", "alice", "answer.py", b"first")
+        result = store.add_upload(req["id"], "HASH01", "alice", "answer.py", spool)
+        names = sorted(e["name"] for e in result["uploaders"][0]["entries"])
+        assert names == ["answer-2.py", "answer.py"]
+        pool = store._path_for(req["id"]) / "HASH01"
+        assert (pool / "answer-2.py").read_bytes() == b"streamed"
+        # the landed file has the mode of a file the lab writes, not the spool's
+        assert _mode(pool / "answer-2.py") == _mode(pool / "answer.py")
+        assert not spool.exists()
 
     def test_add_upload_anonymises_empty_name(self, tmp_path):
         store = RequestStore(str(tmp_path))

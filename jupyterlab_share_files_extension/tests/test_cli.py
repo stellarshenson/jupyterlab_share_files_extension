@@ -181,6 +181,23 @@ def test_cloudflare_token_and_account_saved_with_0600(config_home, monkeypatch, 
     assert (path.stat().st_mode & 0o777) == 0o600
 
 
+def test_a_write_that_fails_mid_way_keeps_the_previous_config(config_home, monkeypatch):
+    """A disk that fills while the toggle rewrites the file must not leave an
+    empty file that reads as no tunnel: the write lands beside the file and
+    is moved over it only once it is complete."""
+    tunnel._save_config({"cloudflare_tunnel_token": "conn-token", "tunnel_active": True})
+
+    def full_disk(fd):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(tunnel.os, "fsync", full_disk)
+    with pytest.raises(OSError):
+        tunnel._save_config({"cloudflare_tunnel_token": "conn-token", "tunnel_active": False})
+    cfg = json.loads(tunnel.config_path().read_text())
+    assert cfg == {"cloudflare_tunnel_token": "conn-token", "tunnel_active": True}
+    assert (tunnel.config_path().stat().st_mode & 0o777) == 0o600
+
+
 def test_cloudflare_validate_without_token_fails(config_home, capsys):
     assert cli.main(["cloudflare", "validate"]) == 1
     assert "no token" in capsys.readouterr().err
@@ -297,7 +314,6 @@ def test_cloudflare_setup_provisions_and_saves(config_home, monkeypatch):
 
     assert out["tunnel_id"] == "tun-1"
     assert out["public_base_url"] == "https://share.example.com"
-    assert out["run_command"] == "cloudflared tunnel run --token conn-token"
     # the origin is the PUBLIC base URL's scheme+host, never internal/localhost
     assert out["origin"] == "https://hub.example.com"
 
@@ -486,6 +502,23 @@ def test_ensure_connector_retries_and_fails(config_home, monkeypatch, caplog):
         assert tunnel.ensure_connector(retries=3, logger=log) is False
     assert len(attempts) == 3
     assert any("failed after 3 attempts" in r.message for r in caplog.records)
+
+
+def test_a_missing_cloudflared_binary_is_named_in_the_connector_log(config_home, monkeypatch, tmp_path):
+    """The toggle's refusal sends the owner to the connector log; a binary that
+    is not installed never wrote a line there, so the launch failure must."""
+    tunnel._save_config({"cloudflare_tunnel_token": "tt"})
+    monkeypatch.setattr(tunnel, "_connector_running", lambda: False)
+    monkeypatch.setattr(tunnel, "CONNECTOR_LOG", str(tmp_path / "connector.log"))
+
+    def missing_binary(*a, **kw):
+        raise FileNotFoundError(2, "No such file or directory", "cloudflared")
+
+    monkeypatch.setattr(tunnel.subprocess, "Popen", missing_binary)
+    assert tunnel.ensure_connector(retries=2) is False
+    log = (tmp_path / "connector.log").read_text()
+    assert log.count("cloudflared launch failed") == 2
+    assert "No such file or directory" in log
 
 
 def test_ensure_connector_succeeds_when_process_stays_up(config_home, monkeypatch):

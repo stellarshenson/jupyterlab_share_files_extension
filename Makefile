@@ -1,5 +1,54 @@
-# Makefile for Jupyterlab extensions version 1.37
+# Makefile for Jupyterlab extensions version 1.40
 # changelog:
+#   1.40 - publish stages yarn.lock in the post-publish commit. It staged only
+#          package.json and package-lock.json, and `git add package.json` takes every
+#          change in that file, so a dependency added since the last commit went out
+#          without its yarn.lock entry. CI installs with an immutable lockfile and
+#          failed both workflows on that commit with YN0028 "The lockfile would have
+#          been modified by this install" (measured on 2026-09-14, release 1.0.12 of
+#          jupyterlab_advanced_markdown_viewer_extension). The staged yarn.lock is the
+#          one `jlpm install` wrote for the build that was published.
+#   1.39 - upgrade no longer runs `npm audit fix --force`; it reports with
+#          `jlpm npm audit --recursive` instead. Measured on six extensions on
+#          2026-09-08: the forced fix rewrote every @jupyterlab/* range to a 0.x
+#          release predating JupyterLab 4 (application ^0.18.6, testutils ^0.2.4,
+#          rendermime ^0.18.4) while printing that it would install 4.6.3, and
+#          because npm updates a yarn.lock it finds, it rewrote the Yarn Berry
+#          lockfile in the Yarn 1 format. Every project had to restore package.json
+#          and both lockfiles from git by hand. Any `npm audit fix`, forced or not,
+#          rewrites yarn.lock the same way, so the target reports advisories and
+#          changes nothing; `jlpm up` remains the one upgrade step. The report exits
+#          1 whenever an advisory stands, hence the `|| true`.
+#   1.38 - keep `python -m build` as the build command, approve blocked npm install
+#          scripts, and audit-fix on upgrade.
+#          A local edit in one project had swapped `python -m build` for
+#          `jupyter-builder build`; canonical 1.37 never carried that. Measured, the
+#          swap breaks the build twice over. jupyter-builder emits
+#          no sdist and no wheel, so nothing populated dist/ - and `install`
+#          (pip install dist/*.whl) plus `publish` (twine upload dist/*) both read
+#          dist/, so publish pushed the npm tarball and then died at twine with the
+#          npm version already consumed and unrepublishable. It also exits 1 outright
+#          when run after `clean`: "Cannot find module lib/index.js", because it never
+#          runs tsc. `python -m build` needs no help - its hatch-jupyter-builder hook
+#          runs the pyproject `build_cmd` (build:prod = tsc + labextension) during the
+#          sdist stage, then builds the wheel from that sdist. Verified from a tree
+#          with no lib/, no labextension/ and no dist/: both artefacts, exit 0.
+#          publish now asserts dist/ holds a wheel and an sdist BEFORE the npm push,
+#          so a broken build cannot desynchronise the two registries.
+#          npm >= 11.6 blocks dependency install scripts until approved and records
+#          the approval in package.json under "allowScripts", so a transitive
+#          package needing a lifecycle script installs unbuilt and fails at runtime.
+#          install_dependencies now approves every package in ALLOW_SCRIPTS_PKGS.
+#          upgrade runs `npm audit fix --force` after `jlpm up`. WARNING: --force
+#          accepts breaking changes, including downgrades - on this project it
+#          proposes @jupyterlab/testutils@0.2.4 in place of ^4.6.3. Review the diff
+#          to package.json and the lockfiles after every upgrade. The trailing
+#          `|| true` is required: npm audit fix exits 1 whenever any advisory
+#          remains unfixed, which is the normal outcome, and would abort the target.
+#          check_dependencies / install_dependencies now also gate the `build` module
+#          and `jlpm` (supplied by the jupyter_builder distribution), the two commands
+#          every build reaches for, so a fresh clone self-heals instead of dying
+#          mid-build on a missing tool.
 #   1.37 - pin the global install prefix to the nodeenv when installing yarn + rimraf.
 #          `npm install -g` honours a user-level `prefix=` in ~/.npmrc even when run
 #          from the nodeenv's own npm, so on any machine that sets one the binaries
@@ -63,6 +112,11 @@ VERSION = $(shell $(NODE) -p "require('./package.json').version" 2>/dev/null)
 # reason as VERSION: $(NODE) does not exist until check_dependencies has run.
 PYTHON_NAME = $(shell $(NODE) -p "require('./package.json').jupyterlab.outputDir.split('/')[0]" 2>/dev/null)
 
+# Dependencies whose install scripts npm must be allowed to run. npm >= 11.6 blocks
+# lifecycle scripts until approved, recording each approval in package.json under
+# "allowScripts". Space-separated; extend per project.
+ALLOW_SCRIPTS_PKGS := @fortawesome/fontawesome-free
+
 ## increment project version
 increment_version: check_dependencies
 	@CURRENT_VERSION="$(VERSION)"; \
@@ -79,6 +133,11 @@ increment_version: check_dependencies
 	fi; \
 	echo "New version: $$NEW_VERSION"
 
+# `python -m build` is the whole build. Its hatch-jupyter-builder hook runs the
+# `build_cmd` from pyproject.toml (build:prod = tsc + labextension) and then emits the
+# sdist and wheel into dist/, which install and publish both read. Do not swap in a
+# bare `jupyter-builder build`: it emits no distribution at all, and after `clean` it
+# aborts with "Cannot find module lib/index.js" because it never runs tsc.
 ## build packages
 build: clean check_dependencies increment_version
 	$(NPM) install
@@ -117,6 +176,8 @@ check_dependencies:
 	[ -x "$(NODEENV)/bin/npm" ] || MISSING="$$MISSING npm"; \
 	[ -x "$(NODEENV)/bin/yarn" ] || MISSING="$$MISSING yarn"; \
 	python -m twine --version >/dev/null 2>&1 || MISSING="$$MISSING twine"; \
+	python -m build --version >/dev/null 2>&1 || MISSING="$$MISSING build"; \
+	command -v jlpm >/dev/null 2>&1 || MISSING="$$MISSING jlpm"; \
 	{ [ -d node_modules ] && [ -n "$$(ls -A node_modules 2>/dev/null)" ]; } || MISSING="$$MISSING node_modules"; \
 	if [ -n "$$MISSING" ]; then \
 		echo "Missing dependencies:$$MISSING"; \
@@ -126,11 +187,15 @@ check_dependencies:
 		echo "All dependencies are installed."; \
 	fi
 
-## publish package to public repository
+## publish package to npm and PyPI
 publish: check_dependencies install
+	@ls dist/*.whl >/dev/null 2>&1 && ls dist/*.tar.gz >/dev/null 2>&1 || { \
+		echo "publish: dist/ holds no wheel or sdist - run make build first" >&2; \
+		exit 1; \
+	}
 	$(NPM) publish --access public
 	python -m twine upload dist/*
-	git add package.json package-lock.json
+	git add package.json package-lock.json yarn.lock
 	git commit -m "chore: post-publish $$($(NODE) -p "require('./package.json').version") package metadata"
 	git push
 
@@ -139,6 +204,14 @@ install_dependencies:
 	@if ! python -m twine --version >/dev/null 2>&1; then \
 		echo "Installing twine..."; \
 		pip install twine; \
+	fi
+	@if ! python -m build --version >/dev/null 2>&1; then \
+		echo "Installing build..."; \
+		pip install build; \
+	fi
+	@if ! command -v jlpm >/dev/null 2>&1; then \
+		echo "Installing jupyter_builder (supplies jlpm)..."; \
+		pip install jupyter_builder; \
 	fi
 	@if [ ! -x "$(NODEENV)/bin/node" ] || [ ! -x "$(NODEENV)/bin/npm" ]; then \
 		echo "Creating project-local node environment at $(NODEENV)..."; \
@@ -153,13 +226,24 @@ install_dependencies:
 		echo "Installing project node_modules (jlpm install)..."; \
 		jlpm install; \
 	fi
+	@for pkg in $(ALLOW_SCRIPTS_PKGS); do \
+		if $(NPM) install-scripts approve "$$pkg" >/dev/null 2>&1; then \
+			echo "install scripts approved: $$pkg"; \
+		else \
+			echo "install scripts not approved: $$pkg (absent from the tree, or npm < 11.6)"; \
+		fi; \
+	done
 	@echo "node:  $$($(NODEENV)/bin/node --version 2>/dev/null) ($(NODEENV)/bin/node)"
 	@echo "npm:   $$($(NODEENV)/bin/npm --version 2>/dev/null)"
 	@echo "yarn:  $$($(NODEENV)/bin/yarn --version 2>/dev/null)"
 
+# `npm audit fix --force` accepts breaking changes and downgrades, so review the diff to
+# package.json and the lockfiles after every upgrade. It exits 1 whenever any advisory
+# stays unfixed - the normal outcome - hence the `|| true` that keeps the target green.
 ## upgrade all npm and yarn dependencies
 upgrade: check_dependencies
 	jlpm up
+	jlpm npm audit --recursive || true
 
 ## cleanup all build and metabuild artefacts (including the project-local nodeenv)
 mrproper: clean uninstall

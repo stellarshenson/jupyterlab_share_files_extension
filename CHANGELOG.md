@@ -2,6 +2,40 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.47] - 2026-09-18
+
+Disk-bound transfers with a configurable download limit, the r10 to r12 adversarial review arcs, and hardening of the Cloudflare switch and configuration write.
+
+### Added
+
+- Settings Editor: "Largest download from a connected share (GB)" - 1, 2, 5, 10, 20, 50 or 100 GB, default 10; the panel sends it with every save and download (`max_gb`) and the server enforces it; a request without it, the CLI's `pick-up` among them, gets 10 GB
+
+- A recipient's upload streams to disk as it arrives: the request page sends the file as a raw body with its name in an `X-Filename` header (percent-encoded UTF-8, the shape the galaxahub fileshare service takes), the server writes it to a spool file under the store's `tmp` folder and moves it into the uploader's folder when complete; the 512 MiB body limit of jupyter_server no longer applies - a body larger than the disk's free space is refused with 413 `Not enough space` before it is read, a disk that fills mid-way is answered 500 `Could not store the upload` on the chunk it refuses (the connection closes under the rest of the body, so the upload stops), and a client that drops mid-way leaves nothing behind
+
+### Changed
+
+- A share is served chunk by chunk (a single file with its length, a folder or "download all" as a zip written into the response file by file) instead of being read, or zipped, whole into memory first; a member that vanishes while its folder is zipped closes the connection instead of finishing a cut archive as complete; the recipient page hands zip downloads to the browser directly, which shows progress from the first byte, instead of fetching them into a blob behind a "Compressing" overlay; every download anchor of the page carries a `download` attribute, so a refused or broken-off download is a failed entry in the browser's download list and the page stays
+- An upload from the panel to a connected request streams from the workspace file (raw body, `X-Filename`, `Content-Length`) instead of reading it into memory as a multipart body, and may take 300 s for every GB of the file, at least 300 s, instead of a flat 300 s; a peer running an older version answers 400 `no file` to the new shape
+- A download from a connected share is relayed to the browser while the peer's body is still arriving, with the length the peer announced and, for a folder, the `.zip` name the peer's archive carries; a peer that fails after the first byte closes the browser's download instead of appending an error, and a browser that cancels ends the peer fetch at its next chunk
+- The panel's Download of a connected peer's file is saved by the browser itself (an anchor click) instead of being fetched into a blob; a failure shows in the browser's download list, not as a notification
+- A file that arrived through a spool (a save, a relayed download, an upload) lands with the mode a file the lab writes gets, not the spool's private 0600
+- Peer downloads are written to disk as they arrive - a spool file under the store's `tmp` folder - and never held in the server's memory; a plain file moves from the spool into the workspace, an item handed to the browser streams from it with its length; the spool is removed on every path
+- A download may take 300 s for every GB of its limit and at least 300 s (the 10 GB default allows 3000 s) instead of a flat 300 s; the fixed 1 GiB cap on a shared client is replaced by one client per download carrying the request's limit
+- The limit's messages read in GB: `The peer's download is larger than the 10 GB limit`, `The share is larger than 10 GB when unpacked`; a folder or Save All zip, which announces no length, ends past the limit the same way a dropped connection does, and the message says so: `The peer's download passed the 10 GB limit, or the peer closed the connection before it finished`
+- A folder member dated outside zip's range (before 1980, after 2107) is zipped with its date clamped, as every archiver does, instead of failing the folder
+- Cloudflare: `cloudflare setup` no longer prints or returns the `run_command` line that carried the connector token in clear; the standalone switch runs the connector start and stop off the server's event loop, refuses with `cloudflared did not start - see <connector log>` and keeps links private when no connector came up, and the connector log names a binary that could not be launched; the configuration file is written beside itself and moved into place (0600 from the first byte), so a disk that fills mid-write keeps the previous configuration
+- Panel: the cloud icon shows the switch in flight when switching off as well as on; delete dialogs name the share or request; a failed Connect keeps the pasted link; "link copied" is said only when the clipboard took the link; Enter on a focused entry opens it (a folder drills in, the `..` row goes up); the setup dialog's inputs are labelled; the hub-mode Fetch button no longer hovers in delete's red; the offline badge reads at 4.5:1
+- Recipient page: a failed upload or remove shows the server's sentence instead of a status code or an alert; an unlock refused for a reason other than the password names it (a removed link, an unreachable share); the name field is labelled, the theme buttons carry `aria-pressed`, upload and remove outcomes are live regions, each Remove button names its file; file sizes and footer read at 4.5:1; a long name stops before the theme switch on a phone; download buttons carry no underline
+
+### Fixed
+
+- Hub mode: a hub that stopped answering during the Cloudflare confirmation wait and came back with its tunnel connector still starting (a redeployment) had its switched-on records flipped back off at the 120 s bound; the bound now restarts once when the hub answers again, so a redeployed hub gets a full bound to register its tunnel (DEF-HUB-71)
+- Connecting a link whose owner had removed the share or request stored the connection and showed it offline; it is now refused with `The owner has removed this share or request.` (DEF-PEER-73)
+- Screen readers spoke the row twisty glyph before every row name and a row could not be expanded from the keyboard; the twisty is a button named `Expand` or `Collapse` with `aria-expanded`, Enter and Space toggle the row and the focus stays on it (DEF-PANEL-74)
+- A folder download whose first walked member could not be read, or whose name zipfile cannot encode, ended with an empty answer or tornado's HTML page; it answers 500 `Could not read the folder`
+- Downloading a shared file or folder whose name carries a character outside latin-1 (ż, CJK) answered tornado's HTML 500; the download headers use the RFC 5987 `filename*=UTF-8''` form
+- 32 of the panel's notifications (could not connect, could not save, could not delete, new upload, saved, fetched, item(s) added) landed only in the notification bell and never showed as a toast: JupyterLab keeps a notification without `autoClose` out of the toasts
+
 ## [1.2.46] - 2026-09-17
 
 Cloud confirmation, keyboard access, peer-save hardening and same-origin peer reads. 1.2.45 was never published; its version field came from a local reinstall.

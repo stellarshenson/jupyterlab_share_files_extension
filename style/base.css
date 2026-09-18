@@ -292,12 +292,22 @@
   outline-offset: -1px;
 }
 
+/* the row's expand/collapse button, drawn as the bare glyph */
 .jp-ShareFilesPanel-itemTwisty {
   flex: 0 0 auto;
   width: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
   text-align: center;
   color: var(--jp-ui-font-color2);
+  font-family: inherit;
   font-size: var(--jp-ui-font-size0);
+}
+
+.jp-ShareFilesPanel-itemTwisty:focus-visible {
+  outline: 1px solid var(--jp-brand-color1);
 }
 
 .jp-ShareFilesPanel-itemName {
@@ -474,6 +484,12 @@
 
 .jp-ShareFilesPanel-entryRemove:hover {
   color: var(--jp-error-color1);
+}
+
+/* the hub-mode Fetch button shares the reveal rules above; it downloads,
+   so it hovers in the brand colour, not delete's red */
+.jp-ShareFilesPanel-entryRemove.jp-mod-fetch:hover {
+  color: var(--jp-brand-color1);
 }
 
 .jp-ShareFilesPanel-entryRemove svg {
@@ -654,7 +670,9 @@
 }
 
 .jp-ShareFilesPanel-offline {
-  color: var(--jp-warn-color1);
+  /* text at font-size0 needs 4.5:1, which no warn colour reaches on the
+     light theme; the word carries the meaning */
+  color: var(--jp-ui-font-color2);
   font-size: var(--jp-ui-font-size0);
   margin-left: 6px;
   text-transform: uppercase;

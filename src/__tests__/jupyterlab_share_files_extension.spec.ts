@@ -24,10 +24,10 @@ describe('api URL helpers', () => {
   const settings = { baseUrl: 'https://hub.example.com/user/me/' } as any;
   const key = 'share:https://peer.example.com:A3KM7X2P';
 
-  it('builds the download URL on our own server, key and name encoded', () => {
-    expect(connectionDownloadUrl(settings, key, 'my file.csv')).toBe(
+  it('builds the download URL on our own server, key and name encoded, the limit with it', () => {
+    expect(connectionDownloadUrl(settings, key, 'my file.csv', 10)).toBe(
       'https://hub.example.com/user/me/jupyterlab-share-files-extension/api/connections/' +
-        'share%3Ahttps%3A%2F%2Fpeer.example.com%3AA3KM7X2P/download?name=my%20file.csv'
+        'share%3Ahttps%3A%2F%2Fpeer.example.com%3AA3KM7X2P/download?name=my%20file.csv&max_gb=10'
     );
   });
 });

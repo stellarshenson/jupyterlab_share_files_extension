@@ -200,6 +200,17 @@ def _resolve_unique_target(target_dir: Path, name: str) -> Path:
         counter += 1
 
 
+# read once, at import: the mode a file the lab writes gets
+_UMASK = os.umask(0)
+os.umask(_UMASK)
+
+
+def settle_mode(path: Path) -> None:
+    """Give a file that arrived through a private spool (0600) the mode a
+    file the lab writes gets."""
+    os.chmod(path, 0o666 & ~_UMASK)
+
+
 def _open_exclusive_for_write(target_dir: Path, name: str) -> tuple[Path, int]:
     """Atomically reserve a non-colliding target path and return (path, fd).
 
@@ -653,8 +664,10 @@ class RequestStore(BaseStore):
         uploader_hash: str,
         uploader_name: str,
         filename: str,
-        data: bytes,
+        data: bytes | Path,
     ) -> dict[str, Any]:
+        """Store ``data`` - bytes, or a Path under the store's ``tmp`` folder
+        that is moved into place - as ``filename`` in the uploader's pool."""
         if not self.exists(id_):
             raise NotFoundError(f"Request not found: {id_}")
         # the hash is the identity - the directory key; the name is only a
@@ -687,8 +700,15 @@ class RequestStore(BaseStore):
         # same filename will not stomp on each other, the loser gets the
         # next `-2`, `-3` suffix.
         target, fd = _open_exclusive_for_write(nested_dir, safe_parts[-1])
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
+        if isinstance(data, Path):
+            # the reserved name is taken over by the spooled file - same
+            # filesystem, so the move is a rename
+            os.close(fd)
+            os.replace(data, target)
+            settle_mode(target)
+        else:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
         # last_upload_at is derived from file mtimes - no manifest touch needed
         return self.get(id_)
 

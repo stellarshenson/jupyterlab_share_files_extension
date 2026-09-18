@@ -3,8 +3,9 @@ import { expect, test } from '@jupyterlab/galata';
 /**
  * Keyboard access to the panel: the header cloud icon is a toggle button,
  * and a row header, a connection row and a connected peer's entry take focus
- * and open their context menu with Shift+F10 or the ContextMenu key. Also
- * the row buttons while they hold the focus, the focus after a re-render or
+ * and open their context menu with Shift+F10 or the ContextMenu key, and a
+ * row's toggle button expands it. Also the row buttons while they hold the
+ * focus, the focus after a re-render or
  * a dialog, and the cloud icon tooltip and colour in each state. The tunnel
  * state and the peer are answered in the browser, so no tunnel starts and no
  * second lab is needed.
@@ -96,6 +97,35 @@ test('a share row opens its context menu from the keyboard and gets the focus ba
   }
 });
 
+test('a share row expands from the keyboard through its toggle button', async ({
+  page
+}) => {
+  const name = `keyboard-toggle-${Date.now()}`;
+  await createShare(page, name);
+  await openPanel(page);
+  const item = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: name
+  });
+  const header = item.locator('.jp-ShareFilesPanel-itemHeader');
+  // the glyph is a named button, so a reader speaks its name and state,
+  // not the triangle
+  const toggle = header.getByRole('button', { name: 'Expand' });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(item.locator('.jp-ShareFilesPanel-entryList')).toHaveCount(0);
+  await header.focus();
+  await page.keyboard.press('Tab');
+  await expect(toggle).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(item.locator('.jp-ShareFilesPanel-entryList')).toHaveCount(1);
+  // the rebuilt row hands the focus back to its toggle
+  const collapse = header.getByRole('button', { name: 'Collapse' });
+  await expect(collapse).toHaveAttribute('aria-expanded', 'true');
+  await expect(collapse).toBeFocused();
+  await page.keyboard.press('Space');
+  await expect(item.locator('.jp-ShareFilesPanel-entryList')).toHaveCount(0);
+  await expect(header.getByRole('button', { name: 'Expand' })).toBeFocused();
+});
+
 test('the row buttons show while they have keyboard focus', async ({
   page
 }) => {
@@ -106,6 +136,9 @@ test('the row buttons show while they have keyboard focus', async ({
     .locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: name })
     .locator('.jp-ShareFilesPanel-itemHeader');
   await header.focus();
+  // the toggle sits before the two icon buttons
+  await page.keyboard.press('Tab');
+  await expect(header.getByRole('button', { name: 'Expand' })).toBeFocused();
   for (const title of ['Copy link', 'Delete share']) {
     await page.keyboard.press('Tab');
     const button = header.locator(`button[title="${title}"]`);
@@ -141,9 +174,9 @@ test('the entry buttons show while they have keyboard focus', async ({
   );
   await expect(remove).toHaveCount(1);
   await header.focus();
-  // the row's Copy link and Delete share, then the entry row itself
+  // the row's toggle, Copy link and Delete share, then the entry row itself
   // (DEF-PANEL-60: it takes keyboard focus), then the entry's Remove
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     await page.keyboard.press('Tab');
   }
   const entryRow = item.locator('.jp-ShareFilesPanel-entry');
@@ -240,6 +273,7 @@ test('both row buttons stay drawn while one of them has the focus', async ({
     .locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: name })
     .locator('.jp-ShareFilesPanel-itemHeader');
   await header.focus();
+  await page.keyboard.press('Tab'); // the toggle
   await page.keyboard.press('Tab');
   await expect(header.locator('button[title="Copy link"]')).toBeFocused();
   await expect(header.locator('button[title="Delete share"]')).toHaveCSS(
@@ -256,6 +290,7 @@ test('a re-render keeps the focus on a row button', async ({ page }) => {
     .locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: name })
     .locator('.jp-ShareFilesPanel-itemHeader');
   await header.focus();
+  await page.keyboard.press('Tab'); // the toggle
   await page.keyboard.press('Tab');
   const copy = header.locator('button[title="Copy link"]');
   await expect(copy).toBeFocused();
@@ -276,6 +311,7 @@ test('the focus returns to the button a dialog was opened from', async ({
     .locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: name })
     .locator('.jp-ShareFilesPanel-itemHeader');
   await header.focus();
+  await page.keyboard.press('Tab'); // the toggle
   await page.keyboard.press('Tab');
   const copy = header.locator('button[title="Copy link"]');
   await expect(copy).toBeFocused();
@@ -400,6 +436,7 @@ test('a connected peer share opens its menus from the keyboard', async ({
   });
   await expect(entry).toHaveCount(1);
   await header.focus();
+  await page.keyboard.press('Tab'); // the toggle
   await page.keyboard.press('Tab');
   const disconnectBtn = header.locator('button[title="Disconnect"]');
   await expect(disconnectBtn).toBeFocused();
@@ -449,8 +486,8 @@ test('a keyboard-focused row stays in view when a re-render adds rows above it',
     })
   ).toBeGreaterThan(0);
   // the last two rows that are fully visible: click the first (mouse focus),
-  // then three Tab presses (Copy link, Delete request, the next header) put
-  // the keyboard focus on the second
+  // then four Tab presses (the toggle, Copy link, Delete request, the next
+  // header) put the keyboard focus on the second
   const visible = await body.evaluate((el: HTMLElement) => {
     const bottom = el.getBoundingClientRect().bottom;
     return Array.from(el.querySelectorAll<HTMLElement>('[data-row-key]'))
@@ -463,7 +500,8 @@ test('a keyboard-focused row stays in view when a re-render adds rows above it',
   const row = (key: string) => body.locator(`[data-row-key="${key}"]`);
   await row(above).click();
   await row(above).click(); // collapse again: the list is as it was measured
-  for (let i = 0; i < 3; i++) {
+  // the toggle, Copy link, Delete request, then the next row
+  for (let i = 0; i < 4; i++) {
     await page.keyboard.press('Tab');
   }
   await expect(row(target)).toBeFocused();
@@ -532,6 +570,7 @@ test('a confirmed Delete hands the focus to the neighbouring row', async ({
     hasText: `${prefix}-two`
   });
   await one.focus();
+  await page.keyboard.press('Tab'); // the toggle
   await page.keyboard.press('Tab'); // Copy link
   await page.keyboard.press('Tab'); // Delete share
   await page.keyboard.press('Enter');
@@ -558,6 +597,7 @@ test('a confirmed Delete of the only row hands the focus to its section header',
   });
   await expect(page.locator(`${PANEL} [data-row-key]`)).toHaveCount(1);
   await row.focus();
+  await page.keyboard.press('Tab'); // the toggle
   await page.keyboard.press('Tab'); // Copy link
   await page.keyboard.press('Tab'); // Delete share
   await page.keyboard.press('Enter');

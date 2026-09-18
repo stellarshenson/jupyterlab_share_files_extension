@@ -9,7 +9,6 @@
     --bg: #f5f7fa;
     --fg: #1f2937;
     --muted: #6b7280;
-    --faint: #9ca3af;
     --panel: #ffffff;
     --border: #e5e7eb;
     --border-soft: #f3f4f6;
@@ -29,7 +28,6 @@
     --bg: #111827;
     --fg: #e5e7eb;
     --muted: #9ca3af;
-    --faint: #6b7280;
     --panel: #1f2937;
     --border: #374151;
     --border-soft: #283242;
@@ -62,6 +60,9 @@
   header {
     margin-bottom: 24px;
     position: relative;
+    /* the theme switch is absolutely placed at the right; the name and the
+       meta line stop before it instead of running under it on a phone */
+    padding-right: 176px;
   }
   h1 {
     margin: 0 0 4px;
@@ -116,20 +117,11 @@
     white-space: nowrap;
   }
   .row .size {
-    color: var(--faint);
+    color: var(--muted);
     font-size: 12px;
     margin-right: 12px;
   }
   .row .indent { display: inline-block; width: 20px; }
-  .row .twisty {
-    display: inline-block;
-    width: 16px;
-    text-align: center;
-    cursor: pointer;
-    color: var(--faint);
-    user-select: none;
-    margin-right: 4px;
-  }
   .row .icon {
     width: 16px;
     height: 16px;
@@ -137,6 +129,8 @@
     flex-shrink: 0;
   }
   .btn {
+    display: inline-block;
+    text-decoration: none;
     background: var(--accent);
     color: white;
     border: none;
@@ -207,49 +201,14 @@
   footer {
     margin-top: 32px;
     text-align: center;
-    color: var(--faint);
+    color: var(--muted);
     font-size: 12px;
   }
   .empty {
     padding: 24px;
     text-align: center;
-    color: var(--faint);
+    color: var(--muted);
     font-size: 14px;
-  }
-  /* Full-page overlay shown while the server compresses a folder/share to a
-     zip - the download is a single response that only arrives once the whole
-     archive is built, so the spinner runs for the build + transfer. */
-  .zip-overlay {
-    position: fixed;
-    inset: 0;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    gap: 16px;
-    background: var(--overlay-bg, rgba(0, 0, 0, 0.5));
-    z-index: 1000;
-  }
-  .zip-overlay.show {
-    display: flex;
-  }
-  .zip-overlay .spinner {
-    width: 44px;
-    height: 44px;
-    border: 4px solid var(--secondary-bg);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: zip-spin 0.8s linear infinite;
-  }
-  .zip-overlay .zip-msg {
-    color: #fff;
-    font-size: 15px;
-    font-weight: 500;
-    text-align: center;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-  }
-  @keyframes zip-spin {
-    to { transform: rotate(360deg); }
   }
 </style>
 <script>
@@ -294,10 +253,6 @@
   <section id="content"></section>
   <footer>Share Files - JupyterLab Extension</footer>
 </main>
-<div class="zip-overlay" id="zip-overlay">
-  <div class="spinner"></div>
-  <div class="zip-msg" id="zip-msg">Compressing to ZIP...</div>
-</div>
 <script>
 (function() {
   const ctx = window.__SHARE_FILES_CONTEXT__;
@@ -310,7 +265,11 @@
     const buttons = document.querySelectorAll('#theme-switch button');
     function highlight() {
       const pref = window.__sfGetTheme();
-      buttons.forEach(b => b.classList.toggle('active', b.dataset.pref === pref));
+      buttons.forEach(b => {
+        const on = b.dataset.pref === pref;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', String(on));
+      });
     }
     buttons.forEach(b => b.addEventListener('click', function() {
       window.__sfSetTheme(b.dataset.pref);
@@ -349,37 +308,6 @@
     return unlockToken ? '?t=' + encodeURIComponent(unlockToken) : '';
   }
 
-  // Zip downloads (whole share, or a folder) are built server-side into one
-  // response. Fetch it behind a spinner so the user sees that the content is
-  // being compressed, then save the resulting blob.
-  async function downloadZip(url, fallbackName, msg) {
-    const overlay = document.getElementById('zip-overlay');
-    const msgEl = document.getElementById('zip-msg');
-    msgEl.textContent = msg || 'Compressing to ZIP...';
-    overlay.classList.add('show');
-    try {
-      const r = await fetch(url, { headers: authHeaders() });
-      if (!r.ok) throw new Error('Download failed (' + r.status + ')');
-      const blob = await r.blob();
-      let name = fallbackName;
-      const cd = r.headers.get('Content-Disposition') || '';
-      const m = cd.match(/filename="?([^"]+)"?/);
-      if (m) name = m[1];
-      const objUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = objUrl;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(function() { URL.revokeObjectURL(objUrl); }, 1000);
-    } catch (err) {
-      alert(err.message || 'Could not download the ZIP');
-    } finally {
-      overlay.classList.remove('show');
-    }
-  }
-
   function start() {
     if (ctx.kind === 'share') {
       loadShare();
@@ -410,6 +338,7 @@
     form.appendChild(input);
     form.appendChild(btn);
     const status = document.createElement('div');
+    status.setAttribute('role', 'status');
     contentEl.appendChild(form);
     contentEl.appendChild(status);
     input.focus();
@@ -427,8 +356,12 @@
         if (r.status === 429) {
           throw new Error('Too many attempts - wait a moment and try again');
         }
+        if (r.status === 404) {
+          throw new Error('The owner has removed this share or request.');
+        }
         if (!r.ok) {
-          throw new Error('Wrong password');
+          const body = await r.json().catch(() => ({}));
+          throw new Error(r.status === 401 ? 'Wrong password' : (body.error || ('Unlock failed (' + r.status + ')')));
         }
         const data = await r.json();
         unlockToken = data.token || '';
@@ -486,15 +419,12 @@
     const allBtn = document.createElement('a');
     allBtn.className = 'btn';
     allBtn.textContent = 'Download All as ZIP';
+    // the server streams the zip as it builds it, so the browser's own
+    // download shows progress from the first byte; the download attribute
+    // keeps a failed answer in the download list instead of replacing the
+    // page - the server's Content-Disposition names the file
     allBtn.href = api('/download-all') + tokenQs();
-    allBtn.addEventListener('click', function(evt) {
-      evt.preventDefault();
-      downloadZip(
-        api('/download-all') + tokenQs(),
-        (m.name || 'share') + '.zip',
-        'Compressing ' + (m.name || 'share') + ' to ZIP...'
-      );
-    });
+    allBtn.download = (m.name || 'share') + '.zip';
     actions.appendChild(allBtn);
     contentEl.appendChild(actions);
   }
@@ -519,17 +449,7 @@
     dl.className = 'btn secondary';
     dl.textContent = isDir ? 'Download ZIP' : 'Download';
     dl.href = api('/download/' + encodeURIComponent(entry.name)) + tokenQs();
-    if (isDir) {
-      // Folders are zipped server-side - show the spinner while it builds.
-      dl.addEventListener('click', function(evt) {
-        evt.preventDefault();
-        downloadZip(
-          api('/download/' + encodeURIComponent(entry.name)) + tokenQs(),
-          entry.name + '.zip',
-          'Compressing ' + entry.name + ' to ZIP...'
-        );
-      });
-    }
+    dl.download = entry.name + (isDir ? '.zip' : '');
     row.appendChild(dl);
     return row;
   }
@@ -558,8 +478,13 @@
 
     const uploaderRow = document.createElement('div');
     uploaderRow.style.marginBottom = '12px';
-    uploaderRow.innerHTML = '<label style="font-size:13px;color:var(--muted);display:block;margin-bottom:4px;">Your name (optional)</label>';
+    const uploaderLabel = document.createElement('label');
+    uploaderLabel.htmlFor = 'uploader-name';
+    uploaderLabel.textContent = 'Your name (optional)';
+    uploaderLabel.style.cssText = 'font-size:13px;color:var(--muted);display:block;margin-bottom:4px;';
+    uploaderRow.appendChild(uploaderLabel);
     const uploaderInput = document.createElement('input');
+    uploaderInput.id = 'uploader-name';
     uploaderInput.type = 'text';
     uploaderInput.placeholder = 'anonymous';
     // identity is the server-set cookie; the name is just a relabelable label
@@ -585,6 +510,7 @@
     wrap.appendChild(dropzone);
 
     const progressContainer = document.createElement('div');
+    progressContainer.setAttribute('role', 'status');
     wrap.appendChild(progressContainer);
 
     // "Your uploads" - only the caller's own pool (scoped by the identity
@@ -597,6 +523,10 @@
     mineSection.appendChild(mineTitle);
     const mineList = document.createElement('div');
     mineSection.appendChild(mineList);
+    // a remove failure is written here, under the list, not in an alert()
+    const mineStatus = document.createElement('div');
+    mineStatus.setAttribute('role', 'status');
+    mineSection.appendChild(mineStatus);
     wrap.appendChild(mineSection);
 
     function renderMine(manifest) {
@@ -605,7 +535,7 @@
       const entries = mine ? mine.entries : [];
       if (!entries.length) {
         const empty = document.createElement('div');
-        empty.style.cssText = 'font-size:13px;color:var(--faint);';
+        empty.style.cssText = 'font-size:13px;color:var(--muted);';
         empty.textContent = 'Nothing uploaded yet from this browser.';
         mineList.appendChild(empty);
         return;
@@ -626,16 +556,23 @@
         const rm = document.createElement('button');
         rm.className = 'btn secondary';
         rm.textContent = 'Remove';
+        rm.setAttribute('aria-label', 'Remove ' + entry.name);
         rm.addEventListener('click', async () => {
           rm.disabled = true;
+          mineStatus.textContent = '';
+          mineStatus.className = '';
           try {
             const r = await fetch(api('/upload?name=' + encodeURIComponent(entry.name)), {
               method: 'DELETE',
               headers: authHeaders()
             });
-            if (!r.ok) throw new Error('HTTP ' + r.status);
+            if (!r.ok) {
+              const body = await r.json().catch(() => ({}));
+              throw new Error(body.error || ('HTTP ' + r.status));
+            }
           } catch (err) {
-            alert('Could not remove ' + entry.name + ': ' + (err.message || err));
+            mineStatus.className = 'status err';
+            mineStatus.textContent = 'Could not remove ' + entry.name + ': ' + (err.message || err);
           }
           await refreshMine();
         });
@@ -720,13 +657,15 @@
       container.appendChild(progress);
       const bar = progress.querySelector('.progress-bar > div');
 
-      const fd = new FormData();
-      fd.append('file', file, file.webkitRelativePath || file.name);
       const xhr = new XMLHttpRequest();
       xhr.open('POST', api('/upload?uploader=' + encodeURIComponent(uploader)));
       if (unlockToken) {
         xhr.setRequestHeader('X-Share-Token', unlockToken);
       }
+      // the raw file as the body: the browser streams it from disk instead
+      // of building a multipart body in memory
+      xhr.setRequestHeader('X-Filename', encodeURIComponent(file.webkitRelativePath || file.name));
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
           bar.style.width = ((e.loaded / e.total) * 100).toFixed(0) + '%';
@@ -742,7 +681,9 @@
         } else {
           const status = document.createElement('div');
           status.className = 'status err';
-          status.textContent = 'Failed: ' + file.name + ' (' + xhr.status + ')';
+          let reason = '';
+          try { reason = JSON.parse(xhr.responseText).error || ''; } catch (e) { /* not JSON: an HTML error page */ }
+          status.textContent = 'Failed: ' + file.name + (reason ? ' - ' + reason : ' (' + xhr.status + ')');
           container.appendChild(status);
         }
         resolve();
@@ -754,7 +695,7 @@
         container.appendChild(status);
         resolve();
       };
-      xhr.send(fd);
+      xhr.send(file);
     });
   }
 

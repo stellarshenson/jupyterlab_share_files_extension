@@ -57,8 +57,17 @@ def _load_config() -> dict:
 def _save_config(cfg: dict) -> None:
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    # written beside the file and moved over it: a disk that fills mid-write
+    # leaves the previous configuration in place instead of an empty file
+    # that reads as no tunnel; 0600 from the first byte, never 0644 between
+    # a write and a chmod
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(cfg, indent=2) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -387,7 +396,6 @@ def cloudflare_setup(
         "origin": origin,
         "private_base_url": private_base_url,
         "public_base_url": public_base_url,
-        "run_command": f"cloudflared tunnel run --token {tunnel_token}",
         "saved": str(config_path()),
     }
 
@@ -457,13 +465,19 @@ def ensure_connector(retries: int = 3, logger: Optional[logging.Logger] = None) 
     for attempt in range(1, retries + 1):
         try:
             with open(CONNECTOR_LOG, "ab") as logfile:
-                proc = subprocess.Popen(
-                    ["cloudflared", "tunnel", "run"],
-                    stdout=logfile,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                    env=run_env,
-                )
+                try:
+                    proc = subprocess.Popen(
+                        ["cloudflared", "tunnel", "run"],
+                        stdout=logfile,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                        env=run_env,
+                    )
+                except OSError as exc:
+                    # the toggle's refusal points the owner at this file: a
+                    # binary that is not installed must be named in it too
+                    logfile.write(f"cloudflared launch failed: {exc}\n".encode())
+                    raise
         except OSError as exc:
             log.error(
                 f"cloudflared launch failed (attempt {attempt}/{retries}): {exc}"

@@ -207,12 +207,28 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - root-cause: 2026-09-16T12:51:13Z @kj the post-delete focus restore looks for a neighbouring row and finds none; no empty-list focus target is designated
   - log: 2026-09-16T12:51:13Z @kj added
   - log: 2026-09-17T11:53:50Z @kj closed
-- [ ] `DEF-PANEL-74` **Row twisty glyph is read out by screen readers** - MINOR; each row header (widget.ts share, request and connection renderers) carries a twisty span with the glyph ▸ or ▾ and no aria-hidden, and the header itself has no role and no aria-expanded, so a screen reader speaks 'black right-pointing small triangle' before every row name; the section header was fixed in r9 (role=button, aria-expanded, aria-hidden glyph) but that shape does not transfer: the row header holds the Copy link and Delete buttons, and role=button on a container of interactive content is invalid ARIA; hiding the glyph alone would silence the only expanded/collapsed cue a row gives; the fix re-models the row header's accessible structure (a dedicated toggle control or treeitem semantics) across the three renderers, the CSS and the keyboard spec
+- [x] `DEF-PANEL-74` **Row twisty glyph is read out by screen readers** - MINOR; each row header (widget.ts share, request and connection renderers) carries a twisty span with the glyph ▸ or ▾ and no aria-hidden, and the header itself has no role and no aria-expanded, so a screen reader speaks 'black right-pointing small triangle' before every row name; the section header was fixed in r9 (role=button, aria-expanded, aria-hidden glyph) but that shape does not transfer: the row header holds the Copy link and Delete buttons, and role=button on a container of interactive content is invalid ARIA; hiding the glyph alone would silence the only expanded/collapsed cue a row gives; the fix re-models the row header's accessible structure (a dedicated toggle control or treeitem semantics) across the three renderers, the CSS and the keyboard spec
+  - evidence: widget.ts: the row twisty is a button named Expand or Collapse with aria-expanded and a focus key in the three renderers, the header keeps its focus and menu keys; ui-tests/tests/keyboard.spec.ts 'a share row expands from the keyboard through its toggle button' and every Tab walk counting the toggle, 17 passed; r11 adversarial loop SHIP
   - repro: with a screen reader, Tab onto any row in the panel: the glyph name is spoken before the row name
   - test-tags: FUNCTIONAL
   - root-cause: 2026-09-17T17:20:06Z @kj the row header is a div with tabIndex 0 and data-row-key only; the glyph span is plain content
   - log: 2026-09-17T17:20:06Z @kj added
   - log: 2026-09-17T17:20:18Z @kj edited text
+  - log: 2026-09-18T04:06:55Z @kj closed
+- [x] `DEF-PANEL-76` **32 panel notifications never show as a toast** - MAJOR; Notification.error/success/warning/info called without options lands only in the notification bell: could not connect, could not save, could not delete, new upload, saved, fetched, item(s) added; JupyterLab's manager defaults autoClose to 0 and the toast plugin skips a notification whose autoClose is a number at or below 0; found by the r12 review (ux-designer)
+  - evidence: widget.ts: the 32 bare Notification calls pass autoClose 8000 (error) or 5000 (success, info, warning); keyboard galata 17 passed with the toasts visible (logs/galata-r12-1-keyboard.log); r12 rounds 2-4 confirmed
+  - repro: paste an unreachable peer link and press Connect: no toast, the bell count rises
+  - test-tags: MANUAL
+  - root-cause: 2026-09-18T16:16:04Z @kj 32 Notification calls passed no autoClose; the 12 sites that passed one were the only visible messages
+  - log: 2026-09-18T16:16:04Z @kj added
+  - log: 2026-09-18T16:16:24Z @kj closed
+- [x] `DEF-PANEL-82` **panel behaviour gaps found by the whole-tree review** - MINOR; a failed Connect wiped the pasted link; 'link copied' was asserted whatever the clipboard did; the hub-mode Fetch button hovered in delete's red; the Cloudflare setup dialog's inputs had no accessible name; the cloud icon showed no in-flight state on switch-off; delete dialogs did not name the item; the offline badge failed 4.5:1 on the light theme; folder drill-in and the '..' row worked by double-click only; found by the r12 review (ux-designer)
+  - evidence: widget.ts and base.css: connectToLink returns a boolean, conditional 'link copied', jp-mod-fetch hover, labelled setup inputs, in-flight class on switch-off, named delete dialogs, --jp-ui-font-color2 badge, Enter on entries and a keyed '..' row; keyboard galata 17 passed (logs/galata-r12-2-keyboard.log), mock-hub 24 passed; r12 rounds 2-4 confirmed
+  - repro: paste a bad link and press Connect; open a share row and press Enter on a folder entry
+  - test-tags: E2E, MANUAL
+  - root-cause: 2026-09-18T16:16:05Z @kj each a missed state or attribute at one site; the toggle's in-flight class was set in the switch-on branch only
+  - log: 2026-09-18T16:16:05Z @kj added
+  - log: 2026-09-18T16:16:24Z @kj closed
 
 ## Public sharing `PUBLIC`
 
@@ -271,6 +287,55 @@ The unauthenticated public/\* surface - recipient pages, manifests, downloads an
   - log: 2026-08-05T00:00:00Z @kj reported/fixed: adversarial review (architect)
   - log: 2026-09-01T19:50:10Z @kj edited repro (added) and test-tags (added)
   - log: 2026-09-01T19:50:24Z @kj edited evidence (added)
+- [x] `DEF-PUBLIC-75` **download of a file named outside latin-1 answers 500** - MAJOR; standalone recipient downloads a share item or folder whose name carries a character above U+00FF (z with dot, CJK); tornado refuses the Content-Disposition header value and answers its HTML 500 page instead of the file; found by the r12 whole-tree review (architect)
+  - evidence: routes.py _serve_file and _serve_zip send Content-Disposition as attachment; filename*=UTF-8''<percent-encoded>; test_public_transfer.py::test_a_file_named_outside_latin_1_downloads_with_its_name_percent_encoded (500 before, 200 after); r12 review rounds 2-4 confirmed
+  - repro: share a file named raport_z-with-dot.txt, open the public link, click Download
+  - test-tags: UNIT
+  - root-cause: 2026-09-18T16:16:04Z @kj the two public download handlers built Content-Disposition as filename="<name>", a latin-1-only form; tornado 6.5 _convert_header_value rejects a value with a code point above U+00FF
+  - log: 2026-09-18T16:16:04Z @kj added
+  - log: 2026-09-18T16:16:24Z @kj closed
+- [x] `DEF-PUBLIC-77` **cloudflare setup printed the connector token in clear** - MAJOR; cloudflare_setup returned run_command 'cloudflared tunnel run --token <token>'; the CLI printed it (human and --json) and TunnelSetupHandler sent it to the browser; nothing read it; found by the r12 review (architect, devops, bug-hunter)
+  - evidence: tunnel.py cloudflare_setup result carries no run_command; test_cli.py assertion removed; grep of src/, ui-tests/, docs/ finds no reader; r12 rounds 2-4 confirmed
+  - repro: run jupyterlab_share_files --json cloudflare setup ..., read run_command in the output
+  - test-tags: UNIT
+  - root-cause: 2026-09-18T16:16:04Z @kj a convenience line assembled from the tunnel token at setup time
+  - log: 2026-09-18T16:16:04Z @kj added
+  - log: 2026-09-18T16:16:24Z @kj closed
+- [x] `DEF-PUBLIC-78` **recipient page dropped the server's failure sentence** - MEDIUM; a failed upload showed 'Failed: <name> (<status>)' and a failed remove an alert('HTTP <status>') although the server answers {"error": <sentence>}; an unlock refused for a reason other than the password (a removed share) read 'Wrong password'; found by the r12 review (ux-designer, architect, bug-hunter)
+  - evidence: standalone.html parses the JSON error on a failed upload and remove (inline status, no alert) and the unlock gate names a 404 and shows the body's error for other non-401 answers; galata standalone 28 passed (logs/galata-r12-1-standalone.log); r12 rounds 2-4 confirmed
+  - repro: fill the owner's disk, upload a file through the request page: the status reads (413), not Not enough space
+  - test-tags: MANUAL
+  - root-cause: 2026-09-18T16:16:04Z @kj the page never read xhr.responseText or r.json() on a failure and the unlock gate threw one sentence for every non-401
+  - log: 2026-09-18T16:16:04Z @kj added
+  - log: 2026-09-18T16:16:24Z @kj closed
+- [x] `DEF-PUBLIC-79` **Cloudflare config file truncated before it is rewritten** - MEDIUM; _save_config wrote the file in place then chmod 600: a disk that fills mid-write leaves a 0-byte file _load_config reads as no tunnel, and the file is 0644 between the two calls; found by the r12 review (devops, bug-hunter)
+  - evidence: tunnel.py _save_config writes <name>.tmp at 0600, fsyncs and os.replace's; test_cli.py::test_a_write_that_fails_mid_way_keeps_the_previous_config; r12 rounds 2-4 confirmed
+  - repro: make the disk full during a cloud toggle, read ~/.config/jupyterlab-share-files/config.json
+  - test-tags: UNIT
+  - root-cause: 2026-09-18T16:16:04Z @kj path.write_text truncates before writing and the mode was set after the write
+  - log: 2026-09-18T16:16:04Z @kj added
+  - log: 2026-09-18T16:16:24Z @kj closed
+- [x] `DEF-PUBLIC-80` **standalone cloud switch reads on while no connector runs** - MEDIUM; TunnelHandler.post set tunnel_active before starting the connector and discarded daemon_running, so cloudflared not installed or a failed launch left links public with a green cloud over a dead hostname; the handler also ran the 2-6 s connector start and stop on the event loop; found by the r12 review (bug-hunter, devops)
+  - evidence: routes.py TunnelHandler.post is async, runs the connector work in the executor and answers 400 'cloudflared did not start - see <log>' with links back to private when daemon_running is False; tests/test_tunnel_toggle.py 3 passed; r12 rounds 2-4 confirmed
+  - repro: standalone lab without cloudflared on PATH, click the cloud icon: green cloud, links on the tunnel hostname, nothing answers
+  - test-tags: UNIT
+  - root-cause: 2026-09-18T16:16:04Z @kj the toggle keyed the cloud state on tunnel_active alone and never read tunnel_start's daemon_running
+  - log: 2026-09-18T16:16:04Z @kj added
+  - log: 2026-09-18T16:16:24Z @kj closed
+- [x] `DEF-PUBLIC-81` **recipient page accessibility and contrast** - MINOR; the uploader name label was not associated with its input, the theme buttons carried no pressed state, upload and remove outcomes were not live regions, every Remove button had the same name; --faint text (file sizes, footer, empty sentences) read at 2.5:1 light and 3.0:1 dark; on a phone a long name ran under the theme switch; download anchors drawn as buttons kept the underline; found by the r12 review (ux-designer, architect)
+  - evidence: standalone.html: label for/id, aria-pressed, role=status containers, named Remove buttons, --muted for secondary text (4.5:1 both themes), header padding-right 176px, .btn inline-block without underline; galata standalone 28 passed; r12 rounds 2-4 confirmed
+  - repro: open a request link with a screen reader; resize to a phone width with a long share name
+  - test-tags: MANUAL
+  - root-cause: 2026-09-18T16:16:04Z @kj the page carried no aria attributes and used a low-contrast token for secondary text
+  - log: 2026-09-18T16:16:04Z @kj added
+  - log: 2026-09-18T16:16:24Z @kj closed
+- [x] `DEF-PUBLIC-83` **toggle refusal pointed at an empty connector log** - MINOR; with cloudflared not installed the toggle's 400 sentence named the connector log, which held nothing: the Popen OSError was logged only to the server logger; found by the r12 review round 2 (bug-hunter)
+  - evidence: tunnel.py ensure_connector writes 'cloudflared launch failed: <exc>' into the connector log before re-raising; test_cli.py::test_a_missing_cloudflared_binary_is_named_in_the_connector_log; r12 rounds 3-4 confirmed
+  - repro: standalone lab without cloudflared, click the cloud icon, open /tmp/cloudflared-share-files.log
+  - test-tags: UNIT
+  - root-cause: 2026-09-18T16:16:05Z @kj the launch failure was caught outside the with-open block that owns the log file
+  - log: 2026-09-18T16:16:05Z @kj added
+  - log: 2026-09-18T16:16:25Z @kj closed
 
 ## Storage `STORE`
 
@@ -400,12 +465,14 @@ Connecting to another user's link and keeping its state fresh
   - log: 2026-09-17T08:25:57Z @kj added
   - log: 2026-09-17T11:53:50Z @kj edited test-tags (added)
   - log: 2026-09-17T11:53:50Z @kj closed
-- [ ] `DEF-PEER-73` **Connect accepts a link whose manifest probe answered 404** - MINOR; the connect handler (routes.py ConnectionsHandler.post) probes the peer's manifest and acts only on 401 (password); a 404 (the owner removed the share or request) falls through and the connection is stored; the panel then lists it offline with 'The owner has removed this share or request.' instead of refusing the paste; pre-existing, named inside the r9 review's MAJOR (unlock answers relayed as a password change, fixed) and deferred: refusing a 404 probe at connect is a new branch on the connect path
+- [x] `DEF-PEER-73` **Connect accepts a link whose manifest probe answered 404** - MINOR; the connect handler (routes.py ConnectionsHandler.post) probes the peer's manifest and acts only on 401 (password); a 404 (the owner removed the share or request) falls through and the connection is stored; the panel then lists it offline with 'The owner has removed this share or request.' instead of refusing the paste; pre-existing, named inside the r9 review's MAJOR (unlock answers relayed as a password change, fixed) and deferred: refusing a 404 probe at connect is a new branch on the connect path
+  - evidence: routes.py ConnectionsHandler.post refuses a 404 manifest probe before the 401 branch with _peer_answer(404) and stores nothing; tests/test_password.py::test_connect_to_removed_share_is_refused (404, the removal sentence, empty ConnectionStore, no unlock fetch); pytest 391 passed; r11 adversarial loop SHIP (tmp/adv-review/final-ship-r11.json)
   - repro: delete a share on lab A, paste its link into lab B's connect box: the connection is added and shows offline with the removal sentence
   - test-tags: UNIT
   - root-cause: 2026-09-17T17:20:06Z @kj the probe branch reads only probe.code == 401; every other code, 404 included, reaches connection_store.add
   - log: 2026-09-17T17:20:06Z @kj added
   - log: 2026-09-17T17:20:18Z @kj edited text
+  - log: 2026-09-18T04:06:55Z @kj closed
 
 ## Logging `LOGS`
 
@@ -555,12 +622,16 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - test-tags: UNIT
   - log: 2026-09-16T10:04:53Z @kj added
   - log: 2026-09-16T11:26:43Z @kj closed
-- [ ] `DEF-HUB-71` **Cloud switch on both fixture records flipped back off within 15 min after a hub redeployment** - MEDIUM; live hub 2026-09-16 17:22: POST api/shares/<id>/cloud and api/requests/<id>/cloud {cloud:true} both answered 200, api/shares and api/requests then listed both records cloud true on https://share.stellars-tech.com; by 17:37 the hub's own GET items listed both cloud false on http://hub:8080 with the lab idle; a direct PUT shares/<id>/cloud {cloud:true} at the hub at 17:58 stayed on for 16 h; likely cause: a hub redeployment in the window (see root-cause and log); a hub-side writer of cloud false does not exist, the lab's only unattended writer is CloudWait._switch_back at the 120 s bound
+- [x] `DEF-HUB-71` **Cloud switch on both fixture records flipped back off within 15 min after a hub redeployment** - MEDIUM; live hub 2026-09-16 17:22: POST api/shares/<id>/cloud and api/requests/<id>/cloud {cloud:true} both answered 200, api/shares and api/requests then listed both records cloud true on https://share.stellars-tech.com; by 17:37 the hub's own GET items listed both cloud false on http://hub:8080 with the lab idle; a direct PUT shares/<id>/cloud {cloud:true} at the hub at 17:58 stayed on for 16 h; likely cause: a hub redeployment in the window (see root-cause and log); a hub-side writer of cloud false does not exist, the lab's only unattended writer is CloudWait._switch_back at the 120 s bound
+  - test-tags: UNIT, MANUAL
+  - evidence: hub_routes.py CloudWait._run restarts the bound once when the hub answers items again after an outage; tests/test_hub_handlers.py::test_a_hub_back_from_an_outage_gets_a_full_bound_to_register_its_tunnel and ::test_a_hub_back_without_its_tunnel_for_a_full_bound_goes_back_off_once, 38 passed in the module; the live repro (a hub restart within 120 s of a switch-on) stays the operator's; r11 adversarial loop SHIP
   - root-cause: 2026-09-17T08:12:44Z @kj likely cause: a hub redeployment in the window (the operator's account); the hub tree has one writer of the cloud field, the PUT handler the lab calls, and the reaper's re_evaluate copies the record whole; the lab's own writers are record creation, the panel's tunnel toggle and CloudWait._switch_back (hub_routes.py) - the last fires when a switched-on record still shows a hub url at the 120 s bound, which is what a hub that comes back with its tunnel connector still starting reports (galaxahub record_base_url falls back to the hub origin while the tunnel is down); needs the wait still pending at that moment; discriminate by restarting the hub within 120 s of a switch-on
   - repro: switch two fresh records on through the lab API, restart the hub within 120 s, poll the hub's GET items every 5 s for 5 min
   - log: 2026-09-17T08:04:31Z @kj added
   - log: 2026-09-17T08:35:22Z @kj hypothesis from the operator: galaxahub was redeployed in the 17:22-17:37 window; a restart brings the hub back with its tunnel connector still starting, so records already switched on report hub urls, and a CloudWait still pending at the 120 s bound switches them off (hub_routes.py _switch_back); the direct hub PUT at 17:58 and both fixtures stayed on for 16 h afterwards, so no periodic reset exists; the supervisor-tick suspicion is dropped - its re_evaluate copies the record whole
   - log: 2026-09-17T08:35:22Z @kj edited title and text and repro (replaced)
+  - log: 2026-09-18T04:06:55Z @kj closed
+  - log: 2026-09-18T04:07:06Z @kj edited test-tags (added)
 
 ## Test suites `TESTS`
 

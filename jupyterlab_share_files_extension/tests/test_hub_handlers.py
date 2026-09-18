@@ -647,6 +647,52 @@ async def test_a_check_the_hub_never_answers_fails_and_the_wait_still_goes_back_
     assert rings == ["changed"]
 
 
+async def test_a_hub_back_from_an_outage_gets_a_full_bound_to_register_its_tunnel(jp_fetch, fake_hub, rings):
+    fake_hub.tunnel_registered = False
+    await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]})
+    await _post(jp_fetch, "api", "tunnel", body={"active": True})
+    # the hub stops answering 0.1 s into the wait and is back 0.15 s later,
+    # still on its own address
+    await asyncio.sleep(0.1)
+    fake_hub.raise_for.add("items")
+    await asyncio.sleep(0.15)
+    fake_hub.raise_for.discard("items")
+    # the first bound has passed: the record is still on, the wait still runs
+    await asyncio.sleep(0.3)
+    assert hub_routes.CLOUD_WAIT.waiting is True
+    assert fake_hub.items[0]["cloud"] is True
+    fake_hub.tunnel_registered = True
+    await _until(lambda: not hub_routes.CLOUD_WAIT.waiting)
+    assert not [c for c in fake_hub.calls if c[0] == "PUT" and c[2] == {"cloud": False}]
+    assert fake_hub.items[0]["cloud"] is True
+    assert hub_routes.CLOUD_WAIT.reason == ""
+    assert rings == ["changed"]
+
+
+async def test_a_hub_back_without_its_tunnel_for_a_full_bound_goes_back_off_once(jp_fetch, fake_hub, rings):
+    fake_hub.tunnel_registered = False
+    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    await _post(jp_fetch, "api", "tunnel", body={"active": True})
+    await asyncio.sleep(0.1)
+    fake_hub.raise_for.add("items")
+    await asyncio.sleep(0.15)
+    fake_hub.raise_for.discard("items")
+    await asyncio.sleep(0.3)
+    assert hub_routes.CLOUD_WAIT.waiting is True
+    # a second outage inside the restarted bound does not restart it again:
+    # the wait ends 0.5 s after the first answer back, 0.8 s in
+    fake_hub.raise_for.add("items")
+    await asyncio.sleep(0.1)
+    fake_hub.raise_for.discard("items")
+    await asyncio.sleep(0.3)
+    assert hub_routes.CLOUD_WAIT.waiting is False
+    assert ("PUT", f"shares/{share['id']}/cloud", {"cloud": False}) in fake_hub.calls
+    assert fake_hub.items[0]["cloud"] is False
+    assert hub_routes.cloud_default() is False
+    assert hub_routes.CLOUD_WAIT.reason == "cloud_not_confirmed"
+    assert rings == ["changed"]
+
+
 async def test_a_switch_back_the_hub_refuses_keeps_the_default_and_says_so(jp_fetch, fake_hub, rings):
     fake_hub.tunnel_registered = False
     share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
