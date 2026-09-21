@@ -3205,8 +3205,8 @@ export class ShareFilesPanel extends Widget {
     // on JupyterHub the owner lives under `/user/<name>/`, which the client
     // cannot know, so a reconstructed URL drops that prefix and JupyterHub
     // bounces it to `/hub/...` (404), wrongly marking an online share offline.
-    // Return the stored link only; legacy entries without one are repaired by
-    // reconnecting (the store backfills the link on re-add).
+    // Return the stored link only; the server refuses an entry without one
+    // until it is disconnected and connected again.
     return conn.link || '';
   }
 

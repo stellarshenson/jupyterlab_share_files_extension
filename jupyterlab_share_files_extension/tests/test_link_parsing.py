@@ -64,6 +64,10 @@ class TestParseShareLink:
         with pytest.raises(ValueError, match="not a share/request URL"):
             _parse_share_link("http://localhost:8888/lab")
 
+    def test_rejects_link_without_the_extension_namespace(self):
+        with pytest.raises(ValueError, match="not a share/request URL"):
+            _parse_share_link("http://h/public/share/ABCDEFGH")
+
     def test_rejects_unknown_kind(self):
         link = "http://localhost:8888/jupyterlab-share-files-extension/public/garbage/ID"
         with pytest.raises(ValueError, match="Unknown kind"):

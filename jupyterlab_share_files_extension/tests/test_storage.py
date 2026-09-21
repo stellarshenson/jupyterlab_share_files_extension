@@ -564,6 +564,13 @@ class TestConnectionStore:
         store2 = ConnectionStore(str(tmp_path))
         assert store2.list()[0]["link"] == link
 
+    def test_a_readd_writes_no_link_into_an_entry_stored_without_one(self, tmp_path):
+        store = ConnectionStore(str(tmp_path))
+        store.add("share", "ABCDEFGH", "https://hub.test")
+        link = "https://hub.test/user/alice/jupyterlab-share-files-extension/public/share/ABCDEFGH"
+        entry = store.add("share", "ABCDEFGH", "https://hub.test", link=link)
+        assert entry["link"] == "" and store.list()[0]["link"] == ""
+
     @pytest.mark.parametrize(
         "content",
         [b'[{"key": "share:https://hub.test:ABCDEFGH", "kind"', b'{"not": "a list"}', b"\xff\xfe\x00garbage"],

@@ -271,7 +271,7 @@ def test_a_connection_without_a_link_is_refused_before_any_fetch(tmp_path):
     handler, key = _manifest(tmp_path, link="")
     asyncio.run(handler.get(key))
     assert handler.status == 400
-    assert "reconnect" in handler.payload["error"]
+    assert "disconnect it and connect again" in handler.payload["error"]
     assert handler.calls == []
 
 

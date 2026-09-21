@@ -1438,7 +1438,7 @@ class ConnectionSaveHandler(_Base):
         # JupyterHub, which this server cannot rebuild
         api_base = (conn.get("link") or "").rstrip("/")
         if not api_base:
-            return self.write_error_json(400, "Connection has no link - reconnect it")
+            return self.write_error_json(400, "Connection has no link - disconnect it and connect again")
 
         saved: list[str] = []
         limit = _download_limit(body.get("max_gb"))
@@ -1572,7 +1572,7 @@ class _ConnectionPeerBase(_Base):
             return None
         link = (conn.get("link") or "").rstrip("/")
         if not link:
-            self.write_error_json(400, "Connection has no link - reconnect it")
+            self.write_error_json(400, "Connection has no link - disconnect it and connect again")
             return None
         try:
             headers = await self._peer_auth_headers(conn)
@@ -1696,7 +1696,7 @@ class ConnectionUploadHandler(_Base):
         # JupyterHub, which this server cannot rebuild
         link = (conn.get("link") or "").rstrip("/")
         if not link:
-            return self.write_error_json(400, "Connection has no link - reconnect it")
+            return self.write_error_json(400, "Connection has no link - disconnect it and connect again")
         upload_url = link + "/upload"
         upload_url += "?uploader=" + tornado.escape.url_escape(uploader)
 
