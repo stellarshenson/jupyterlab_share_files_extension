@@ -30,8 +30,8 @@ import {
   generatePassword,
   getInfo,
   getPassword,
-  hubCloudLook,
   hubReasonText,
+  hubTunnelLook,
   IExtensionInfo,
   linkCheckText,
   linkRef,
@@ -42,10 +42,10 @@ import {
   removeConnection,
   removeRequestUpload,
   removeShareItems,
+  renameShareItem,
   resetTunnel,
   saveFromConnection,
   setPassword,
-  setCloud,
   setTunnel,
   streamUrl,
   setupTunnel,
@@ -90,6 +90,8 @@ const REMOTE_MIME = 'application/x-share-files-remote';
 // Setting this lets share entries be dropped onto the tab bar / dock area to
 // open the file - the same mechanism the file browser uses for its own drags.
 const FACTORY_MIME = 'application/vnd.lumino.widget-factory';
+/** A file or folder of a hub share, dragged inside the panel to move it */
+const HUB_ENTRY_MIME = 'application/x-share-files-hub-entry';
 
 interface IPanelState {
   shares: IShare[];
@@ -119,7 +121,7 @@ export interface IShareFilesSettings {
   tunnelAutostart: boolean;
   /** Panel poll interval in seconds (one tick refreshes all shares/requests).
    * Standalone only: a hub-managed lab refreshes on the hub's change stream
-   * and polls only while the hub offers none. */
+   * and polls only while the browser has closed that stream. */
   pollIntervalSeconds: number;
   /** GB one download from a connected share may carry - a save into the
    * workspace or an item handed to the browser; sent with each request, the
@@ -238,14 +240,26 @@ export class ShareFilesPanel extends Widget {
    * the icon accordingly. */
   private _noteCloudRefusal(reason?: string): void {
     if (reason) {
-      // the cloud_ sentences each name the consequence themselves -
-      // prefixing one would state 'hub network only' twice
+      // the tunnel_ sentences each name the consequence
+      // themselves - prefixing one would state 'hub network only' twice
       Notification.warning(
-        reason.startsWith('cloud_')
+        reason.startsWith('tunnel_')
           ? hubReasonText(reason)
           : `Link works on the hub network only - ${hubReasonText(reason)}`,
         { autoClose: 8000 }
       );
+    }
+  }
+
+  /** A share edit the server did not apply: a refusal the hub named is a
+   * warning in its own words; anything else carries the server's sentence. */
+  private _noteEditFailure(what: string, err: any): void {
+    if (err?.reason) {
+      Notification.warning(hubReasonText(err.reason), { autoClose: 8000 });
+    } else {
+      Notification.error(`Could not ${what}: ${err?.message || err}`, {
+        autoClose: 8000
+      });
     }
   }
 
@@ -260,24 +274,6 @@ export class ShareFilesPanel extends Widget {
         `Could not switch Cloudflare sharing: ${err?.message || err}`,
         { autoClose: 8000 }
       );
-    }
-  }
-
-  /** Hub mode: flip one record's Cloudflare switch (context menu). */
-  private async _setCloudFlow(
-    kind: 'share' | 'request',
-    id: string,
-    cloud: boolean
-  ): Promise<void> {
-    this._state.busyKeys.add(id);
-    this._render();
-    try {
-      await setCloud(this._serverSettings, kind, id, cloud);
-    } catch (err: any) {
-      this._noteCloudSwitchFailure(err);
-    } finally {
-      this._state.busyKeys.delete(id);
-      await this.refresh();
     }
   }
 
@@ -354,7 +350,7 @@ export class ShareFilesPanel extends Widget {
         type: 'success',
         autoClose: 5000
       });
-      this._noteCloudRefusal(share.cloud_reason);
+      this._noteCloudRefusal(share.tunnel_reason);
     } catch (err: any) {
       Notification.update({
         id: pending,
@@ -396,7 +392,7 @@ export class ShareFilesPanel extends Widget {
       // no success toast - the new row appearing in the panel is feedback
       // enough and the link lands on the clipboard silently
       await this._copyLinkToClipboard(req.link);
-      this._noteCloudRefusal(req.cloud_reason);
+      this._noteCloudRefusal(req.tunnel_reason);
     } catch (err: any) {
       Notification.error(`Could not create request: ${err.message || err}`, {
         autoClose: 5000
@@ -412,13 +408,15 @@ export class ShareFilesPanel extends Widget {
     this._render();
     try {
       await addShareItems(this._serverSettings, shareId, paths);
-      Notification.success(`${paths.length} item(s) added`, {
-        autoClose: 5000
-      });
+      // on a hub the copy runs after the answer: the row says the hub is
+      // copying, says when the hub refused, and counts what the hub left out
+      if (!this._hubMode) {
+        Notification.success(`${paths.length} item(s) added`, {
+          autoClose: 5000
+        });
+      }
     } catch (err: any) {
-      Notification.error(`Could not add items: ${err.message || err}`, {
-        autoClose: 8000
-      });
+      this._noteEditFailure('add items', err);
     } finally {
       this._state.busyKeys.delete(shareId);
       await this.refresh();
@@ -468,19 +466,6 @@ export class ShareFilesPanel extends Widget {
         // server restart)
         try {
           const info = await getInfo(this._serverSettings);
-          // hub mode: the lab switched an unconfirmed switch-on back off -
-          // say why, once, on the fetch that sees its wait end
-          if (
-            this._state.info?.tunnel_waiting &&
-            !info.tunnel_waiting &&
-            info.tunnel_reason
-          ) {
-            Notification.warning(hubReasonText(info.tunnel_reason), {
-              // stays in the tray: after 8 s the reason would live only in
-              // the icon's tooltip, which keyboard and touch cannot reach
-              autoClose: false
-            });
-          }
           this._state.info = info;
         } catch {
           // keep the previous value - we just won't update the hints
@@ -680,18 +665,13 @@ export class ShareFilesPanel extends Widget {
   }
 
   /** Pick the refresh source for the mode the server reported: the hub's
-   * change stream on a hub-managed lab, the timer everywhere else and
-   * while the hub offers no stream. Called after every refresh, so a mode
-   * or fallback change takes effect on the next tick. */
+   * change stream on a hub-managed lab, the timer everywhere else. Called
+   * after every refresh, so a mode change takes effect on the next tick. */
   private _syncLiveness(): void {
     if (!this.isAttached) {
       return;
     }
-    if (
-      this._hubMode &&
-      !this._streamFallback &&
-      typeof EventSource !== 'undefined'
-    ) {
+    if (this._hubMode && typeof EventSource !== 'undefined') {
       this._openStream();
     } else {
       this._closeStream();
@@ -702,9 +682,7 @@ export class ShareFilesPanel extends Widget {
   /** Hub mode: one EventSource to the lab's `api/stream`. The lab holds one
    * stream to the hub for all its panels and relays each ring as `changed`;
    * the panel fetches its lists once per ring and once per (re)open, so a
-   * ring lost while disconnected is covered by the next open. A `poll`
-   * event means the hub has no stream route (an older galaxahub): the
-   * panel then falls back to its timer for the rest of the session. */
+   * ring lost while disconnected is covered by the next open. */
   private _openStream(): void {
     if (this._stream) {
       return;
@@ -712,11 +690,6 @@ export class ShareFilesPanel extends Widget {
     this._stopPolling();
     const stream = new EventSource(streamUrl(this._serverSettings));
     stream.addEventListener('changed', () => this._scheduleRefresh());
-    stream.addEventListener('poll', () => {
-      this._streamFallback = true;
-      this._closeStream();
-      this._startPolling();
-    });
     // fetch on open and on every reconnect (EventSource retries by itself)
     stream.onopen = () => this._scheduleRefresh();
     // A non-200 or non-event-stream answer (the lab restarting behind the
@@ -814,8 +787,8 @@ export class ShareFilesPanel extends Widget {
       }
     );
     // cloud indicator - shown when a Cloudflare tunnel is configured.
-    // Green when the tunnel is on (public links), dashed silhouette when
-    // off (private links); clicking toggles between the two.
+    // The header accent when the tunnel is on (public links), dashed
+    // silhouette when off (private links); clicking toggles between the two.
     this._cloudIndicator = document.createElement('span');
     this._cloudIndicator.className = 'jp-ShareFilesPanel-cloudIndicator';
     this._cloudIndicator.style.display = 'none';
@@ -915,6 +888,11 @@ export class ShareFilesPanel extends Widget {
 
   private _render(): void {
     if (!this._body) {
+      return;
+    }
+    // a refresh must not take an open rename field, and the typed name with
+    // it; closing the field renders
+    if (this._body.querySelector('.jp-ShareFilesPanel-entryRename')) {
       return;
     }
     // every row is rebuilt below - remember what held the focus (a row
@@ -1135,10 +1113,8 @@ export class ShareFilesPanel extends Widget {
     const item = document.createElement('div');
     item.className = 'jp-ShareFilesPanel-item';
     item.dataset.shareId = share.id;
-    if (!this._hubMode) {
-      // a hub share is a snapshot - nothing can be added after creation
-      this._attachDropTargetOnItem(item, 'share', share.id);
-    }
+    // The row is a drop target in both modes: a drop adds to the share.
+    this._attachDropTargetOnItem(item, 'share', share.id);
 
     const expanded = this._state.expandedItems.has(`share:${share.id}`);
     const header = document.createElement('div');
@@ -1162,28 +1138,40 @@ export class ShareFilesPanel extends Widget {
 
     const meta = document.createElement('span');
     meta.className = 'jp-ShareFilesPanel-itemMeta';
-    if (this._state.busyKeys.has(share.id) || share.state === 'staging') {
+    if (
+      this._state.busyKeys.has(share.id) ||
+      share.state === 'staging' ||
+      share.adding
+    ) {
       meta.appendChild(this._spinnerNode());
+      // the hub reports bytes only while it carries them
+      const done = share.progress?.total
+        ? ` ${Math.floor((100 * share.progress.copied) / share.progress.total)}%`
+        : '';
       if (share.state === 'staging') {
-        meta.appendChild(document.createTextNode(' staging'));
+        meta.appendChild(document.createTextNode(` staging${done}`));
         meta.title = 'The hub is copying the files';
+      } else if (share.adding) {
+        meta.appendChild(document.createTextNode(` adding${done}`));
+        meta.title = 'The hub is copying the new files';
       }
     } else if (share.state === 'refused') {
       // the reason sentence on one line, cut when the row is narrow (see
-      // base.css); the hover holds the whole sentence and the slug. A slug
-      // with no sentence keeps the plain form.
+      // base.css); the hover holds the whole sentence and the slug, which is
+      // where a slug this version does not know stays readable
       const slug = share.reason || 'unknown';
       const sentence = hubReasonText(slug);
       meta.classList.add('jp-mod-refused');
-      if (sentence === slug) {
-        meta.textContent = `refused: ${slug}`;
-        meta.title = meta.textContent;
-      } else {
-        meta.textContent = sentence;
-        meta.title = `${sentence}\nrefused: ${slug}`;
-      }
+      meta.textContent = sentence;
+      meta.title = `${sentence}\nrefused: ${slug}`;
     } else {
       meta.textContent = `${share.entries.length} item${share.entries.length === 1 ? '' : 's'}`;
+      if (share.add_reason) {
+        // a collapsed row must still say the last add did not happen
+        meta.classList.add('jp-mod-refused');
+        meta.textContent += ' - add refused';
+        meta.title = `${this._addRefusedText(share.add_reason)}\nrefused: ${share.add_reason}`;
+      }
     }
     header.appendChild(meta);
 
@@ -1243,27 +1231,7 @@ export class ShareFilesPanel extends Widget {
     const list = document.createElement('div');
     list.className = 'jp-ShareFilesPanel-entryList';
     if (this._hubMode) {
-      // The snapshot lives on the hub: names and sizes only - nothing here
-      // to open, drag out or remove.
-      const visible = this._applyHiddenFilter(share.entries);
-      if (visible.length === 0) {
-        list.appendChild(
-          this._renderEmpty(
-            share.state === 'staging'
-              ? 'Staging - the hub is copying the files'
-              : share.state === 'refused'
-                ? `Refused - ${hubReasonText(share.reason || '')}`
-                : share.entries.length === 0
-                  ? 'No files in this share'
-                  : 'No visible files (hidden ones filtered)'
-          )
-        );
-        return list;
-      }
-      for (const entry of visible) {
-        list.appendChild(this._renderEntryRow(entry, undefined, 0));
-      }
-      return list;
+      return this._renderHubShareEntries(share, list);
     }
     const subPath = this._state.shareSubPath.get(share.id) || '';
     // At the share root we use share.entries (synced via the extension's own
@@ -1330,6 +1298,341 @@ export class ShareFilesPanel extends Widget {
       list.appendChild(this._renderEntryRow(entry, undefined, 0, drillIn));
     }
     return list;
+  }
+
+  /** Hub mode: the files live on the hub, which lists them flat with `/` in
+   * a nested name. The folder view is derived here and every edit goes
+   * through the hub's content route. */
+  private _renderHubShareEntries(
+    share: IShare,
+    list: HTMLElement
+  ): HTMLElement {
+    let folder = this._state.shareSubPath.get(share.id) || '';
+    if (folder && !share.entries.some(e => e.name.startsWith(`${folder}/`))) {
+      // the folder went with its last file
+      folder = '';
+      this._state.shareSubPath.delete(share.id);
+    }
+    const prefix = folder ? `${folder}/` : '';
+    const rows = new Map<string, IShareEntry>();
+    for (const e of share.entries) {
+      if (!e.name.startsWith(prefix)) {
+        continue;
+      }
+      const rest = e.name.slice(prefix.length);
+      const cut = rest.indexOf('/');
+      const name = cut < 0 ? rest : rest.slice(0, cut);
+      const row = rows.get(name);
+      if (row) {
+        row.size += e.size;
+      } else {
+        rows.set(name, {
+          name,
+          type: cut < 0 ? 'file' : 'directory',
+          size: e.size
+        });
+      }
+    }
+    const visible = this._applyHiddenFilter([...rows.values()]);
+    if (folder) {
+      list.appendChild(this._renderUpRow(share.id, folder));
+    }
+    if (share.adding) {
+      list.appendChild(this._renderEmpty('The hub is copying the new files'));
+    }
+    if (share.add_reason) {
+      list.appendChild(
+        this._renderEmpty(this._addRefusedText(share.add_reason))
+      );
+    }
+    if (share.skipped && !share.adding) {
+      list.appendChild(
+        this._renderEmpty(
+          `The hub left out ${share.skipped} ${share.skipped === 1 ? 'entry' : 'entries'} - for example symbolic links and names starting with . or ~`
+        )
+      );
+    }
+    if (visible.length === 0 && !share.adding) {
+      list.appendChild(
+        this._renderEmpty(
+          share.state === 'staging'
+            ? 'Staging - the hub is copying the files'
+            : share.state === 'refused'
+              ? `Refused - ${hubReasonText(share.reason || '')}`
+              : rows.size === 0
+                ? 'Empty - drag files onto this share to add'
+                : 'No visible files (hidden ones filtered)'
+        )
+      );
+    }
+    for (const entry of visible) {
+      list.appendChild(
+        this._renderHubEntryRow(share.id, prefix + entry.name, entry)
+      );
+    }
+    return list;
+  }
+
+  /** The hub keeps the refusal of the last add until the next add. */
+  private _addRefusedText(reason: string): string {
+    return `The hub refused the last add - ${hubReasonText(reason)}`;
+  }
+
+  /** One file or folder of a hub share: remove, rename (F2 and the menu),
+   * open a folder, and move by dragging a row onto a folder row. */
+  private _renderHubEntryRow(
+    shareId: string,
+    fullName: string,
+    entry: IShareEntry
+  ): HTMLElement {
+    const key = `share:${shareId}/${fullName}`;
+    const remove = () => void this._removeHubEntry(shareId, fullName);
+    const row = this._renderEntryRow(
+      entry,
+      remove,
+      0,
+      undefined,
+      undefined,
+      key
+    );
+    row.classList.add('jp-mod-clickable');
+    const menu = (evt: MouseEvent): Menu => {
+      const m = new Menu({ commands: this._commands });
+      m.addItem({
+        command: 'share-files-panel:rename-hub-entry',
+        args: { id: shareId, name: fullName }
+      });
+      m.addItem({
+        command: 'share-files-panel:remove-hub-entry',
+        args: { id: shareId, name: fullName }
+      });
+      m.open(evt.clientX, evt.clientY);
+      return m;
+    };
+    row.addEventListener('contextmenu', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      menu(evt);
+    });
+    this._attachKeyboardMenu(row, key, menu);
+    const openFolder = (evt: Event) => {
+      if (entry.type === 'directory') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this._state.shareSubPath.set(shareId, fullName);
+        this._render();
+      }
+    };
+    row.addEventListener('dblclick', openFolder);
+    row.addEventListener('keydown', evt => {
+      if (evt.target !== row) {
+        return;
+      }
+      if (evt.key === 'Enter') {
+        openFolder(evt);
+      } else if (evt.key === 'F2') {
+        evt.preventDefault();
+        this._renameHubEntry(shareId, fullName);
+      } else if (evt.key === 'Delete') {
+        evt.preventDefault();
+        remove();
+      }
+    });
+    this._attachHubEntryDrag(row, shareId, fullName);
+    if (entry.type === 'directory') {
+      this._attachHubFolderDrop(row, shareId, fullName);
+    }
+    return row;
+  }
+
+  /** Rename in place, the way the file browser does: Enter or leaving the
+   * field commits, Escape abandons. */
+  private _renameHubEntry(shareId: string, fullName: string): void {
+    const key = `share:${shareId}/${fullName}`;
+    const label = this._byFocusKey(key)?.querySelector(
+      '.jp-ShareFilesPanel-entryName'
+    );
+    if (!label) {
+      return;
+    }
+    const slash = fullName.lastIndexOf('/');
+    const parent = fullName.slice(0, slash + 1);
+    const base = fullName.slice(slash + 1);
+    const input = document.createElement('input');
+    input.className = 'jp-ShareFilesPanel-entryRename';
+    input.value = base;
+    input.spellcheck = false;
+    input.setAttribute('aria-label', `New name for ${base}`);
+    // the move syntax is the keyboard's only way to move, so it is on
+    // screen while the field is open, not in a hover
+    const hint = this._renderEmpty(
+      'Enter renames, Escape abandons. folder/name moves it into that ' +
+        'folder, /name to the top of the share'
+    );
+    hint.id = 'jp-ShareFilesPanel-renameHint';
+    input.setAttribute('aria-describedby', hint.id);
+    label.replaceWith(input);
+    input.closest('.jp-ShareFilesPanel-entry')?.after(hint);
+    input.focus();
+    const dot = base.lastIndexOf('.');
+    input.setSelectionRange(0, dot > 0 ? dot : base.length);
+    let done = false;
+    const finish = (commit: boolean): boolean => {
+      if (done) {
+        return false;
+      }
+      done = true;
+      const typed = input.value.trim();
+      // _render holds still while the field is on screen
+      input.replaceWith(label);
+      hint.remove();
+      if (!commit || !typed || typed === base) {
+        // the label is back in place, so nothing is rebuilt under a pointer
+        // that closed the field with a click (DEF-PANEL-96), and the blur
+        // path never moves the focus; a refresh held back while the field
+        // was open is fetched now
+        void this.refresh();
+        return false;
+      }
+      const target = typed.startsWith('/') ? typed.slice(1) : parent + typed;
+      void this._moveHubEntry(shareId, fullName, target);
+      return true;
+    };
+    input.addEventListener('keydown', evt => {
+      evt.stopPropagation();
+      // a keyboard close that sends nothing gives the focus back to the row;
+      // a sent rename is focused by _moveHubEntry under its new key
+      if (evt.key === 'Enter') {
+        if (!finish(true)) {
+          this._byFocusKey(key)?.focus();
+        }
+      } else if (evt.key === 'Escape') {
+        finish(false);
+        this._byFocusKey(key)?.focus();
+      }
+    });
+    for (const type of ['mousedown', 'dblclick', 'contextmenu']) {
+      input.addEventListener(type, evt => evt.stopPropagation());
+    }
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  private async _moveHubEntry(
+    shareId: string,
+    name: string,
+    target: string
+  ): Promise<void> {
+    try {
+      await renameShareItem(this._serverSettings, shareId, name, target);
+    } catch (err: any) {
+      this._noteEditFailure('rename', err);
+    }
+    await this.refresh();
+    // the row under its new name, the row that stayed after a refusal, or -
+    // when the entry left the folder on screen - the share's own row
+    const row =
+      this._byFocusKey(`share:${shareId}/${target}`) ||
+      this._byFocusKey(`share:${shareId}/${name}`) ||
+      this._byFocusKey(`share:${shareId}`);
+    // the owner may have clicked elsewhere while the hub answered, and that
+    // focus stays
+    if (document.activeElement === document.body) {
+      row?.focus();
+    }
+  }
+
+  private async _removeHubEntry(shareId: string, name: string): Promise<void> {
+    const restore = this._keepFocus();
+    const result = await showDialog({
+      title: `Remove "${name}" from the share?`,
+      body: 'The hub deletes its copy. The file in your workspace stays.',
+      buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Remove' })]
+    });
+    restore();
+    if (result.button.accept) {
+      await this._removeEntryFromShare(shareId, name);
+    }
+  }
+
+  /** A hub entry row is dragged inside the panel only - the bytes are on the
+   * hub, so there is nothing to drop on the file browser. */
+  private _attachHubEntryDrag(
+    row: HTMLElement,
+    shareId: string,
+    name: string
+  ): void {
+    row.addEventListener('mousedown', down => {
+      const target = down.target as HTMLElement;
+      if (down.button !== 0 || target.closest('button, input')) {
+        return;
+      }
+      const onMove = (move: MouseEvent) => {
+        if (
+          Math.abs(move.clientX - down.clientX) < 5 &&
+          Math.abs(move.clientY - down.clientY) < 5
+        ) {
+          return;
+        }
+        onUp();
+        const mimeData = new MimeData();
+        mimeData.setData(HUB_ENTRY_MIME, { shareId, name });
+        void new Drag({
+          mimeData,
+          dragImage: this._createEntryDragImage(row),
+          proposedAction: 'move',
+          supportedActions: 'move',
+          source: this
+        }).start(move.clientX, move.clientY);
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove, true);
+        document.removeEventListener('mouseup', onUp, true);
+      };
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('mouseup', onUp, true);
+    });
+  }
+
+  /** A folder row of a hub share takes an entry of the same share. A drop
+   * onto the folder the entry already sits in does nothing. */
+  private _attachHubFolderDrop(
+    row: HTMLElement,
+    shareId: string,
+    folder: string
+  ): void {
+    const dragged = (event: any): string | null => {
+      const data = event.mimeData?.getData(HUB_ENTRY_MIME);
+      return data && data.shareId === shareId && data.name !== folder
+        ? data.name
+        : null;
+    };
+    const over = (event: any) => {
+      if (dragged(event) === null) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.dropAction = 'move';
+      row.classList.add('jp-mod-dropTarget');
+    };
+    row.addEventListener('lm-dragenter', over);
+    row.addEventListener('lm-dragover', over);
+    row.addEventListener('lm-dragleave', () =>
+      row.classList.remove('jp-mod-dropTarget')
+    );
+    row.addEventListener('lm-drop', (event: any) => {
+      const name = dragged(event);
+      if (name === null) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      row.classList.remove('jp-mod-dropTarget');
+      const target = `${folder}/${name.slice(name.lastIndexOf('/') + 1)}`;
+      if (target !== name) {
+        void this._moveHubEntry(shareId, name, target);
+      }
+    });
   }
 
   private _toggleFilter(): void {
@@ -2038,7 +2341,7 @@ export class ShareFilesPanel extends Widget {
     if (onFetch) {
       const btn = document.createElement('button');
       btn.className = 'jp-ShareFilesPanel-entryRemove jp-mod-fetch';
-      btn.title = 'Fetch to current folder';
+      btn.title = 'Save to Current Folder';
       btn.dataset.focusKey = `${focusKey}/fetch`;
       btn.appendChild(this._svgNode(downloadIcon.svgstr));
       btn.addEventListener('click', ev => {
@@ -2292,22 +2595,25 @@ export class ShareFilesPanel extends Widget {
           }
         }
       });
-      c.addCommand('share-files-panel:set-cloud', {
-        label: args =>
-          args.cloud ? 'Hub Network Only' : 'Share Through Cloudflare',
-        execute: args => {
-          const kind = String(args.kind || 'share') as 'share' | 'request';
-          const id = String(args.id || '');
-          if (id) {
-            void this._setCloudFlow(kind, id, !args.cloud);
-          }
-        }
-      });
       c.addCommand('share-files-panel:delete-share', {
         label: 'Delete Share',
         execute: args => {
           const id = String(args.id || '');
           void this._deleteShare(id);
+        }
+      });
+      c.addCommand('share-files-panel:rename-hub-entry', {
+        label: 'Rename',
+        execute: args =>
+          this._renameHubEntry(String(args.id || ''), String(args.name || ''))
+      });
+      c.addCommand('share-files-panel:remove-hub-entry', {
+        label: 'Remove from Share',
+        execute: args => {
+          void this._removeHubEntry(
+            String(args.id || ''),
+            String(args.name || '')
+          );
         }
       });
       c.addCommand('share-files-panel:delete-request', {
@@ -2357,23 +2663,22 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:new-share', {
         label: 'New Share',
-        // hub mode: greyed with the hub's reason while the grant refuses
-        caption: () => this._hubRefusal('share'),
-        isEnabled: () => !this._hubRefusal('share'),
         execute: () => {
           void this.createShareFlow([]);
         }
       });
       c.addCommand('share-files-panel:new-request', {
         label: 'New Request',
-        caption: () => this._hubRefusal('request'),
-        isEnabled: () => !this._hubRefusal('request'),
+        // offered whatever the grant: a refused request answers with the
+        // hub's own sentence from createRequestFlow, which the owner can
+        // read, where a greyed entry carried its reason in a caption nothing
+        // renders (DEF-PANEL-86)
         execute: () => {
           void this.createRequestFlow();
         }
       });
       c.addCommand('share-files-panel:copy-entry-to-cwd', {
-        label: 'Copy to Current Folder',
+        label: 'Save to Current Folder',
         execute: args => {
           const path = String(args.path || '');
           const name = String(args.name || '');
@@ -2433,7 +2738,19 @@ export class ShareFilesPanel extends Widget {
         label: 'Paste',
         execute: args => {
           const id = String(args.id || '');
-          if (id) {
+          const clip = getClip();
+          if (id && this._hubMode && clip?.kind === 'local') {
+            // the hub copies after its answer, so a cut is pasted as a copy:
+            // nothing is deleted on the strength of a 202
+            void this.addToShareFlow(id, clip.paths);
+            if (clip.mode === 'cut') {
+              clearClip();
+              Notification.info(
+                'A cut is pasted as a copy - the originals stay in your workspace',
+                { autoClose: 8000 }
+              );
+            }
+          } else if (id) {
             void this._pasteIntoShare(id);
           }
         }
@@ -2604,7 +2921,7 @@ export class ShareFilesPanel extends Widget {
       });
     }
     const clip = getClip();
-    if (!this._hubMode && clip && clip.kind === 'local') {
+    if (clip && clip.kind === 'local') {
       menu.addItem({ type: 'separator' });
       menu.addItem({
         command: 'share-files-panel:paste-into-share',
@@ -2616,12 +2933,6 @@ export class ShareFilesPanel extends Widget {
       command: 'share-files-panel:set-password',
       args: { kind: 'share', id: share.id, hasPassword: !!share.has_password }
     });
-    if (this._hubMode) {
-      menu.addItem({
-        command: 'share-files-panel:set-cloud',
-        args: { kind: 'share', id: share.id, cloud: !!share.cloud }
-      });
-    }
     menu.addItem({ type: 'separator' });
     menu.addItem({
       command: 'share-files-panel:delete-share',
@@ -2652,12 +2963,6 @@ export class ShareFilesPanel extends Widget {
       command: 'share-files-panel:set-password',
       args: { kind: 'request', id: req.id, hasPassword: !!req.has_password }
     });
-    if (this._hubMode) {
-      menu.addItem({
-        command: 'share-files-panel:set-cloud',
-        args: { kind: 'request', id: req.id, cloud: !!req.cloud }
-      });
-    }
     menu.addItem({ type: 'separator' });
     menu.addItem({
       command: 'share-files-panel:delete-request',
@@ -2727,9 +3032,7 @@ export class ShareFilesPanel extends Widget {
     try {
       await removeShareItems(this._serverSettings, shareId, [name]);
     } catch (err: any) {
-      Notification.error(`Could not remove: ${err.message || err}`, {
-        autoClose: 8000
-      });
+      this._noteEditFailure('remove', err);
     } finally {
       this._state.busyKeys.delete(shareId);
       await this.refresh();
@@ -3427,16 +3730,17 @@ export class ShareFilesPanel extends Widget {
     // a public Cloudflare link). In hub mode the link itself tells: the
     // server restores the browser origin only for the hub's own address, so
     // a link on this page's origin works on the hub's network only - whether
-    // the record is off or its switch-on is not confirmed yet. A record
-    // switched on while the hub's confirmation is awaited says its link moves.
+    // the record is off or the hub's tunnel is not up yet. A record switched
+    // on while the tunnel is still coming up says its link moves.
     const hubOnly =
       hub &&
       new URL(link, window.location.origin).origin === window.location.origin;
     if (hub ? hubOnly : tunnelConfigured && !tunnelActive) {
       const moving =
-        !!this._state.info?.tunnel_waiting &&
+        hub &&
+        !this._state.info?.tunnel_ready &&
         [...this._state.shares, ...this._state.requests].some(
-          r => r.id === m?.id && r.cloud
+          r => r.id === m?.id && r.tunnel
         );
       const offLine = statusLine('--jp-warn-color1');
       offLine.textContent = moving
@@ -3679,10 +3983,11 @@ export class ShareFilesPanel extends Widget {
   }
 
   /** Render the header cloud icon from the server-reported tunnel state:
-   * hidden when no tunnel is configured; green filled cloud when the tunnel
-   * is on (public links); dashed silhouette when off (private links);
-   * blinking blue while connecting. Hub mode draws the looks of
-   * `hubCloudLook`. */
+   * hidden when no tunnel is configured; the accent cloud when the tunnel is
+   * on (public links); dashed silhouette when off (private links); the
+   * blinking accent silhouette while connecting - on and connecting carry the
+   * same accent, so the glyph is what separates them where the blink is
+   * suppressed. Hub mode draws the looks of `hubTunnelLook`. */
   private _updateCloudIndicator(): void {
     if (!this._cloudIndicator) {
       return;
@@ -3699,7 +4004,10 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     if (this._hubMode) {
-      this._drawHubCloud(hubCloudLook(info, ''));
+      const wanted = [...this._state.shares, ...this._state.requests].some(
+        r => r.tunnel
+      );
+      this._drawHubCloud(hubTunnelLook(info, '', wanted));
       return;
     }
     const configured = !!info.tunnel_configured;
@@ -3726,52 +4034,60 @@ export class ShareFilesPanel extends Widget {
       : 'Cloudflare sharing off - private links\nClick to switch it on';
   }
 
-  /** Hub mode: draw one look of the header cloud icon. */
-  private _drawHubCloud(look: ReturnType<typeof hubCloudLook>): void {
+  /** Hub mode: draw one look of the header cloud icon. A group policy with
+   * no tunnel has nothing to switch, so the icon is not shown at all. */
+  private _drawHubCloud(look: ReturnType<typeof hubTunnelLook>): void {
     const el = this._cloudIndicator!;
+    if (look.look === 'hidden') {
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = 'flex';
     el.classList.toggle('jp-mod-active', look.look === 'on');
-    el.classList.toggle('jp-mod-connecting', look.look === 'waiting');
+    el.classList.toggle('jp-mod-connecting', look.look === 'pending');
+    el.classList.toggle('jp-mod-armed', look.look === 'armed');
     el.classList.toggle('jp-mod-unreachable', look.look === 'unreachable');
     el.setAttribute('aria-pressed', String(look.pressed));
     el.innerHTML = '';
     const icon =
-      look.look === 'off'
-        ? cloudOffIcon
+      look.look === 'on'
+        ? cloudIcon
         : look.look === 'unreachable'
           ? cloudUnreachableIcon
-          : cloudIcon;
+          : cloudOffIcon;
     el.appendChild(this._svgNode(icon.svgstr));
     el.title = look.title;
   }
 
   /** Click on the cloud icon: switch between public links (tunnel up) and
    * private links (tunnel down). Blinks blue while connecting; in hub mode
-   * also while switching off, and after a switch-on until the hub confirms. */
+   * also while switching off, and while the hub's tunnel is coming up. */
   private async _toggleTunnel(): Promise<void> {
     if (this._tunnelToggling) {
       return;
     }
-    if (this._state.info && !this._state.info.tunnel_configured) {
-      if (this._hubMode) {
+    if (this._hubMode) {
+      if (!this._state.info?.hub?.available) {
         // The switch lives on the hub; it is offered whenever the hub answers.
         Notification.warning(
-          hubReasonText(this._state.info.hub?.reason || 'hub_unavailable'),
+          hubReasonText(this._state.info?.hub?.reason || 'hub_unavailable'),
           { autoClose: 5000 }
         );
         return;
       }
+    } else if (this._state.info && !this._state.info.tunnel_configured) {
       // No tunnel yet - the icon is the entry point to configure one.
       return this._showTunnelSetupDialog();
     }
-    // hub mode: a click switches off while the icon reads pressed - on, or a
-    // switch-on waiting for the hub - and on otherwise
+    // hub mode: a click switches off while the icon reads pressed - on, or on
+    // with the hub's tunnel still coming up - and on otherwise
     const active = this._hubMode
-      ? hubCloudLook(this._state.info!, '').pressed
+      ? hubTunnelLook(this._state.info!, '').pressed
       : !!this._state.info?.tunnel_active;
     this._tunnelToggling = true;
     if (this._hubMode) {
       this._drawHubCloud(
-        hubCloudLook(this._state.info!, active ? 'off' : 'on')
+        hubTunnelLook(this._state.info!, active ? 'off' : 'on')
       );
     } else {
       // stopping the connector takes up to five seconds: the icon shows the
@@ -3779,7 +4095,7 @@ export class ShareFilesPanel extends Widget {
       this._cloudIndicator!.classList.remove('jp-mod-active');
       this._cloudIndicator!.classList.add('jp-mod-connecting');
       this._cloudIndicator!.innerHTML = '';
-      this._cloudIndicator!.appendChild(this._svgNode(cloudIcon.svgstr));
+      this._cloudIndicator!.appendChild(this._svgNode(cloudOffIcon.svgstr));
       this._cloudIndicator!.title = active
         ? 'Switching Cloudflare sharing off'
         : 'Switching Cloudflare sharing on';
@@ -3974,8 +4290,6 @@ export class ShareFilesPanel extends Widget {
   private _stream: EventSource | null = null;
   /** Hub mode: a pending ring-driven refresh, so a burst costs one fetch. */
   private _refreshTimer: number | null = null;
-  /** Hub mode: the hub answered that it has no stream route - poll instead. */
-  private _streamFallback = false;
   /** True while the server is unreachable (offline / suspended / restarting),
    * so a poll storm is logged once instead of every tick. */
   private _networkOffline = false;

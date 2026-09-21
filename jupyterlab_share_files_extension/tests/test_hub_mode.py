@@ -336,11 +336,19 @@ def test_share_from_item_maps_the_live_payload():
     assert row["state"] == "ready"
     assert row["reason"] == ""
     assert row["has_password"] is False
-    assert row["cloud"] is False
-    assert hub_routes.share_from_item({**LIVE_SHARE, "cloud": True}, "")["cloud"] is True
+    assert row["tunnel"] is False
+    assert hub_routes.share_from_item({**LIVE_SHARE, "tunnel": True}, "")["tunnel"] is True
     assert row["created_at"] == _epoch("2026-09-03T20:43:41Z")
     assert row["expires_at"] == _epoch("2026-09-03T20:43:41Z") + 14 * 86400
     assert row["bytes"] == 42
+
+
+def test_share_from_item_relays_the_hubs_share_wide_skipped_count():
+    """The row's ``skipped`` already holds the create and every add since
+    (probed live 2026-09-21), so ``last_add.skipped`` is not added to it."""
+    row = hub_routes.share_from_item(
+        {"id": "abcdef", "skipped": 3, "last_add": {"state": "done", "skipped": 1, "at": "2026-09-21T12:00:00Z"}}, "")
+    assert row["skipped"] == 3
 
 
 def test_share_from_item_keeps_the_refusal_reason():
@@ -376,7 +384,7 @@ def test_relay_error_keeps_status_and_names_the_reason():
 
 
 # --------------------------------------------------------------------------- #
-# Links and the cloud toggle
+# Links and the tunnel switch
 # --------------------------------------------------------------------------- #
 
 
@@ -389,12 +397,12 @@ def test_rewrite_link_restores_the_browser_facing_origin(hub_env):
     assert hub_routes.rewrite_link("", "https://hub.example.com") == ""
 
 
-def test_cloud_default_persists_in_the_config_file(hub_env):
-    assert hub_routes.cloud_default() is False
-    hub_routes.set_cloud_default(True)
-    assert hub_routes.cloud_default() is True
-    hub_routes.set_cloud_default(False)
-    assert hub_routes.cloud_default() is False
+def test_tunnel_default_persists_in_the_config_file(hub_env):
+    assert hub_routes.tunnel_default() is False
+    hub_routes.set_tunnel_default(True)
+    assert hub_routes.tunnel_default() is True
+    hub_routes.set_tunnel_default(False)
+    assert hub_routes.tunnel_default() is False
 
 
 # --------------------------------------------------------------------------- #
@@ -442,51 +450,6 @@ def test_relay_holds_one_hub_stream_for_all_panels_and_drops_it_with_the_last(mo
         relay.unsubscribe(b)
         await asyncio.sleep(0.01)
         assert log == ["open", "cancelled"] and not relay.connected
-
-    asyncio.run(scenario())
-
-
-def test_relay_answers_poll_on_an_older_hub_and_retries_only_on_resubscribe(monkeypatch):
-    opens = []
-
-    async def hold(on_open, on_event):
-        opens.append(1)
-        return 404
-
-    monkeypatch.setattr(hub_stream, "hold", hold)
-
-    async def scenario():
-        relay = hub_stream.Relay()
-        a = relay.subscribe()
-        await asyncio.sleep(0.01)
-        assert await asyncio.wait_for(a.get(), 1) == hub_stream.POLL
-        b = relay.subscribe()  # the verdict is remembered while a listens
-        assert b.get_nowait() == hub_stream.POLL and len(opens) == 1
-        relay.unsubscribe(a)
-        relay.unsubscribe(b)
-        c = relay.subscribe()  # a fresh subscription asks the hub again
-        await asyncio.sleep(0.01)
-        assert len(opens) == 2 and c.get_nowait() == hub_stream.POLL
-        relay.unsubscribe(c)
-
-    asyncio.run(scenario())
-
-
-def test_relay_is_not_connected_after_the_hub_answered_404(monkeypatch):
-    """DEF-HUB-26: the run ended on 404, so no hub stream is held."""
-
-    async def hold(on_open, on_event):
-        return 404
-
-    monkeypatch.setattr(hub_stream, "hold", hold)
-
-    async def scenario():
-        relay = hub_stream.Relay()
-        a = relay.subscribe()
-        await asyncio.sleep(0.01)
-        assert a.get_nowait() == hub_stream.POLL
-        assert relay.connected is False
-        relay.unsubscribe(a)
 
     asyncio.run(scenario())
 

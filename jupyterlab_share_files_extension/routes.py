@@ -45,7 +45,7 @@ from tornado.iostream import StreamClosedError
 from tornado.simple_httpclient import HTTPStreamClosedError, HTTPTimeoutError
 from tornado.web import StaticFileHandler
 
-from .config import ShareFilesConfig
+from .config import EXCLUDED_NAMES, ShareFilesConfig
 from .hub import hub_mode
 from .storage import (
     SHARES_DIR_NAME,
@@ -82,6 +82,14 @@ def _use_trash_setting(handler) -> bool:
     if cfg is None:
         return True  # match default
     return bool(cfg.use_trash)
+
+
+def _excluded_names_setting(handler) -> list[str]:
+    """Return the catalogue of names never copied into a share."""
+    cfg: ShareFilesConfig = handler.settings.get("share_files_config")
+    if cfg is None:
+        return list(EXCLUDED_NAMES)  # match default
+    return list(cfg.excluded_names)
 
 
 def _verify_peer_tls_setting(handler) -> bool:
@@ -170,6 +178,10 @@ class _Base(APIHandler):
     @property
     def use_trash(self) -> bool:
         return _use_trash_setting(self)
+
+    @property
+    def excluded_names(self) -> list[str]:
+        return _excluded_names_setting(self)
 
     @property
     def verify_peer_tls(self) -> bool:
@@ -354,11 +366,15 @@ class _Base(APIHandler):
 
     @property
     def share_store(self) -> ShareStore:
-        return ShareStore(self.workspace_root, self.shares_dir, self.use_trash)
+        return ShareStore(
+            self.workspace_root, self.shares_dir, self.use_trash, self.excluded_names
+        )
 
     @property
     def request_store(self) -> RequestStore:
-        return RequestStore(self.workspace_root, self.shares_dir, self.use_trash)
+        return RequestStore(
+            self.workspace_root, self.shares_dir, self.use_trash, self.excluded_names
+        )
 
     @property
     def connection_store(self) -> ConnectionStore:
@@ -488,12 +504,20 @@ class _PublicBase(tornado.web.RequestHandler):
         return _use_trash_setting(self)
 
     @property
+    def excluded_names(self) -> list[str]:
+        return _excluded_names_setting(self)
+
+    @property
     def share_store(self) -> ShareStore:
-        return ShareStore(self.workspace_root, self.shares_dir, self.use_trash)
+        return ShareStore(
+            self.workspace_root, self.shares_dir, self.use_trash, self.excluded_names
+        )
 
     @property
     def request_store(self) -> RequestStore:
-        return RequestStore(self.workspace_root, self.shares_dir, self.use_trash)
+        return RequestStore(
+            self.workspace_root, self.shares_dir, self.use_trash, self.excluded_names
+        )
 
 
 # Cached content of the CLI config file, keyed by mtime so `cloudflare setup`
@@ -1269,10 +1293,6 @@ class ConnectionsHandler(_Base):
             link=link,
             password=password,
         )
-        # Ensure the response carries the link even if the entry already existed
-        # without one (older persisted connections); the store backfills on disk.
-        if not entry.get("link"):
-            entry["link"] = link
         self.write_json(entry)
 
 
@@ -1414,18 +1434,11 @@ class ConnectionSaveHandler(_Base):
         except StorageError as exc:
             return self.write_error_json(400, str(exc))
 
-        host = conn["host"]
-        share_id = conn["id"]
-        # Prefer the persisted full link - it carries the owner's
-        # `/user/<name>/` prefix on JupyterHub. Reconstructing from our own
-        # base_url points at OUR server (404). Fall back to reconstruction only
-        # for legacy link-less connections.
-        link = (conn.get("link") or "").rstrip("/")
-        if link:
-            api_base = link
-        else:
-            base_url = self.settings.get("base_url", "/")
-            api_base = host + url_path_join(base_url, EXTENSION_NAMESPACE, "public", "share", share_id)
+        # the persisted link carries the owner's `/user/<name>/` prefix on
+        # JupyterHub, which this server cannot rebuild
+        api_base = (conn.get("link") or "").rstrip("/")
+        if not api_base:
+            return self.write_error_json(400, "Connection has no link - reconnect it")
 
         saved: list[str] = []
         limit = _download_limit(body.get("max_gb"))
@@ -1457,7 +1470,7 @@ class ConnectionSaveHandler(_Base):
             ):
                 return self._failed(saved, 502, "The peer did not send a readable manifest")
             # the slug comes from the peer - reduce it to one path component
-            share_slug = _safe_name(str(manifest.get("slug") or share_id))
+            share_slug = _safe_name(str(manifest.get("slug") or conn["id"]))
 
             if names is None:
                 # Save All - download zip, extract into <dest_root>/<share-slug>/
@@ -1679,18 +1692,12 @@ class ConnectionUploadHandler(_Base):
         if not isinstance(paths, list) or not paths:
             return self.write_error_json(400, "'paths' must be a non-empty list")
 
-        host = conn["host"]
-        request_id = conn["id"]
-        # Prefer the persisted full link (carries the owner's /user/<name>/
-        # prefix on JupyterHub); reconstruction points at our own server.
+        # the persisted link carries the owner's /user/<name>/ prefix on
+        # JupyterHub, which this server cannot rebuild
         link = (conn.get("link") or "").rstrip("/")
-        if link:
-            upload_url = link + "/upload"
-        else:
-            base_url = self.settings.get("base_url", "/")
-            upload_url = host + url_path_join(
-                base_url, EXTENSION_NAMESPACE, "public", "request", request_id, "upload"
-            )
+        if not link:
+            return self.write_error_json(400, "Connection has no link - reconnect it")
+        upload_url = link + "/upload"
         upload_url += "?uploader=" + tornado.escape.url_escape(uploader)
 
         client = tornado.httpclient.AsyncHTTPClient()
@@ -1712,7 +1719,7 @@ class ConnectionUploadHandler(_Base):
                 headers = dict(auth_headers or {})
                 if uploader_hash:
                     headers["Cookie"] = (
-                        f"sf_uploader_{request_id}={uploader_hash}"
+                        f"sf_uploader_{conn['id']}={uploader_hash}"
                     )
                 resp_body = await _post_file(
                     client,
@@ -1844,8 +1851,8 @@ def _parse_share_link(link: str) -> dict[str, str]:
     # The path part before EXTENSION_NAMESPACE is the JupyterLab base_url.
     try:
         ns_idx = parts.index(EXTENSION_NAMESPACE)
-    except ValueError:
-        ns_idx = idx  # legacy/malformed - fall back to before 'public'
+    except ValueError as exc:
+        raise ValueError("Link is not a share/request URL") from exc
     base_path = "/" + "/".join(parts[:ns_idx])
     if not base_path.endswith("/"):
         base_path += "/"

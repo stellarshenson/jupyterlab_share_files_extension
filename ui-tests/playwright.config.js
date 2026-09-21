@@ -17,9 +17,18 @@ const BASE_URL = `http://localhost:${PORT}`;
 
 module.exports = {
   ...baseConfig,
+  // refuse a lab this suite did not start, see global-setup.js
+  globalSetup: require.resolve('./global-setup.js'),
   // tests/hub runs under playwright.hub.config.js against a mock hub,
   // tests/livehub under playwright.livehub.config.js against the real one
   testIgnore: ['**/hub/**', '**/livehub/**'],
+  // Playwright defaults to half the machine's cores, which on a 64-thread
+  // workstation is 32 browsers against one JupyterLab. Galata's own waits are
+  // fixed at 15 s, so under that load its file-browser helpers time out and
+  // tests fail for the load, not the code. The run is bound by the single
+  // server either way - two workers take the same wall-clock as thirty-two
+  // and pass repeatably. PLAYWRIGHT_WORKERS overrides it.
+  workers: Number(process.env.PLAYWRIGHT_WORKERS || 2),
   use: { ...baseConfig.use, baseURL: BASE_URL },
   webServer: {
     command: 'jupyter lab --config jupyter_server_test_config.py',

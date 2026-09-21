@@ -18,6 +18,7 @@ import pytest
 from jupyterlab_share_files_extension import storage as storage_mod
 from jupyterlab_share_files_extension.storage import (
     SHARES_DIR_NAME,
+    UPLOADER_SIDECAR,
     ConnectionStore,
     NotFoundError,
     RequestStore,
@@ -412,21 +413,17 @@ class TestRequestStore:
         assert names == {"f.txt"}
         assert result["upload_count"] == 1
 
-    def test_legacy_name_keyed_dir_falls_back(self, tmp_path):
-        """Pre-identity uploads (dir keyed by name, no sidecar) stay visible."""
+    def test_a_folder_without_the_uploader_sidecar_is_not_an_uploader(self, tmp_path):
+        """add_upload writes the sidecar before the first file, so a folder
+        under a request that holds none is not listed as an uploader."""
         store = RequestStore(str(tmp_path))
         req = store.create("inbox")
         requests_dir = tmp_path / SHARES_DIR_NAME / "requests"
         req_folder = next(c for c in requests_dir.iterdir() if c.is_dir())
-        legacy = req_folder / "bob"
-        legacy.mkdir()
-        (legacy / "old.txt").write_bytes(b"x")
+        (req_folder / "bob").mkdir()
+        (req_folder / "bob" / "old.txt").write_bytes(b"x")
         result = store.get(req["id"])
-        assert result["uploaders"][0]["hash"] == "bob"
-        assert result["uploaders"][0]["name"] == "bob"
-        # and the owner can still remove it keyed by the dir name
-        result = store.remove_upload(req["id"], "bob", "old.txt")
-        assert result["uploaders"] == []
+        assert result["uploaders"] == [] and result["upload_count"] == 0
 
     def test_add_upload_supports_nested_paths(self, tmp_path):
         """Uploading a file with folder components preserves structure."""
@@ -566,18 +563,6 @@ class TestConnectionStore:
         store1.add("share", "ABCDEFGH", "https://hub.test", link=link)
         store2 = ConnectionStore(str(tmp_path))
         assert store2.list()[0]["link"] == link
-
-    def test_link_backfilled_on_readd(self, tmp_path):
-        # A connection persisted before links were stored (no "link" key) is
-        # repaired when the user reconnects with the same link.
-        store = ConnectionStore(str(tmp_path))
-        store.add("share", "ABCDEFGH", "https://hub.test")  # legacy: no link
-        assert store.list()[0].get("link", "") == ""
-        link = "https://hub.test/user/alice/jupyterlab-share-files-extension/public/share/ABCDEFGH"
-        store.add("share", "ABCDEFGH", "https://hub.test", link=link)
-        items = store.list()
-        assert len(items) == 1
-        assert items[0]["link"] == link
 
     @pytest.mark.parametrize(
         "content",
@@ -720,7 +705,7 @@ class TestLazyStorageDir:
         (tmp_path / "f.txt").write_text("x")
         store = ShareStore(str(tmp_path))
 
-        def boom(source, target_dir):
+        def boom(source, target_dir, excluded=()):
             raise OSError("No space left on device")
 
         monkeypatch.setattr(storage_mod, "_copy_into", boom)
@@ -943,6 +928,7 @@ class TestMinimalManifest:
         (requests_dir / "inbox-ABCDEF24").mkdir(parents=True)
         (requests_dir / "inbox-ABCDEF24" / "alice").mkdir()
         (requests_dir / "inbox-ABCDEF24" / "alice" / "note.txt").write_text("hi")
+        (requests_dir / "inbox-ABCDEF24" / "alice" / UPLOADER_SIDECAR).write_text(json.dumps({"name": "alice"}))
         (requests_dir / "inbox-ABCDEF24.json").write_text(
             json.dumps({"id": "ABCDEF24", "name": "inbox", "last_seen_upload_at": 0})
         )
@@ -1062,3 +1048,106 @@ class TestConcurrentUploads:
         fresh = store.get(req["id"])
         assert fresh["id"] == original["id"]
         assert fresh["name"] == original["name"]
+
+
+# --------------------------------------------------------------------------- #
+# Excluded names (ACC-EXCL-158)
+# --------------------------------------------------------------------------- #
+
+
+class TestExcludedNames:
+    """The catalogue of names a share never copies.
+
+    The default lives in `ShareFilesConfig.excluded_names`; the store takes it
+    as a constructor argument, so an operator's own catalogue reaches every
+    copy path.
+    """
+
+    def _tree(self, tmp_path):
+        """A folder carrying the artefacts the catalogue names, at two depths."""
+        src = tmp_path / "project"
+        (src / "sub").mkdir(parents=True)
+        (src / "main.py").write_text("# main")
+        (src / ".ipynb_checkpoints").mkdir()
+        (src / ".ipynb_checkpoints" / "main-checkpoint.py").write_text("# old")
+        (src / "__pycache__").mkdir()
+        (src / "__pycache__" / "main.cpython-313.pyc").write_bytes(b"\x00")
+        (src / ".DS_Store").write_bytes(b"\x00")
+        (src / "sub" / ".DS_Store").write_bytes(b"\x00")
+        (src / "sub" / "._main.py").write_bytes(b"\x00")
+        (src / "sub" / "helper.py").write_text("# helper")
+        return src
+
+    def _share_dir(self, tmp_path):
+        return next(
+            c for c in (tmp_path / SHARES_DIR_NAME / "shares").iterdir() if c.is_dir()
+        )
+
+    def test_a_copied_folder_leaves_the_excluded_names_behind(self, tmp_path):
+        self._tree(tmp_path)
+        store = ShareStore(str(tmp_path))
+        store.create("project", ["project"])
+        copied = self._share_dir(tmp_path) / "project"
+        assert (copied / "main.py").exists()
+        assert (copied / "sub" / "helper.py").exists()
+        assert not (copied / ".ipynb_checkpoints").exists()
+        assert not (copied / "__pycache__").exists()
+        assert not (copied / ".DS_Store").exists()
+        # and at depth, where the ignore callable is asked again
+        assert not (copied / "sub" / ".DS_Store").exists()
+        assert not (copied / "sub" / "._main.py").exists()
+
+    def test_an_excluded_item_dropped_on_its_own_is_skipped(self, tmp_path):
+        (tmp_path / ".ipynb_checkpoints").mkdir()
+        (tmp_path / ".ipynb_checkpoints" / "a-checkpoint.py").write_text("x")
+        (tmp_path / "keep.txt").write_text("keep")
+        store = ShareStore(str(tmp_path))
+        manifest = store.create("mixed", ["keep.txt", ".ipynb_checkpoints"])
+        assert [e["name"] for e in manifest["entries"]] == ["keep.txt"]
+
+    def test_a_drop_of_only_excluded_items_is_refused(self, tmp_path):
+        (tmp_path / ".ipynb_checkpoints").mkdir()
+        store = ShareStore(str(tmp_path))
+        with pytest.raises(StorageError, match="on the excluded list"):
+            store.create("nothing", [".ipynb_checkpoints"])
+        # nothing was left behind by the refusal
+        assert not (tmp_path / SHARES_DIR_NAME / "shares").exists()
+
+    def test_add_items_applies_the_catalogue_too(self, tmp_path):
+        (tmp_path / "first.txt").write_text("1")
+        self._tree(tmp_path)
+        store = ShareStore(str(tmp_path))
+        manifest = store.create("growing", ["first.txt"])
+        store.add_items(manifest["id"], ["project"])
+        copied = self._share_dir(tmp_path) / "project"
+        assert (copied / "main.py").exists()
+        assert not (copied / ".ipynb_checkpoints").exists()
+
+    def test_an_empty_catalogue_copies_everything(self, tmp_path):
+        self._tree(tmp_path)
+        store = ShareStore(str(tmp_path), excluded_names=[])
+        store.create("project", ["project"])
+        copied = self._share_dir(tmp_path) / "project"
+        assert (copied / ".ipynb_checkpoints" / "main-checkpoint.py").exists()
+        assert (copied / ".DS_Store").exists()
+
+    def test_the_operators_own_catalogue_replaces_the_default(self, tmp_path):
+        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "secret.key").write_text("k")
+        (tmp_path / "notes" / ".DS_Store").write_bytes(b"\x00")
+        store = ShareStore(str(tmp_path), excluded_names=["*.key"])
+        store.create("notes", ["notes"])
+        copied = self._share_dir(tmp_path) / "notes"
+        assert not (copied / "secret.key").exists()
+        # the default catalogue is gone, so .DS_Store now travels
+        assert (copied / ".DS_Store").exists()
+
+    def test_the_trash_folders_are_on_the_default_catalogue(self):
+        from jupyterlab_share_files_extension.storage import is_excluded
+
+        assert is_excluded(".Trash")
+        assert is_excluded(".Trash-1000")
+        assert is_excluded(".Trashes")
+        assert is_excluded(".trashed-1234-old.txt")
+        assert is_excluded("$RECYCLE.BIN")
+        assert not is_excluded("trash-talk.md")

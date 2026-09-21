@@ -250,9 +250,13 @@ test('every cloud icon tooltip is short and two lines at most', async ({
   await cloud.click();
   await expect(cloud).toHaveClass(/jp-mod-connecting/);
   await read(); // connecting
+  // ACC-CLOUD-162: connecting and on carry the same accent, so the glyph is
+  // what separates them - the dashed silhouette against the filled cloud
+  const switching = await cloud.locator('svg').innerHTML();
   answer();
   await expect(cloud).toHaveClass(/jp-mod-active/);
   await read(); // on
+  expect(await cloud.locator('svg').innerHTML()).not.toBe(switching);
   expect(new Set(titles).size).toBe(4);
   for (const title of titles) {
     const lines = title.split('\n');
@@ -356,6 +360,19 @@ test('the cloud icon draws its state colour', async ({ page }) => {
     .locator('svg')
     .evaluate((el: SVGElement) => getComputedStyle(el).fill);
   expect(fill).toBe(colour);
+  // ACC-CLOUD-160: that colour is the accent the panel's other header icons
+  // take when active, not a success green no other control carries
+  const resolve = (name: string) =>
+    page.evaluate((v: string) => {
+      const probe = document.createElement('span');
+      probe.style.color = `var(${v})`;
+      document.body.appendChild(probe);
+      const value = getComputedStyle(probe).color;
+      probe.remove();
+      return value;
+    }, name);
+  expect(colour).toBe(await resolve('--jp-brand-color1'));
+  expect(colour).not.toBe(await resolve('--jp-success-color1'));
 });
 
 /** A connected peer share, answered in the browser: the connection list and
@@ -544,7 +561,7 @@ test("a file row of the owner's own share opens its menu from the keyboard", asy
   const entry = item.locator('.jp-ShareFilesPanel-entry', { hasText: file });
   await expect(entry).toHaveAttribute('tabindex', '0');
   const copyToCwd = page.locator('.lm-Menu .lm-Menu-item', {
-    hasText: 'Copy to Current Folder'
+    hasText: 'Save to Current Folder'
   });
   for (const key of ['Shift+F10', 'ContextMenu']) {
     await entry.focus();

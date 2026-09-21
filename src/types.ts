@@ -35,12 +35,20 @@ export interface IShare {
   reason?: string;
   /** Hub mode: unix seconds the hub removes the row at */
   expires_at?: number;
-  /** Hub mode: the record's Cloudflare switch - the link is the hub's
+  /** Hub mode: the record's tunnel switch - the link is the hub's
    * Cloudflare address while on, the hub's own address while off */
-  cloud?: boolean;
-  /** Hub mode, on a freshly created row only: why the cloud toggle could
+  tunnel?: boolean;
+  /** Hub mode, on a freshly created row only: why the tunnel switch could
    * not be applied to it (a refusal slug) */
-  cloud_reason?: string;
+  tunnel_reason?: string;
+  /** Hub mode: the hub is copying an add (its `last_add` reads running) */
+  adding?: boolean;
+  /** Hub mode: entries the hub left out of this share, create and adds */
+  skipped?: number;
+  /** Hub mode: the reason slug of the last add, when the hub refused it */
+  add_reason?: string;
+  /** Hub mode: bytes copied and to copy, only while the hub carries bytes */
+  progress?: { copied: number; total: number } | null;
 }
 
 export interface IUploaderEntry {
@@ -70,8 +78,8 @@ export interface IRequest {
   state?: IShareState;
   reason?: string;
   expires_at?: number;
-  cloud?: boolean;
-  cloud_reason?: string;
+  tunnel?: boolean;
+  tunnel_reason?: string;
 }
 
 export interface IConnection {

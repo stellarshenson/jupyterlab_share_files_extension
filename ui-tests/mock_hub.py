@@ -11,17 +11,17 @@ a title containing ``stay-staging`` never leaves ``staging``, one containing
 ``ready`` on the next listing with one file per submitted path.
 
 Links follow galaxahub v4.4.58: ``capabilities.public_base_url`` is always
-the hub's own address, and a cloud-on record's url carries the tunnel base
-only once the tunnel registered. The first record switched on starts the
-tunnel, which registers after ``tunnel_delay`` seconds (never while
-``tunnel_registers`` is false) without ringing the change stream - the real
-hub does not ring for it either. ``/s/<id>`` is the recipient page the lab's
-link check opens.
+the hub's own address, and a tunnel-on record's url carries the tunnel base
+only once ``capabilities.tunnel_ready`` is true. The first record switched on
+starts the connector, which is ready after ``tunnel_delay`` seconds (never
+while ``tunnel_registers`` is false); the hub rings the change stream every
+time that verdict flips. ``/s/<id>`` is the recipient page the lab's link
+check opens.
 
 ``/_control/*`` is the test's own side door: reset the store, change the
-capabilities, the policy, the tunnel, the recipient page and the status a
-Cloudflare switch off answers, add an upload, ring the change stream, read
-the recorded calls.
+capabilities, the policy, the tunnel (its base, its delay and its ready
+verdict), the recipient page and the status a Cloudflare switch off answers,
+add an upload, ring the change stream, read the recorded calls.
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ import asyncio
 import json
 import os
 import posixpath
-import re
 
 import tornado.ioloop
 import tornado.web
@@ -39,6 +38,9 @@ from tornado.iostream import StreamClosedError
 TOKEN = os.environ.get("MOCK_HUB_TOKEN", "test-token")
 PORT = int(os.environ.get("MOCK_HUB_PORT") or "8765")
 BASE = f"http://127.0.0.1:{PORT}"
+
+
+ADD_SECONDS = 0.4
 
 
 class Store:
@@ -52,12 +54,14 @@ class Store:
             "max_upload_bytes": 10737418240, "max_share_bytes": 5368709120,
             "max_shares": 20, "retention_days": 14,
             "public_base_url": BASE, "serving": True, "password_required": False,
+            # the group policy has a tunnel at all, and the connector is up
+            "tunnel_available": True, "tunnel_ready": False,
         }
         # the group policy's Cloudflare switch - a record may be switched on
         # only while it is on (the real hub's `file_sharing_cloudflare_enabled`)
         self.cloudflare_enabled = True
-        # an older hub without the stream route answers 404
-        self.stream_supported = True
+        # how long an add stays running before it settles
+        self.add_seconds = ADD_SECONDS
         # the hub's Cloudflare tunnel; the default base is a second origin on
         # this loopback port, so a tunnel link resolves without a network
         if getattr(self, "tunnel_timer", None) is not None:
@@ -66,27 +70,33 @@ class Store:
         self.tunnel_base = f"http://localhost:{PORT}"
         self.tunnel_delay = 0.0
         self.tunnel_registers = True
-        self.tunnel_registered = False
         # the status the recipient page answers for a record that exists
         self.page_status = 200
         # the status a Cloudflare switch off answers for a record that exists
-        self.cloud_off_status = 204
+        self.tunnel_off_status = 204
         self.streams: list[asyncio.Queue] = []
         self.items: list[dict] = []
         self.pending_paths: dict[str, list[str]] = {}
+        self.adding: set[str] = set()
         self.uploads: dict[str, list[dict]] = {}
         self.counter = 0
 
     def start_tunnel(self):
-        """The first record switched on starts the tunnel; it registers after
-        the delay, and nothing rings when it does."""
-        if self.tunnel_registered or self.tunnel_timer is not None or not self.tunnel_registers:
+        """The first record switched on starts the connector; it is ready
+        after the delay."""
+        if (self.capabilities["tunnel_ready"] or self.tunnel_timer is not None
+                or not self.tunnel_registers):
             return
         if not self.tunnel_delay:
-            self.tunnel_registered = True
-            return
+            return self.set_ready(True)
         self.tunnel_timer = asyncio.get_running_loop().call_later(
-            self.tunnel_delay, lambda: setattr(self, "tunnel_registered", True))
+            self.tunnel_delay, lambda: self.set_ready(True))
+
+    def set_ready(self, ready: bool):
+        """The connector's verdict flips - the hub rings the change stream
+        for it, so a panel learns a tunnel coming up or dropping."""
+        self.capabilities["tunnel_ready"] = bool(ready)
+        self.nudge()
 
     def nudge(self):
         """Ring every open stream - the hub's `fileshare_stream.nudge`."""
@@ -113,13 +123,20 @@ class Store:
                 item["reason"] = "over_cap"
                 continue
             paths = self.pending_paths.pop(item["id"], [])
-            item["files"] = [
-                {"name": posixpath.basename(p.rstrip("/")) or p, "size": 42, "sha256": "0" * 64}
-                for p in paths
-            ]
+            item["files"] = _files(paths)
             item["bytes"] = 42 * len(item["files"])
             item["state"] = "ready"
             self.nudge()
+
+
+def _files(paths) -> list[dict]:
+    """The files one copy lands: a name with no dot stands for a folder and
+    lands as one file under it."""
+    names = [posixpath.basename(p.rstrip("/")) or p for p in paths]
+    return [
+        {"name": n if "." in n else f"{n}/inside.txt", "size": 42, "sha256": "0" * 64}
+        for n in names
+    ]
 
 
 STORE = Store()
@@ -168,9 +185,9 @@ class Capabilities(_Hub):
 
 def _with_url(item: dict) -> dict:
     """The row as the hub answers it: the url is composed per request, never
-    stored - the tunnel base while the record's cloud switch is on and the
-    tunnel is registered, the hub's own address otherwise."""
-    on_tunnel = item.get("cloud") and STORE.tunnel_registered
+    stored - the tunnel base while the record's tunnel switch is on and the
+    connector is ready, the hub's own address otherwise."""
+    on_tunnel = item.get("tunnel") and STORE.capabilities["tunnel_ready"]
     base = STORE.tunnel_base.rstrip("/") if on_tunnel else BASE
     return {**item, "url": f"{base}/s/{item['id']}"}
 
@@ -197,23 +214,24 @@ class Create(_Hub):
                                      "message": f"Your group requires a password on every {kind}"})
         paths = body.get("paths") or []
         if kind == "share":
-            if not isinstance(paths, list) or not paths:
-                return self.answer(400, {"status": 400, "message": "paths must be a non-empty list"})
+            if not isinstance(paths, list):
+                return self.answer(400, {"status": 400, "message": "paths must be a list"})
             for p in paths:
                 if not isinstance(p, str) or not p or p.startswith("/") or ".." in p.split("/"):
                     return self.answer(400, {"status": 400, "message": "each path must be inside the workspace"})
         id_ = STORE.new_id("r_" if kind == "request" else "")
-        state = "staging" if kind == "share" else "ready"
+        # a share with no paths has nothing to copy and is born ready
+        state = "staging" if kind == "share" and paths else "ready"
         STORE.items.append({
             "id": id_, "kind": kind, "owner": "alice", "title": title, "state": state,
             "files": [], "bytes": 0, "skipped": 0,
             "created_at": "2026-09-03T20:00:00Z", "expires_at": "2026-09-17T20:00:00Z",
-            "has_password": bool(body.get("password")), "cloud": False,
+            "has_password": bool(body.get("password")), "tunnel": False,
         })
         if kind == "share":
             STORE.pending_paths[id_] = list(paths)
         row = _with_url(STORE.items[-1])
-        self.answer(202 if kind == "share" else 201, {"id": id_, "url": row["url"], "state": state})
+        self.answer(202 if state == "staging" else 201, {"id": id_, "url": row["url"], "state": state})
 
 
 class Close(_Hub):
@@ -223,6 +241,79 @@ class Close(_Hub):
         if len(STORE.items) == before:
             return self.answer(404, {"status": 404, "message": "No such share"})
         STORE.uploads.pop(id_, None)
+        STORE.nudge()
+        self.answer(204)
+
+
+
+class Content(_Hub):
+    """POST shares/<id>/content - add, remove, rename. An add answers 202 and
+    lands later; meanwhile the row carries ``last_add`` running with
+    ``progress`` and every content call is refused ``busy``. An added name
+    holding ``refuse-add`` settles as refused ``over_cap``. ``exclude`` must
+    be a list, as on the hub."""
+
+    def refuse(self, action, reason, code=400):
+        self.answer(code, {"reason": reason, "message": f"The {action} was refused: {reason}"})
+
+    def post(self, id_):
+        item = next((i for i in STORE.items if i["id"] == id_ and i["kind"] == "share"), None)
+        if item is None:
+            return self.answer(404, {"status": 404, "message": "No such share"})
+        body = self.body()
+        action = body.get("action")
+        if action not in ("add", "remove", "rename"):
+            return self.answer(400, {"status": 400, "message": "action must be one of: add, remove, rename"})
+        if id_ in STORE.adding:
+            return self.refuse(action, "busy", 409)
+        names = [f["name"] for f in item["files"]]
+        held = lambda n: [x for x in names if x == n or x.startswith(n + "/")]  # noqa: E731
+        if action == "add":
+            paths = body.get("paths") or []
+            if not isinstance(body.get("exclude", []), list):
+                return self.answer(400, {"status": 400, "message": "exclude must be a list"})
+            if not paths:
+                return self.answer(204)
+            added = [posixpath.basename(p.rstrip("/")) for p in paths]
+            if any(held(n) for n in added):
+                return self.refuse(action, "name_taken")
+            STORE.adding.add(id_)
+            item["last_add"] = {"state": "running"}
+            item["progress"] = {"copied": 21, "total": 42}
+
+            def land():
+                STORE.adding.discard(id_)
+                if item not in STORE.items:
+                    return
+                item.pop("progress", None)
+                item["last_add"] = {"state": "done", "skipped": 0, "at": "2026-09-03T20:00:01Z"}
+                if any("refuse-add" in n for n in added):
+                    item["last_add"] = {"state": "refused", "reason": "over_cap", "skipped": 0, "at": "2026-09-03T20:00:01Z"}
+                else:
+                    item["files"] += _files(added)
+                    item["bytes"] = 42 * len(item["files"])
+                # the hub rings on a refused add as well as on a landed one
+                STORE.nudge()
+
+            tornado.ioloop.IOLoop.current().call_later(STORE.add_seconds, land)
+            return self.answer(202)
+        name = str(body.get("name") or "")
+        if not name or ".." in name.split("/"):
+            return self.refuse(action, "bad_filename")
+        if not held(name):
+            return self.refuse(action, "unknown_entry")
+        if action == "remove":
+            item["files"] = [f for f in item["files"] if f["name"] not in held(name)]
+        else:
+            new = str(body.get("new_name") or "")
+            if not new or ".." in new.split("/"):
+                return self.refuse(action, "bad_filename")
+            if held(new):
+                return self.refuse(action, "name_taken")
+            for f in item["files"]:
+                if f["name"] in held(name):
+                    f["name"] = new + f["name"][len(name):]
+        item["bytes"] = 42 * len(item["files"])
         STORE.nudge()
         self.answer(204)
 
@@ -241,23 +332,24 @@ class Password(_Hub):
         self.answer(404, {"status": 404, "message": "No such share"})
 
 
-class Cloud(_Hub):
-    """The per-record Cloudflare switch (galaxahub ACC-FILE-2920)."""
+class Tunnel(_Hub):
+    """The per-record tunnel switch (galaxahub ACC-FILE-2920). The route it
+    replaced, ``<id>/cloud``, is not mounted and answers 404."""
 
     def put(self, kind_plural, id_):
-        cloud = self.body().get("cloud")
-        if not isinstance(cloud, bool):
-            return self.answer(400, {"status": 400, "message": "cloud must be a boolean"})
+        tunnel = self.body().get("tunnel")
+        if not isinstance(tunnel, bool):
+            return self.answer(400, {"status": 400, "message": "tunnel must be a boolean"})
         for item in STORE.items:
             if item["id"] == id_:
-                if cloud and not STORE.cloudflare_enabled:
-                    return self.answer(403, {"reason": "cloud_not_configured",
+                if tunnel and not STORE.cloudflare_enabled:
+                    return self.answer(403, {"reason": "tunnel_not_available",
                                              "message": "The group policy has Cloudflare turned off"})
-                if not cloud and STORE.cloud_off_status != 204:
-                    return self.answer(STORE.cloud_off_status, {"status": STORE.cloud_off_status,
+                if not tunnel and STORE.tunnel_off_status != 204:
+                    return self.answer(STORE.tunnel_off_status, {"status": STORE.tunnel_off_status,
                                                                 "message": "switch off failed"})
-                item["cloud"] = cloud
-                if cloud:
+                item["tunnel"] = tunnel
+                if tunnel:
                     STORE.start_tunnel()
                 STORE.nudge()
                 return self.answer(204)
@@ -269,8 +361,6 @@ class Stream(_Hub):
     `event: changed` per ring, a keepalive comment every 25s."""
 
     async def get(self):
-        if not STORE.stream_supported:
-            return self.answer(404, {"status": 404, "message": "Not Found"})
         self.set_header("Content-Type", "text/event-stream")
         self.set_header("Cache-Control", "no-cache")
         queue: asyncio.Queue = asyncio.Queue(maxsize=1)
@@ -365,6 +455,9 @@ class Control(_Base):
             })
             STORE.nudge()
             return self.answer(200, {"ok": True})
+        if action == "add":
+            STORE.add_seconds = float(body.get("seconds") or ADD_SECONDS)
+            return self.answer(200, {"ok": True})
         if action == "nudge":
             STORE.nudge()
             return self.answer(200, {"ok": True})
@@ -372,29 +465,29 @@ class Control(_Base):
             # the group policy knobs the fileshare API answers from
             if "cloudflare_enabled" in body:
                 STORE.cloudflare_enabled = bool(body["cloudflare_enabled"])
-            if "stream_supported" in body:
-                STORE.stream_supported = bool(body["stream_supported"])
-            return self.answer(200, {"cloudflare_enabled": STORE.cloudflare_enabled,
-                                     "stream_supported": STORE.stream_supported})
+            return self.answer(200, {"cloudflare_enabled": STORE.cloudflare_enabled})
         if action == "tunnel":
-            # base, delay (seconds after the first switch-on), registers (ever)
+            # base, delay (seconds after the first switch-on), registers
+            # (ever), ready (the connector's verdict, which rings the stream)
             if "base" in body:
                 STORE.tunnel_base = str(body["base"])
             if "delay" in body:
                 STORE.tunnel_delay = float(body["delay"])
             if "registers" in body:
                 STORE.tunnel_registers = bool(body["registers"])
+            if "ready" in body:
+                STORE.set_ready(body["ready"])
             return self.answer(200, {"base": STORE.tunnel_base, "delay": STORE.tunnel_delay,
                                      "registers": STORE.tunnel_registers,
-                                     "registered": STORE.tunnel_registered})
+                                     "ready": STORE.capabilities["tunnel_ready"]})
         if action == "page":
             # the status the recipient page answers
             STORE.page_status = int(body.get("status") or 200)
             return self.answer(200, {"status": STORE.page_status})
         if action == "cloudoff":
             # the status a Cloudflare switch off answers
-            STORE.cloud_off_status = int(body.get("status") or 204)
-            return self.answer(200, {"status": STORE.cloud_off_status})
+            STORE.tunnel_off_status = int(body.get("status") or 204)
+            return self.answer(200, {"status": STORE.tunnel_off_status})
         self.answer(404, {"status": 404, "message": "unknown control"})
 
 
@@ -408,8 +501,9 @@ def make_app():
         (rf"{prefix}/items", Items),
         (rf"{prefix}/(shares|requests)", Create),
         (rf"{prefix}/(shares|requests)/{ID}", Close),
+        (rf"{prefix}/shares/{ID}/content", Content),
         (rf"{prefix}/(shares|requests)/{ID}/password", Password),
-        (rf"{prefix}/(shares|requests)/{ID}/cloud", Cloud),
+        (rf"{prefix}/(shares|requests)/{ID}/tunnel", Tunnel),
         (rf"{prefix}/stream", Stream),
         (rf"{prefix}/requests/{ID}/uploads", Uploads),
         (rf"{prefix}/requests/{ID}/uploads/{ID}/fetch", Fetch),

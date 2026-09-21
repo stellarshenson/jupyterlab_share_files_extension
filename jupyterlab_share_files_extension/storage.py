@@ -11,6 +11,7 @@ Layout under workspace root (.jupyterlab_shares/):
 from __future__ import annotations
 
 import base64
+import fnmatch
 import hmac
 import json
 import logging
@@ -20,8 +21,11 @@ import secrets
 import shutil
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+
+from .config import EXCLUDED_NAMES
 
 try:
     from send2trash import send2trash as _send2trash
@@ -254,14 +258,46 @@ def _atomic_write_json(path: Path, data: Any) -> None:
     os.replace(tmp, path)
 
 
-def _copy_into(source: Path, target_dir: Path) -> Path:
-    """Copy source (file or directory) into target_dir, return the destination."""
+def is_excluded(name: str, patterns: Sequence[str] = EXCLUDED_NAMES) -> bool:
+    """True when one path component matches the excluded-names catalogue.
+
+    The catalogue is `ShareFilesConfig.excluded_names` (default
+    `EXCLUDED_NAMES`); each entry is an fnmatch pattern over a single
+    component, so `._*` covers every macOS resource-fork file and
+    `.Trash-1000` matches `.Trash-*`.
+    """
+    return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
+
+
+def all_excluded_message(names: Sequence[str]) -> str:
+    """The refusal both modes give when every dropped item is excluded.
+
+    A standalone lab raises it as a StorageError and a hub relays it as a
+    400. Written once so the two cannot drift apart (DEF-PANEL-93).
+    """
+    verb = "is" if len(names) == 1 else "are"
+    return f"Nothing to copy: {', '.join(names)} {verb} on the excluded list"
+
+
+def _copy_into(
+    source: Path, target_dir: Path, excluded: Sequence[str] = EXCLUDED_NAMES
+) -> Path:
+    """Copy source (file or directory) into target_dir, return the destination.
+
+    Excluded names are dropped at every depth: `shutil.copytree` asks the
+    ignore callable for each directory it walks, so a checkpoint folder or a
+    macOS artefact nested anywhere inside the tree never reaches the share.
+    """
     if not source.exists():
         raise NotFoundError(f"Source not found: {source}")
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = _resolve_unique_target(target_dir, source.name)
     if source.is_dir():
-        shutil.copytree(source, dest)
+
+        def ignore(_dir: str, names: list[str]) -> list[str]:
+            return [n for n in names if is_excluded(n, excluded)]
+
+        shutil.copytree(source, dest, ignore=ignore)
     else:
         shutil.copy2(source, dest)
     return dest
@@ -305,7 +341,13 @@ class BaseStore:
 
     subdir: str = ""  # 'shares' or 'requests'
 
-    def __init__(self, workspace_root: str, shares_dir: str = "", use_trash: bool = False):
+    def __init__(
+        self,
+        workspace_root: str,
+        shares_dir: str = "",
+        use_trash: bool = False,
+        excluded_names: Sequence[str] | None = None,
+    ):
         self.workspace_root = Path(os.path.expanduser(workspace_root)).resolve()
         self.shares_base = resolve_shares_dir(workspace_root, shares_dir)
         self.root = self.shares_base / self.subdir
@@ -315,6 +357,11 @@ class BaseStore:
         # paths (create, upload, _atomic_write_json, _copy_into) all mkdir
         # with parents=True, and every read path guards on root.exists().
         self.use_trash = use_trash
+        # None means the catalogue was not configured - the store keeps the
+        # default. An empty list is a deliberate 'copy everything'.
+        self.excluded_names = (
+            list(EXCLUDED_NAMES) if excluded_names is None else list(excluded_names)
+        )
 
     def _path_for(self, id_: str) -> Path:
         """Resolve the on-disk content directory for a share/request id.
@@ -507,6 +554,32 @@ class ShareStore(BaseStore):
             result.append(manifest)
         return result
 
+    def _resolve_sources(self, source_paths: list[str]) -> list[Path]:
+        """Validate every source and drop the ones the catalogue excludes.
+
+        Validation runs before anything is copied so a share built from a
+        stale file-browser selection (renamed or deleted since the menu
+        opened) fails before it writes. A dropped item whose own name is
+        excluded is skipped silently; a drop where every item is excluded is
+        refused, because copying nothing while reporting success would read
+        as a lost file.
+        """
+        sources: list[Path] = []
+        excluded: list[str] = []
+        for rel in source_paths:
+            if not _is_safe_relative(rel):
+                raise StorageError(f"Unsafe path: {rel}")
+            source = self.workspace_root / rel
+            if not source.exists():
+                raise NotFoundError(f"Source not found: {rel}")
+            if is_excluded(source.name, self.excluded_names):
+                excluded.append(source.name)
+                continue
+            sources.append(source)
+        if excluded and not sources:
+            raise StorageError(all_excluded_message(excluded))
+        return sources
+
     def create(
         self, name: str, source_paths: list[str], password: str = ""
     ) -> dict[str, Any]:
@@ -519,21 +592,14 @@ class ShareStore(BaseStore):
         # built from a stale file-browser selection (file renamed or deleted
         # since the context menu opened) must not leave an empty storage tree
         # and a manifest-less ghost folder behind when it fails.
-        sources: list[Path] = []
-        for rel in source_paths:
-            if not _is_safe_relative(rel):
-                raise StorageError(f"Unsafe path: {rel}")
-            source = self.workspace_root / rel
-            if not source.exists():
-                raise NotFoundError(f"Source not found: {rel}")
-            sources.append(source)
+        sources = self._resolve_sources(source_paths)
 
         id_ = generate_token()
         share_dir = self._new_path(name, id_)
         share_dir.mkdir(parents=True, exist_ok=True)
         try:
             for source in sources:
-                _copy_into(source, share_dir)
+                _copy_into(source, share_dir, self.excluded_names)
             manifest: dict[str, Any] = {"id": id_, "name": name}
             if password:
                 manifest["password"] = password
@@ -558,13 +624,8 @@ class ShareStore(BaseStore):
         content_dir = self._path_for(id_)
         if not content_dir.exists():
             raise NotFoundError(f"Share content missing: {id_}")
-        for rel in source_paths:
-            if not _is_safe_relative(rel):
-                raise StorageError(f"Unsafe path: {rel}")
-            source = self.workspace_root / rel
-            if not source.exists():
-                raise NotFoundError(f"Source not found: {rel}")
-            _copy_into(source, content_dir)
+        for source in self._resolve_sources(source_paths):
+            _copy_into(source, content_dir, self.excluded_names)
         return self.get(id_)
 
     def remove_items(self, id_: str, item_names: list[str]) -> dict[str, Any]:
@@ -624,6 +685,13 @@ class RequestStore(BaseStore):
             for child in sorted(content_dir.iterdir()):
                 if not child.is_dir():
                     continue
+                # add_upload writes the sidecar before the first file, so a
+                # pool without one is not an uploader's
+                try:
+                    with open(child / UPLOADER_SIDECAR, encoding="utf-8") as f:
+                        display_name = json.load(f).get("name") or child.name
+                except (OSError, ValueError):
+                    continue
                 # the sidecar carries the display label; entries must not list it
                 entries = [
                     e for e in _list_entries(child, self.workspace_root)
@@ -640,14 +708,6 @@ class RequestStore(BaseStore):
                             last_upload_at = mtime
                     except OSError:
                         pass
-                # pre-identity dirs have no sidecar - fall back to the dir
-                # name for both hash and label so legacy uploads stay visible
-                display_name = child.name
-                try:
-                    with open(child / UPLOADER_SIDECAR, encoding="utf-8") as f:
-                        display_name = json.load(f).get("name") or child.name
-                except (OSError, ValueError):
-                    pass
                 uploaders.append({
                     "hash": child.name,
                     "name": display_name,
@@ -827,19 +887,10 @@ class ConnectionStore:
         items = self._load()
         for existing in items:
             if existing.get("key") == key:
-                # Backfill the full link on re-add - older entries persisted
-                # before links were stored reconstructed a base_path-less URL
-                # that JupyterHub bounces to /hub/ (404). Reconnecting repairs.
-                changed = False
-                if link and not existing.get("link"):
-                    existing["link"] = link
-                    changed = True
                 # Re-connecting with a (new) password updates the stored one -
                 # the owner may have changed it since the first connect.
                 if password and existing.get("password") != password:
                     existing["password"] = password
-                    changed = True
-                if changed:
                     self._save(items)
                 return existing
         entry = {

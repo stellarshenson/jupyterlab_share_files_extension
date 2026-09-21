@@ -2,6 +2,32 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [Unreleased]
+
+### Added
+
+- Server option `c.ShareFilesConfig.excluded_names` - the catalogue of names a share never copies, matched with `fnmatch` against one path component - the dropped item's own name in both modes, and at every depth inside a folder only where the lab copies that folder itself (a standalone lab; on a hub the patterns are matched against the dropped item's own name only, and the plain names - no pattern, the first 64 - are sent to the hub, which leaves them out at every depth). The default holds the checkpoint and cache folders (`.ipynb_checkpoints`, `__pycache__`), the macOS artefacts (`__MACOSX`, `.DS_Store`, `._*`) and the trash folders (`.Trash`, `.Trash-*`, `.Trashes`, `.trashed-*`, `$RECYCLE.BIN`); setting the option replaces the whole catalogue and `[]` copies everything. A drop where every item is excluded is refused with a sentence naming them
+
+- Hub mode: a share is edited after it was created, through the hub's `POST shares/<id>/content`. New Share creates an empty share; files and folders dropped on a share row are added; a file or folder inside a share is removed, renamed in place with `F2` or the row menu, and moved by a drag onto a folder row of the same share. The lab's routes are `POST`, `DELETE` and `PUT api/shares/<id>/items`
+- Hub mode: the share row shows a spinner with the percentage copied while the hub stages a share or copies an add, and, after the item count, `add refused` with the hub's reason when it refused the last add - read from the hub's own `last_add` and `progress` row fields
+- Hub mode: the plain names of the excluded-names catalogue are sent to the hub as `exclude`, so the hub leaves them out at every depth below a shared folder
+- Hub mode: an add of a name the share already holds, or of two items with one name, is refused by name before the hub is asked
+
+### Changed
+
+- One wording for saving a file out of the panel: `Save to Current Folder` on an own share entry (was `Copy to Current Folder`), on a connected peer's entry, and on an upload under a request on a hub (was `Fetch to current folder`)
+- Hub mode: the header cloud icon no longer blinks while Cloudflare sharing is on and no share or request asks the hub for a tunnel - it shows the still silhouette inside a thin ring with `Cloudflare sharing on - no tunnel up yet`, and blinks only while the hub brings a tunnel up
+- **Breaking** - hub mode needs a hub that serves content editing and the change stream and reports `last_add` and `progress` on the share row (galaxahub 4.4.151 or later). The timer the panel used against a hub without the stream route, and the `poll` event that announced it, are gone
+- **Breaking** - data written by releases before uploader identity and stored links is no longer read: a folder under a request without its uploader sidecar file is not listed as an uploader, a connection stored without its link answers `Connection has no link - reconnect it` on save and upload, reconnecting no longer writes a link into such a connection (remove it and connect again), and a pasted link without the extension's namespace in its path is refused
+- **Breaking** - hub mode speaks the hub's tunnel API and no longer works with a hub that serves the old `cloud` routes. A record's switch is `PUT <shares|requests>/<id>/tunnel` with `{"tunnel": <boolean>}`, a hub row's state is read from its `tunnel` field, and the lab's own route is `api/<shares|requests>/<id>/tunnel`, taking and answering `tunnel`. The hub's `<id>/cloud` routes answer 404
+- Hub mode: the header cloud icon follows the hub's `tunnel_available` and `tunnel_ready` together with the lab's stored default, so the hub alone owns the state. The 120 s confirmation wait after a switch on is gone, and `tunnel_waiting`, `tunnel_reason` and the reasons `cloud_not_confirmed`, `cloud_not_switched_off` and `cloud_not_switched_on` with it; the hub rings the lab's change stream when its tunnel comes up or drops, so the icon moves between on and pending with no click. `api/info` and `api/tunnel` report `tunnel_available`, `tunnel_ready` and `tunnel_default`
+- The lab's stored hub default moved from `hub_cloud` to `hub_tunnel`; the earlier key is not read, so a lab that had the toggle on switches it on once more
+- The Cloudflare switch lives in the panel header alone: the row menus of a share and a request no longer carry "Hub Network Only" or "Share Through Cloudflare". The header icon still flips every record and sets the default for the next one
+- The header's cloud icon takes the colours the panel's other header icons use - the accent when on, the themed grey when off - instead of a success green no other control carries. "On" and "switching" share that accent, so the glyph separates them: the filled cloud is on, the blinking dashed silhouette is a switch in flight, which is what reads where the blink is suppressed
+- The drop zone reads with one gap on all four sides: its margin and its padding each carry a single length
+- The hub's policy refusal of a Cloudflare switch is read under its current name `tunnel_not_available`
+- A refused New Request stays clickable and answers with the hub's reason, because a greyed menu entry carries its reason in a caption Lumino never renders
+
 ## [1.2.47] - 2026-09-18
 
 Disk-bound transfers with a configurable download limit, the r10 to r12 adversarial review arcs, and hardening of the Cloudflare switch and configuration write.

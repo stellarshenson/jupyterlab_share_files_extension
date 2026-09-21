@@ -1,5 +1,7 @@
 import { expect, test } from '@jupyterlab/galata';
 
+import { dragOnto } from '../helpers/drag';
+
 /**
  * Hub mode end to end: a JupyterLab spawned with galaxahub's contract
  * (`SHARE_FILES_PUBLIC_ZONE=hub`, the hub API address, the lab token) against
@@ -130,6 +132,13 @@ test('api/info reports hub mode and the hub capabilities', async ({ page }) => {
   expect(data.hub.available).toBe(true);
   expect(data.hub.allow_share).toBe(true);
   expect(data.hub.serving).toBe(true);
+  // the hub's own tunnel verdicts ride on api/info, and the fields the
+  // confirmation wait reported are gone with it
+  expect(data.tunnel_available).toBe(true);
+  expect(data.tunnel_ready).toBe(false);
+  expect(data.tunnel_default).toBe(false);
+  expect(data.tunnel_waiting).toBeUndefined();
+  expect(data.tunnel_reason).toBeUndefined();
 });
 
 test('recipient, static and peer routes are not mounted', async ({ page }) => {
@@ -193,6 +202,15 @@ test('share rows show staging, ready and refused states from the hub', async ({
   await expect(
     item('stay-staging-one').locator('.jp-ShareFilesPanel-itemMeta')
   ).toContainText('staging');
+  // ACC-HUBM-169: the staging row carries the indicator inside the width the
+  // row already has, and the ready and refused rows carry none
+  const spinner = '.jp-ShareFilesPanel-itemMeta .jp-ShareFilesPanel-spinner';
+  await expect(item('stay-staging-one').locator(spinner)).toBeVisible();
+  await expect(item('ready-one').locator(spinner)).toHaveCount(0);
+  await expect(item('refuse-one').locator(spinner)).toHaveCount(0);
+  expect(
+    (await item('stay-staging-one').boundingBox())!.height
+  ).toBeLessThanOrEqual((await item('ready-one').boundingBox())!.height);
   // the refused row says why in one line; the hover adds the slug
   const refusedMeta = item('refuse-one').locator(
     '.jp-ShareFilesPanel-itemMeta'
@@ -204,40 +222,263 @@ test('share rows show staging, ready and refused states from the hub', async ({
     `${overCap}\nrefused: over_cap`
   );
   expect((await refusedMeta.boundingBox())!.height).toBeLessThanOrEqual(24);
-  // the ready row lists the file the hub reports, with nothing to remove
+  // the ready row lists the file the hub reports
   await item('ready-one').locator('.jp-ShareFilesPanel-itemHeader').click();
   await expect(
     item('ready-one').locator('.jp-ShareFilesPanel-entryName')
   ).toHaveText('report.csv');
-  await expect(
-    item('ready-one').locator('.jp-ShareFilesPanel-entryRemove')
-  ).toHaveCount(0);
 });
 
-test('create is refused with the hub reason and the New menu greys it out', async ({
+test('create is refused with the hub reason, and the refusal is a sentence the owner reads', async ({
   page,
   request
 }) => {
   await request.post(`${HUB}/_control/capabilities`, {
-    data: { allow_share: false, reason: 'share_not_granted' }
+    data: { allow_request: false, reason: 'request_not_granted' }
   });
   await openPanel(page);
   await refreshPanel(page);
-  const refused = await api(page, 'POST', `${API}/shares`, {
-    name: 'x',
-    paths: ['a.txt']
-  });
+  const refused = await api(page, 'POST', `${API}/requests`, { name: 'x' });
   expect(refused.status).toBe(403);
-  expect(refused.data.reason).toBe('share_not_granted');
+  expect(refused.data.reason).toBe('request_not_granted');
+  // DEF-PANEL-86: New Request stays clickable and answers in words. A greyed
+  // entry carried its reason in a caption Lumino never renders, so the owner
+  // met a dead entry that said nothing.
   await page.locator(`${PANEL} button[title="New share or request"]`).click();
   const menu = page.locator('.lm-Menu');
+  const request_ = menu.locator('.lm-Menu-item', { hasText: 'New Request' });
+  await expect(request_).not.toHaveClass(/lm-mod-disabled/);
+  await request_.click();
+  await expect(page.locator('.jp-toast-message')).toContainText(
+    'does not allow requesting files'
+  );
+});
+
+test('New Share creates an empty share and a dropped file fills it', async ({
+  page
+}) => {
+  // ACC-HUBM-163, ACC-DRAG-156: the hub creates a share with no files and
+  // takes files afterwards. The hub's row says nothing while an add runs,
+  // so the panel's row says it, and the file arrives with no click.
+  await page.contents.uploadContent('dropped', 'text', 'hub-drag.txt');
+  await openPanel(page);
+  await page.locator(`${PANEL} button[title="New share or request"]`).click();
+  await page.locator('.lm-Menu-item', { hasText: 'New Share' }).click();
+  const dialog = page.locator('.jp-Dialog');
+  await dialog.locator('input[placeholder="Name"]').fill('filled-later');
+  await dialog.locator('button.jp-mod-accept').click();
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'filled-later'
+  });
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '0 items'
+  );
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await expect(row.locator('.jp-ShareFilesPanel-empty')).toHaveText(
+    'Empty - drag files onto this share to add'
+  );
+
+  await dragOnto(page, 'hub-drag.txt', row);
+
+  await expect(row.locator('.jp-ShareFilesPanel-entryName')).toHaveText(
+    'hub-drag.txt'
+  );
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '1 item'
+  );
+});
+
+test('a selection of files and a folder is added to a hub share in one drop', async ({
+  page
+}) => {
+  // ACC-EDIT-167: one drop is one add call, and every item in it lands
+  await page.contents.uploadContent('a', 'text', 'multi-a.txt');
+  await page.contents.uploadContent('b', 'text', 'multi-b.txt');
+  await page.contents.uploadContent('c', 'text', 'multidir/in.txt');
+  await openPanel(page);
+  await api(page, 'POST', `${API}/shares`, { name: 'takes-many', paths: [] });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'takes-many'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+
+  await dragOnto(page, 'multi-a.txt', row, ['multi-b.txt', 'multidir']);
+
+  await expect(row.locator('.jp-ShareFilesPanel-entryName')).toHaveText([
+    'multi-a.txt',
+    'multi-b.txt',
+    'multidir/'
+  ]);
+});
+
+test('an add the hub refuses shows the hub reason on the row', async ({
+  page,
+  request
+}) => {
+  await request.post(`${HUB}/_control/add`, { data: { seconds: 3 } });
+  // the hub records a refused add on the row as last_add, with its reason
+  await page.contents.uploadContent('x', 'text', 'refuse-add.txt');
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'drops-adds',
+    paths: []
+  });
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'drops-adds'
+  });
+  await refreshPanel(page);
+  await api(page, 'POST', `${API}/shares/${made.data.id}/items`, {
+    paths: ['refuse-add.txt']
+  });
+  // while the hub copies, the row carries the percentage the hub reports
+  await refreshPanel(page);
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    /adding 50%/
+  );
+  // the hub rings on a refused add, so the row says it with no click
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '0 items - add refused'
+  );
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
   await expect(
-    menu.locator('.lm-Menu-item', { hasText: 'New Share' })
-  ).toHaveClass(/lm-mod-disabled/);
-  await expect(
-    menu.locator('.lm-Menu-item', { hasText: 'New Request' })
-  ).not.toHaveClass(/lm-mod-disabled/);
+    row.locator('.jp-ShareFilesPanel-empty', {
+      hasText: 'refused the last add'
+    })
+  ).toContainText('larger than your group allows');
+});
+
+test('a file copied in the file browser is pasted into a hub share by keyboard', async ({
+  page
+}) => {
+  // the keyboard's route to adding: the drop has none
+  await page.contents.uploadContent('pasted', 'text', 'hub-paste.txt');
+  await openPanel(page);
+  await api(page, 'POST', `${API}/shares`, { name: 'pasted-into', paths: [] });
+  await refreshPanel(page);
+  await page.filebrowser.openHomeDirectory();
+  await page.filebrowser.revealFileInBrowser('hub-paste.txt');
+  await page
+    .getByRole('region', { name: 'File Browser Section' })
+    .getByRole('listitem', { name: /^Name: hub-paste.txt/ })
+    .click();
+  // a cut: the hub copies after its answer, so the original must stay
+  await page.keyboard.press('ControlOrMeta+x');
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'pasted-into'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').focus();
+  await page.keyboard.press('ContextMenu');
+  await page.locator('.lm-Menu-item', { hasText: 'Paste' }).click();
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '1 item'
+  );
+  // DEF-PANEL-97: the panel says it was a copy, and nothing was deleted
+  await expect
+    .poll(() => notes(page, 'info', 'pasted as a copy'))
+    .toBeGreaterThan(0);
+  expect(await page.contents.fileExists('hub-paste.txt')).toBe(true);
+});
+
+test('a file in a hub share is renamed with F2, moved by a drag and removed', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-165, 166, 168
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'edited',
+    paths: ['a.txt', 'b.txt', 'sub']
+  });
+  const id = made.data.id;
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'edited'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const entry = (name: string) =>
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: name });
+  const hubNames = async () => {
+    const items = (await (await request.get(`${HUB}/_control/items`)).json())
+      .items;
+    return items
+      .find((i: any) => i.id === id)
+      .files.map((f: any) => f.name)
+      .sort();
+  };
+
+  // F2 renames in place; Escape leaves the old name
+  await entry('a.txt').focus();
+  await page.keyboard.press('F2');
+  const field = row.locator('.jp-ShareFilesPanel-entryRename');
+  await field.fill('never.txt');
   await page.keyboard.press('Escape');
+  await expect(entry('a.txt')).toBeFocused();
+  // the move syntax is on screen while the field is open
+  await page.keyboard.press('F2');
+  await expect(row.locator('#jp-ShareFilesPanel-renameHint')).toContainText(
+    'folder/name moves it'
+  );
+  await page.keyboard.press('Escape');
+  await expect(row.locator('#jp-ShareFilesPanel-renameHint')).toHaveCount(0);
+  // DEF-PANEL-96: a click that closes an unchanged field still lands
+  await entry('a.txt').focus();
+  await page.keyboard.press('F2');
+  await expect(field).toBeVisible();
+  const before = await refreshes(request);
+  await page.locator(`${PANEL} button[title="Toggle filter"]`).click();
+  await expect(field).toHaveCount(0);
+  await expect(
+    page.locator(`${PANEL} .jp-ShareFilesPanel-filterInput`)
+  ).toBeVisible();
+  // a click into another field closes the rename field and keeps the focus
+  await entry('a.txt').focus();
+  await page.keyboard.press('F2');
+  await expect(field).toBeVisible();
+  await page.locator(`${PANEL} .jp-ShareFilesPanel-filterInput`).click();
+  await expect(field).toHaveCount(0);
+  await expect(
+    page.locator(`${PANEL} .jp-ShareFilesPanel-filterInput`)
+  ).toBeFocused();
+  await page.locator(`${PANEL} button[title="Toggle filter"]`).click();
+  expect(await refreshes(request)).toBeGreaterThan(before);
+  // a sibling's name is refused in words and the row keeps its name
+  await entry('a.txt').focus();
+  await page.keyboard.press('F2');
+  await field.fill('b.txt');
+  await page.keyboard.press('Enter');
+  await expect
+    .poll(() => notes(page, 'warning', 'already holds an entry'))
+    .toBeGreaterThan(0);
+  await expect(entry('a.txt')).toBeVisible();
+  // Enter commits, and the focus follows the renamed row
+  await entry('a.txt').focus();
+  await page.keyboard.press('F2');
+  await field.fill('renamed.txt');
+  await page.keyboard.press('Enter');
+  await expect(entry('renamed.txt')).toBeFocused();
+  expect(await hubNames()).toEqual(['b.txt', 'renamed.txt', 'sub/inside.txt']);
+
+  // a drag onto a folder row of the same share moves the file into it
+  const from = (await entry('b.txt').boundingBox())!;
+  const to = (await entry('sub/').boundingBox())!;
+  await page.mouse.move(from.x + 40, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 55, from.y + from.height / 2);
+  await page.mouse.move(to.x + 40, to.y + to.height / 2, { steps: 10 });
+  await expect(entry('sub/')).toHaveClass(/jp-mod-dropTarget/);
+  await page.mouse.up();
+  await expect(entry('b.txt')).toHaveCount(0);
+  expect(await hubNames()).toContain('sub/b.txt');
+
+  // remove asks once and names the file
+  await entry('renamed.txt').focus();
+  await page.keyboard.press('Delete');
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText('Remove "renamed.txt" from the share?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(entry('renamed.txt')).toHaveCount(0);
+  expect(await hubNames()).not.toContain('renamed.txt');
 });
 
 test('a recipient upload is fetched into the workspace through the hub', async ({
@@ -265,7 +506,7 @@ test('a recipient upload is fetched into the workspace through the hub', async (
   await expect(row.locator('.jp-ShareFilesPanel-entryName')).toHaveText(
     'report.csv'
   );
-  await row.locator('button[title="Fetch to current folder"]').click();
+  await row.locator('button[title="Save to Current Folder"]').click();
   // The proof is the hub's side: the fetch arrived with the lab token and a
   // fresh destination under the file browser's folder. (The success toast
   // is not asserted - a notification extension may render it differently.)
@@ -294,8 +535,8 @@ test('the link dialog opens the link itself, whatever the hub serving verdict', 
     name: 'Dialog inbox'
   });
   // only a tunnel link is probed; the mock tunnel registers at once
-  await api(page, 'POST', `${API}/requests/${created.data.id}/cloud`, {
-    cloud: true
+  await api(page, 'POST', `${API}/requests/${created.data.id}/tunnel`, {
+    tunnel: true
   });
   const tunnel = `http://localhost:${process.env.MOCK_HUB_PORT || '8765'}`;
   await refreshPanel(page);
@@ -329,7 +570,7 @@ test('the link dialog opens the link itself, whatever the hub serving verdict', 
   await dialog.locator('button', { hasText: 'Close' }).click();
 });
 
-test('the cloud toggle flips every record and the next one, and a row can be switched on its own', async ({
+test('the cloud toggle flips every record and the next one, and no row carries a switch of its own', async ({
   page,
   request
 }) => {
@@ -339,7 +580,7 @@ test('the cloud toggle flips every record and the next one, and a row can be swi
     name: 'first-one',
     paths: ['a.txt']
   });
-  expect(first.data.cloud).toBe(false);
+  expect(first.data.tunnel).toBe(false);
   expect(first.data.link).toMatch(
     new RegExp(`^http://localhost:\\d+/s/${first.data.id}$`)
   );
@@ -350,12 +591,12 @@ test('the cloud toggle flips every record and the next one, and a row can be swi
   await cloud.click();
   await expect(cloud).toHaveClass(/jp-mod-active/);
   const listed = await api(page, 'GET', `${API}/shares`);
-  expect(listed.data.shares[0].cloud).toBe(true);
+  expect(listed.data.shares[0].tunnel).toBe(true);
   expect(listed.data.shares[0].link).toBe(`${TUNNEL}/s/${first.data.id}`);
   const second = await api(page, 'POST', `${API}/requests`, {
     name: 'second-one'
   });
-  expect(second.data.cloud).toBe(true);
+  expect(second.data.tunnel).toBe(true);
   expect(second.data.link).toBe(`${TUNNEL}/s/${second.data.id}`);
   // every record is on, and no row carries a cloud mark - the header icon
   // alone shows Cloudflare on
@@ -367,38 +608,42 @@ test('the cloud toggle flips every record and the next one, and a row can be swi
     page.locator(`${PANEL} .jp-ShareFilesPanel-itemCloud`)
   ).toHaveCount(0);
   await expect(cloud).toHaveClass(/jp-mod-active/);
-  // one row back to the hub network through its context menu
+  // ACC-CLOUD-159: the row menu carries no Cloudflare entry - the header
+  // icon is the only switch
   const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
     hasText: 'second-one'
   });
   await row
     .locator('.jp-ShareFilesPanel-itemHeader')
     .click({ button: 'right' });
-  await page
-    .locator('.lm-Menu .lm-Menu-item', { hasText: 'Hub Network Only' })
-    .click();
-  await expect
-    .poll(
-      async () => (await api(page, 'GET', `${API}/requests`)).data.requests[0]
-    )
-    .toMatchObject({ cloud: false });
-  const requests = await api(page, 'GET', `${API}/requests`);
-  expect(requests.data.requests[0].cloud).toBe(false);
-  expect(requests.data.requests[0].link).toMatch(
-    /^http:\/\/localhost:\d+\/s\//
+  const menu = page.locator('.lm-Menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.locator('.lm-Menu-item', { hasText: /Cloud/ })).toHaveCount(
+    0
   );
-  // its link dialog says so; the switched-on share's does not
-  await row.locator('button[title="Copy link"]').click();
-  const dialog = page.locator('.jp-Dialog');
-  await expect(dialog).toContainText("Link works on the hub's network only");
-  // the lab cannot open the hub's own address, so it is not probed
-  await expect(dialog.locator('[data-reach]')).toHaveCount(0);
-  await dialog.locator('button', { hasText: 'Close' }).click();
-  // the header toggle off takes every record back
+  await expect(
+    menu.locator('.lm-Menu-item', { hasText: 'Hub Network Only' })
+  ).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  // the header toggle off takes every record back to the hub network
   await cloud.click();
   await expect(cloud).not.toHaveClass(/jp-mod-active/);
   const after = await api(page, 'GET', `${API}/shares`);
-  expect(after.data.shares[0].cloud).toBe(false);
+  expect(after.data.shares[0].tunnel).toBe(false);
+  const requests = await api(page, 'GET', `${API}/requests`);
+  expect(requests.data.requests[0].tunnel).toBe(false);
+  expect(requests.data.requests[0].link).toMatch(
+    /^http:\/\/localhost:\d+\/s\//
+  );
+  // a link on the hub's own address says so, and is not probed - the lab
+  // cannot open it
+  await refreshPanel(page);
+  await row.locator('button[title="Copy link"]').click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText("Link works on the hub's network only");
+  await expect(dialog.locator('[data-reach]')).toHaveCount(0);
+  await dialog.locator('button', { hasText: 'Close' }).click();
 });
 
 test('a group policy with Cloudflare off refuses the switch and the toggle stays off', async ({
@@ -423,13 +668,13 @@ test('a group policy with Cloudflare off refuses the switch and the toggle stays
   const refused = await api(
     page,
     'POST',
-    `${API}/shares/${(await api(page, 'GET', `${API}/shares`)).data.shares[0].id}/cloud`,
+    `${API}/shares/${(await api(page, 'GET', `${API}/shares`)).data.shares[0].id}/tunnel`,
     {
-      cloud: true
+      tunnel: true
     }
   );
   expect(refused.status).toBe(403);
-  expect(refused.data.reason).toBe('cloud_not_configured');
+  expect(refused.data.reason).toBe('tunnel_not_available');
 });
 
 test('the panel refreshes on the hub change stream, not on a timer', async ({
@@ -465,30 +710,6 @@ test('the panel refreshes on the hub change stream, not on a timer', async ({
   );
   await page.waitForTimeout(1000);
   expect(await refreshes(request)).toBe(before + 1);
-});
-
-test('an older hub without the stream route puts the panel back on its timer', async ({
-  page,
-  request
-}) => {
-  await request.post(`${HUB}/_control/policy`, {
-    data: { stream_supported: false }
-  });
-  // the page loaded (and its stream opened) before the policy flip - load
-  // it again so the panel meets the older hub from the start
-  await page.goto();
-  await openPanel(page);
-  await setPollInterval(page, 2);
-  const before = await refreshes(request);
-  await expect
-    .poll(async () => await refreshes(request), { timeout: 10000 })
-    .toBeGreaterThan(before + 1);
-  await expect
-    .poll(
-      async () =>
-        (await (await request.get(`${HUB}/_control/streams`)).json()).open
-    )
-    .toBe(0);
 });
 
 test('a group policy that requires a password makes the create dialog ask for one', async ({
@@ -565,11 +786,15 @@ test('a group policy that requires a password keeps the change dialog from remov
   expect(listed.data.requests[0].has_password).toBe(true);
 });
 
-test('switching Cloudflare on pulses the icon until the hub confirms, then every open panel shows the tunnel link', async ({
+test('the hub bringing its tunnel up moves the icon from pending to on, with no click', async ({
   page,
   request
 }) => {
-  await request.post(`${HUB}/_control/tunnel`, { data: { delay: 3 } });
+  // ACC-HUBM-161: the hub rings its change stream when its tunnel verdict
+  // flips, and the panel re-reads api/info on the ring. The mock connector
+  // comes up five seconds after the first record is switched on, which is
+  // long enough to read the pending look before it moves.
+  await request.post(`${HUB}/_control/tunnel`, { data: { delay: 5 } });
   const created = await api(page, 'POST', `${API}/shares`, {
     name: 'pulse-one',
     paths: ['a.txt']
@@ -595,17 +820,18 @@ test('switching Cloudflare on pulses the icon until the hub confirms, then every
   const cloud = page.locator(CLOUD);
   const otherCloud = other.locator(CLOUD);
   await cloud.click();
-  // no on state before the hub confirms; the other page reads the wait
-  // from the lab
+  // switched on while the hub's tunnel is still coming up: the pending look,
+  // and an aria state that says on but not yet reaching Cloudflare
   await expect(cloud).toHaveClass(/jp-mod-connecting/);
+  await expect(cloud).toHaveAttribute('aria-pressed', 'mixed');
   await expect(cloud).not.toHaveClass(/jp-mod-active/);
-  await expect(otherCloud).toHaveClass(/jp-mod-connecting/);
-  // the tunnel registers without a ring; the lab's next check confirms it
-  // and rings both panels
-  await expect(cloud).toHaveClass(/jp-mod-active/, { timeout: 15000 });
+  // the tunnel comes up: nobody clicks and nobody presses Refresh, and both
+  // panels move to on
+  await expect(cloud).toHaveClass(/jp-mod-active/, { timeout: 20000 });
+  await expect(cloud).toHaveAttribute('aria-pressed', 'true');
   await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
   await expect(otherCloud).toHaveClass(/jp-mod-active/);
-  // neither page pressed Refresh
+  // and both hand out the tunnel link
   for (const p of [page, other]) {
     await item(p).locator('button[title="Copy link"]').click();
     const dialog = p.locator('.jp-Dialog');
@@ -617,7 +843,83 @@ test('switching Cloudflare on pulses the icon until the hub confirms, then every
   await other.close();
 });
 
-test('a switch-on the hub does not confirm goes back off with a warning', async ({
+test('the hub dropping its tunnel moves the icon from on to pending, with no click', async ({
+  page,
+  request
+}) => {
+  // the other half of ACC-HUBM-161: the record stays switched on, the hub's
+  // connector goes away, and the icon says so before anyone follows a link
+  const created = await api(page, 'POST', `${API}/shares`, {
+    name: 'drop-one',
+    paths: ['a.txt']
+  });
+  await openPanel(page);
+  await refreshPanel(page);
+  const cloud = page.locator(CLOUD);
+  await cloud.click();
+  await expect(cloud).toHaveClass(/jp-mod-active/);
+  await expect(cloud).toHaveAttribute('aria-pressed', 'true');
+  const on = await api(page, 'GET', `${API}/shares`);
+  expect(on.data.shares[0].link).toBe(`${TUNNEL}/s/${created.data.id}`);
+
+  await request.post(`${HUB}/_control/tunnel`, { data: { ready: false } });
+  await expect(cloud).toHaveClass(/jp-mod-connecting/);
+  await expect(cloud).toHaveAttribute('aria-pressed', 'mixed');
+  await expect(cloud).not.toHaveClass(/jp-mod-active/);
+  // the record is still switched on at the hub - only the hub's tunnel
+  // moved - and its link fell back to the hub's own address
+  const dropped = await api(page, 'GET', `${API}/shares`);
+  expect(dropped.data.shares[0].tunnel).toBe(true);
+  expect(dropped.data.shares[0].link).toBe(
+    `${new URL(page.url()).origin}/s/${created.data.id}`
+  );
+
+  // the tunnel returns and the icon reads on again, still with no click
+  await request.post(`${HUB}/_control/tunnel`, { data: { ready: true } });
+  await expect(cloud).toHaveClass(/jp-mod-active/);
+  await expect(cloud).toHaveAttribute('aria-pressed', 'true');
+  await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
+});
+
+test('the icon does not wait for a tunnel no record asked for', async ({
+  page
+}) => {
+  // DEF-PANEL-89: the hub starts its tunnel for a record that wants one, so
+  // on an empty panel nothing is on the way and nothing blinks
+  await openPanel(page);
+  await refreshPanel(page);
+  const cloud = page.locator(CLOUD);
+  await expect(cloud).not.toHaveClass(/jp-mod-armed/);
+  await cloud.click();
+  await expect(cloud).toHaveClass(/jp-mod-armed/);
+  await expect(cloud).toHaveAttribute('aria-pressed', 'true');
+  await expect(cloud).toHaveAttribute('title', /no tunnel up yet/);
+  await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
+  await expect(cloud).not.toHaveClass(/jp-mod-active/);
+});
+
+test('a group policy with no tunnel at all does not show the icon', async ({
+  page,
+  request
+}) => {
+  await openPanel(page);
+  await refreshPanel(page);
+  const cloud = page.locator(CLOUD);
+  await expect(cloud).toBeVisible();
+  await request.post(`${HUB}/_control/capabilities`, {
+    data: { tunnel_available: false }
+  });
+  await refreshPanel(page);
+  await expect(cloud).toBeHidden();
+  // the policy grants a tunnel again and the icon comes back
+  await request.post(`${HUB}/_control/capabilities`, {
+    data: { tunnel_available: true }
+  });
+  await refreshPanel(page);
+  await expect(cloud).toBeVisible();
+});
+
+test('a hub whose tunnel never comes up leaves the icon pending until a click switches it off', async ({
   page,
   request
 }) => {
@@ -631,33 +933,63 @@ test('a switch-on the hub does not confirm goes back off with a warning', async 
   const cloud = page.locator(CLOUD);
   await cloud.click();
   await expect(cloud).toHaveClass(/jp-mod-connecting/);
-  // SHARE_FILES_CLOUD_CONFIRM_SECONDS bounds the wait to 10 s in this suite
-  await expect(cloud).not.toHaveClass(/jp-mod-connecting/, { timeout: 20000 });
-  await expect(cloud).not.toHaveClass(/jp-mod-active/);
-  await expect
-    .poll(() =>
-      notes(page, 'warning', 'did not bring up its Cloudflare address')
-    )
-    .toBe(1);
+  await expect(cloud).toHaveAttribute('aria-pressed', 'mixed');
+  // nothing takes the switch back on its own, and nothing is said in a toast
+  expect(await notes(page, 'warning', '')).toBe(0);
+  const pending = await api(page, 'GET', `${API}/shares`);
+  expect(pending.data.shares[0].tunnel).toBe(true);
+  // the icon reads pressed, so a click switches off
+  await cloud.click();
+  await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
+  await expect(cloud).toHaveAttribute('aria-pressed', 'false');
+  const off = await api(page, 'GET', `${API}/shares`);
+  expect(off.data.shares[0].tunnel).toBe(false);
   const state = await api(page, 'GET', `${API}/tunnel`);
-  expect(state.data.tunnel_active).toBe(false);
-  expect(state.data.tunnel_waiting).toBe(false);
-  expect(state.data.tunnel_reason).toBe('cloud_not_confirmed');
-  const shares = await api(page, 'GET', `${API}/shares`);
-  expect(shares.data.shares[0].cloud).toBe(false);
-  // the reason stays in the icon's tooltip after the toast closes
-  await expect(cloud).toHaveAttribute(
-    'title',
-    'Cloudflare not confirmed - click to switch on\nHub did not bring up its Cloudflare address'
-  );
+  expect(state.data.tunnel_default).toBe(false);
 });
 
-test('a switch back off the hub answers with an error leaves the header on, as the records stayed on', async ({
+test('the switch rides the hub tunnel route, and the route it replaced is gone', async ({
   page,
   request
 }) => {
-  await request.post(`${HUB}/_control/tunnel`, { data: { registers: false } });
-  await request.post(`${HUB}/_control/cloudoff`, { data: { status: 500 } });
+  const created = await api(page, 'POST', `${API}/shares`, {
+    name: 'wire-one',
+    paths: ['a.txt']
+  });
+  await openPanel(page);
+  await refreshPanel(page);
+  const cloud = page.locator(CLOUD);
+  await cloud.click();
+  await expect(cloud).toHaveClass(/jp-mod-active/);
+  const calls = (await (await request.get(`${HUB}/_control/calls`)).json())
+    .calls;
+  const switches = calls.filter(
+    (c: any) => c.method === 'PUT' && /\/(tunnel|cloud)$/.test(c.path)
+  );
+  expect(switches.map((c: any) => c.path)).toEqual([
+    `/hub/api/fileshare/shares/${created.data.id}/tunnel`
+  ]);
+  expect(JSON.parse(switches[0].body)).toEqual({ tunnel: true });
+  // the hub the lab was written against: the old route is not mounted, and
+  // the new one takes a boolean
+  const headers = { Authorization: 'token test-token' };
+  const old = await request.put(
+    `${HUB}/hub/api/fileshare/shares/${created.data.id}/cloud`,
+    { headers, data: { cloud: true } }
+  );
+  expect(old.status()).toBe(404);
+  const bad = await request.put(
+    `${HUB}/hub/api/fileshare/shares/${created.data.id}/tunnel`,
+    { headers, data: { tunnel: 'yes' } }
+  );
+  expect(bad.status()).toBe(400);
+  expect((await bad.json()).message).toBe('tunnel must be a boolean');
+});
+
+test('a switch off the hub answers with an error leaves the header on, as the records stayed on', async ({
+  page,
+  request
+}) => {
   await api(page, 'POST', `${API}/shares`, {
     name: 'stuck-one',
     paths: ['a.txt']
@@ -666,107 +998,24 @@ test('a switch back off the hub answers with an error leaves the header on, as t
   await refreshPanel(page);
   const cloud = page.locator(CLOUD);
   await cloud.click();
-  await expect(cloud).toHaveClass(/jp-mod-connecting/);
-  // SHARE_FILES_CLOUD_CONFIRM_SECONDS bounds the wait to 10 s in this suite
-  await expect(cloud).not.toHaveClass(/jp-mod-connecting/, { timeout: 20000 });
+  await expect(cloud).toHaveClass(/jp-mod-active/);
+  await request.post(`${HUB}/_control/cloudoff`, { data: { status: 500 } });
+  await cloud.click();
+  await expect
+    .poll(() => notes(page, 'error', 'Could not switch Cloudflare sharing'))
+    .toBe(1);
   // the record and the default stayed on at the hub, so the header reads on:
   // it never claims off while the hub keeps the records switched on
   await expect(cloud).toHaveClass(/jp-mod-active/);
   await expect(cloud).toHaveAttribute('aria-pressed', 'true');
   await expect(cloud).toHaveAttribute(
     'title',
-    'Cloudflare sharing on - click to switch off\nThe hub did not switch Cloudflare off'
+    'Cloudflare sharing on\nClick to switch it off'
   );
-  await expect
-    .poll(() =>
-      notes(
-        page,
-        'warning',
-        'The hub did not switch Cloudflare off - those links may still be on Cloudflare.'
-      )
-    )
-    .toBe(1);
-  expect(await notes(page, 'warning', 'The hub could not be reached')).toBe(0);
   const state = await api(page, 'GET', `${API}/tunnel`);
-  expect(state.data.tunnel_active).toBe(true);
-  expect(state.data.tunnel_reason).toBe('cloud_not_switched_off');
+  expect(state.data.tunnel_default).toBe(true);
   const shares = await api(page, 'GET', `${API}/shares`);
-  expect(shares.data.shares[0].cloud).toBe(true);
-});
-
-test('during the wait the cloud icon reads pressed and a click ends the wait and switches off', async ({
-  page,
-  request
-}) => {
-  await request.post(`${HUB}/_control/tunnel`, { data: { registers: false } });
-  const share = await api(page, 'POST', `${API}/shares`, {
-    name: 'waiting-one',
-    paths: ['a.txt']
-  });
-  await api(page, 'POST', `${API}/requests`, { name: 'other-one' });
-  await openPanel(page);
-  await refreshPanel(page);
-  const cloud = page.locator(CLOUD);
-  // one row switched on while the header default is off
-  await api(page, 'POST', `${API}/shares/${share.data.id}/cloud`, {
-    cloud: true
-  });
-  await refreshPanel(page);
-  await expect(cloud).toHaveClass(/jp-mod-connecting/);
-  await expect(cloud).toHaveAttribute('aria-pressed', 'mixed');
-  await expect(cloud).toHaveAttribute(
-    'title',
-    'Switching Cloudflare on - waiting for the hub\nClick to end the wait and switch it off'
-  );
-  await cloud.click();
-  await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
-  await expect(cloud).not.toHaveClass(/jp-mod-active/);
-  await expect(cloud).toHaveAttribute('aria-pressed', 'false');
-  const state = await api(page, 'GET', `${API}/tunnel`);
-  expect(state.data.tunnel_waiting).toBe(false);
-  expect(state.data.tunnel_active).toBe(false);
-  const shares = await api(page, 'GET', `${API}/shares`);
-  const requests = await api(page, 'GET', `${API}/requests`);
-  expect(shares.data.shares[0].cloud).toBe(false);
-  expect(requests.data.requests[0].cloud).toBe(false);
-});
-
-test('during the wait the link dialog says a switched-on link moves to the Cloudflare hostname', async ({
-  page,
-  request
-}) => {
-  await request.post(`${HUB}/_control/tunnel`, { data: { registers: false } });
-  const share = await api(page, 'POST', `${API}/shares`, {
-    name: 'moving-one',
-    paths: ['a.txt']
-  });
-  await api(page, 'POST', `${API}/requests`, { name: 'staying-one' });
-  await openPanel(page);
-  await refreshPanel(page);
-  await api(page, 'POST', `${API}/shares/${share.data.id}/cloud`, {
-    cloud: true
-  });
-  await refreshPanel(page);
-  await expect(page.locator(CLOUD)).toHaveClass(/jp-mod-connecting/);
-  const dialog = page.locator('.jp-Dialog');
-  const open = async (name: string) => {
-    await page
-      .locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: name })
-      .locator('button[title="Copy link"]')
-      .click();
-    await expect(dialog).toBeVisible();
-  };
-  await open('moving-one');
-  await expect(dialog).toContainText(
-    "Works on the hub's network only - moves to the Cloudflare hostname once the hub confirms"
-  );
-  await dialog.locator('button', { hasText: 'Close' }).click();
-  await expect(dialog).toBeHidden();
-  // a record that is off does not move
-  await open('staying-one');
-  await expect(dialog).toContainText("Link works on the hub's network only");
-  await dialog.locator('button', { hasText: 'Close' }).click();
-  await api(page, 'POST', `${API}/tunnel`, { active: false });
+  expect(shares.data.shares[0].tunnel).toBe(true);
 });
 
 test('switching Cloudflare off shows the busy icon while the lab switches the records', async ({
@@ -813,15 +1062,8 @@ test('a policy refusal on a Cloudflare switch is a warning', async ({
   const refusal = 'Your group policy has Cloudflare turned off';
   await page.locator(CLOUD).click();
   await expect.poll(() => notes(page, 'warning', refusal)).toBe(1);
-  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
-    hasText: 'policy-one'
-  });
-  await row
-    .locator('.jp-ShareFilesPanel-itemHeader')
-    .click({ button: 'right' });
-  await page
-    .locator('.lm-Menu .lm-Menu-item', { hasText: 'Share Through Cloudflare' })
-    .click();
+  // a second click warns again, and nothing is raised as an error
+  await page.locator(CLOUD).click();
   await expect.poll(() => notes(page, 'warning', refusal)).toBe(2);
   expect(await notes(page, 'error', '')).toBe(0);
 });
@@ -843,19 +1085,17 @@ test('every cloud icon tooltip is two lines at most', async ({
   await expect(cloud).not.toHaveClass(/jp-mod-active/);
   await read(); // off
   await cloud.click();
-  await expect(cloud).toHaveClass(/jp-mod-connecting/);
-  await read(); // waiting for the hub
-  await cloud.click(); // off again, ending the wait
-  await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
-  await request.post(`${HUB}/_control/tunnel`, { data: { registers: true } });
-  await cloud.click();
+  await expect(cloud).toHaveAttribute('aria-pressed', 'mixed');
+  await read(); // on, the hub's tunnel still coming up
+  await request.post(`${HUB}/_control/tunnel`, { data: { ready: true } });
   await expect(cloud).toHaveClass(/jp-mod-active/);
   await read(); // on
   await hubOutage(page);
   await refreshPanel(page);
   await expect(cloud).toHaveClass(/jp-mod-unreachable/);
   await read(); // hub unreachable
-  expect(titles).toHaveLength(4);
+  // each state says something of its own, in two lines at most
+  expect(new Set(titles).size).toBe(4);
   for (const title of titles) {
     expect(title.split('\n').length, title).toBeLessThanOrEqual(2);
   }
@@ -894,6 +1134,9 @@ test('the keyboard switches the cloud icon and opens a row context menu', async 
   page,
   request
 }) => {
+  // the hub's tunnel is up, so the switched-on icon reads on rather than
+  // pending - what is under test here is the keyboard, not the verdict
+  await request.post(`${HUB}/_control/tunnel`, { data: { ready: true } });
   await openPanel(page);
   await refreshPanel(page);
   const cloud = page.locator(CLOUD);
@@ -932,35 +1175,29 @@ test('the keyboard switches the cloud icon and opens a row context menu', async 
     '1 upload'
   );
   await expect(header).toBeFocused();
-  // Shift+F10 opens the row's menu; the arrow keys and Enter run the switch
+  // Shift+F10 opens the row's menu; the arrow keys and Enter run an entry
   await page.keyboard.press('Shift+F10');
-  const on = page.locator('.lm-Menu .lm-Menu-item', {
-    hasText: 'Share Through Cloudflare'
+  const change = page.locator('.lm-Menu .lm-Menu-item', {
+    hasText: 'Set Password'
   });
-  await expect(on).toBeVisible();
+  await expect(change).toBeVisible();
   for (let i = 0; i < 8; i++) {
-    if (await on.evaluate(el => el.classList.contains('lm-mod-active'))) {
+    if (await change.evaluate(el => el.classList.contains('lm-mod-active'))) {
       break;
     }
     await page.keyboard.press('ArrowDown');
   }
-  await expect(on).toHaveClass(/lm-mod-active/);
+  await expect(change).toHaveClass(/lm-mod-active/);
   await page.keyboard.press('Enter');
-  await expect
-    .poll(
-      async () => (await api(page, 'GET', `${API}/requests`)).data.requests[0]
-    )
-    .toMatchObject({ cloud: true });
-  // the ContextMenu key opens the same menu, now offering the way back
-  await refreshPanel(page);
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toBeVisible();
+  await dialog.locator('button', { hasText: 'Cancel' }).click();
+  // the ContextMenu key opens the same menu
   await header.focus();
   await page.keyboard.press('ContextMenu');
-  const off = page.locator('.lm-Menu .lm-Menu-item', {
-    hasText: 'Hub Network Only'
-  });
-  await expect(off).toBeVisible();
+  await expect(change).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(off).toBeHidden();
+  await expect(change).toBeHidden();
 });
 
 test('a record without a password shows the rule and keeps Save disabled', async ({

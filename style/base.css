@@ -100,20 +100,32 @@
 }
 
 .jp-ShareFilesPanel-cloudIndicator.jp-mod-active {
-  /* tunnel on - links are public */
-  color: var(--jp-success-color1);
+  /* tunnel on - links are public. The accent the panel's other header icons
+     take when active, on the header's own background: the glyph reads at
+     3.97:1 on the light theme and 3.22:1 on the dark one, where a filled
+     chip behind it would drop it to 2.45:1 and 1.98:1, under the 3:1 bar
+     a non-text control has to clear. */
+  color: var(--jp-brand-color1);
 }
 
 .jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
-  /* switch in flight - blinking blue */
+  /* switch in flight - the accent on the dashed silhouette, blinking. "On"
+     carries the same accent on the filled cloud, so the glyph is what tells
+     the two apart where the blink is suppressed. */
   color: var(--jp-brand-color1);
   animation: share-files-blink 0.9s ease-in-out infinite;
+}
+
+.jp-ShareFilesPanel-cloudIndicator.jp-mod-armed {
+  /* hub mode: the default is on and no record asks for a tunnel. The ring in
+     the base grey separates it from off without a colour; the accent and the
+     filled cloud stay the hub's confirmation */
+  box-shadow: inset 0 0 0 1px currentcolor;
 }
 
 .jp-ShareFilesPanel-cloudIndicator:focus-visible {
   /* keyboard focus - the brand colour reads on both themes */
   outline: 1px solid var(--jp-brand-color1);
-  outline-offset: -1px;
 }
 
 .jp-ShareFilesPanel-cloudIndicator.jp-mod-unreachable {
@@ -124,9 +136,13 @@
 
 @media (prefers-reduced-motion: reduce) {
   .jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
-    /* switch in flight without motion - still blue, half transparent */
+    /* switch in flight without motion. The glyph keeps full strength rather
+       than dimming to 1.98:1, under the 3:1 bar a non-text control has to
+       clear - but off carries the same dashed silhouette, so with the blink
+       gone a ring is what tells the two apart without asking the reader to
+       see a colour (DEF-PANEL-92) */
     animation: none;
-    opacity: 0.5;
+    box-shadow: inset 0 0 0 1px currentcolor;
   }
 }
 
@@ -569,8 +585,10 @@
 
 /* Drop zone */
 .jp-ShareFilesPanel-dropZone {
-  margin: 8px 10px 4px;
-  padding: 14px 10px;
+  /* one length on each: the gap around the zone and the gap inside it read
+     the same on all four sides */
+  margin: 10px;
+  padding: 14px;
   border: 1px dashed var(--jp-border-color2);
   border-radius: 4px;
   text-align: center;
@@ -748,4 +766,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--jp-error-color1);
+}
+
+.jp-ShareFilesPanel-entryRename {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--jp-ui-font-size0);
+  color: var(--jp-ui-font-color0);
+  background: var(--jp-layout-color0);
+  border: 1px solid var(--jp-brand-color1);
+  padding: 0 2px;
 }

@@ -214,6 +214,30 @@ The Cloudflare tunnel exposing share and request links beyond the hub, and the p
   - test-tags: UNIT
   - log: 2026-09-01T19:55:05Z @kj imported from acc-crit-cloudflare-integration.md; verified live against the stellars Cloudflare account
   - log: 2026-09-01T19:56:36Z @kj edited test-tags (replaced)
+- [x] `ACC-CLOUD-159` **The cloud switch lives only in the header** - MEDIUM; the row menu of a share or a request carries no Cloudflare entry; the header's cloud icon is the only control, and it switches every record at once; the entries 'Hub Network Only' and 'Share Through Cloudflare' are removed from both menus
+  - evidence: the set-cloud command and its two menu items are gone from src/widget.ts and setCloud from src/api.ts; galata hub-mode 'the cloud toggle flips every record and the next one, and no row carries a switch of its own' asserts the row menu lists no Cloudflare entry; hub suite 25 passed
+  - test: hub galata: open a share row menu and a request row menu, assert neither lists a Cloudflare entry
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-09-20T13:14:00Z @kj the set-cloud command and its two menu items are deleted from the panel; the header icon keeps calling api/tunnel
+  - log: 2026-09-20T13:14:00Z @kj added
+  - log: 2026-09-20T13:24:15Z @kj edited text
+  - log: 2026-09-20T14:01:51Z @kj closed
+- [x] `ACC-CLOUD-160` **The cloud icon wears the header's own colours** - LOW; the cloud icon takes the same colour as the other header icons when off and the same accent as an active header control when on; it is not green in either state
+  - evidence: galata keyboard.spec.ts 'the cloud icon switches from the keyboard' resolves both variables in the page and asserts the active colour equals --jp-brand-color1 and differs from --jp-success-color1; standalone suite 31 passed
+  - test: open the panel on both themes and compare the cloud icon's computed colour with the neighbouring header buttons in both states
+  - test-tags: MANUAL
+  - mechanism: 2026-09-20T13:14:00Z @kj the indicator's colour comes from the same variables the header buttons use instead of a success colour
+  - log: 2026-09-20T13:14:00Z @kj added
+  - log: 2026-09-20T13:24:15Z @kj edited text
+  - log: 2026-09-20T14:01:51Z @kj closed
+- [x] `ACC-CLOUD-162` **Switching is told from on by the glyph** - HIGH; the header cloud icon's "on" and "switching" states carry the same accent, so the glyph separates them - the filled cloud is on, the dashed silhouette is a switch in flight - and the switching state keeps full strength where the blink is suppressed (`prefers-reduced-motion`) instead of dimming to 1.98:1, under the 3:1 bar a non-text control has to clear
+  - evidence: the four-state walk in `ui-tests/tests/keyboard.spec.ts` reads the icon's svg at connecting and at on and asserts they differ - 17 keyboard tests passed; `style/base.css` reduced-motion block now sets `animation: none` alone, so the switching glyph holds the accent's 3.97:1 light and 3.22:1 dark instead of dimming to 1.98:1; full runs after the change: galata standalone 31 passed, hub 26 passed, pytest 407 passed 8 skipped, jest 44 passed, `jlpm run lint:check` exit 0
+  - related: ACC-CLOUD-160 - the owner's colour instruction this keeps, without leaving hue as the only channel
+  - test: the four-state walk in `ui-tests/tests/keyboard.spec.ts` reads the icon's svg at connecting and at on and they differ; the reduced-motion block in `style/base.css` sets `animation: none` and no opacity
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-09-20T16:03:37Z @kj "on" takes `--jp-brand-color1` by the owner's instruction, and "switching" takes the same accent, so hue cannot carry the difference; the dashed silhouette is the second channel and it survives both a suppressed blink and a colour-blind reading
+  - log: 2026-09-20T16:03:37Z @kj added
+  - log: 2026-09-20T16:14:07Z @kj closed
 
 ## Hover tooltip `HOVER`
 
@@ -796,12 +820,14 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - log: 2026-09-15T19:00:04Z @kj edited text
   - log: 2026-09-15T19:06:25Z @kj edited text
   - log: 2026-09-15T21:39:59Z @kj closed: met
+  - log: 2026-09-21T05:59:20Z @kj superseded 2026-09-21 by ACC-HUBM-161: the hub reports tunnel_ready itself, so CloudWait and its 120 s poll are deleted and the behaviour this criterion proved no longer exists
 - [x] `ACC-HUBM-146` **Open panels pick up the Cloudflare link once confirmed** - HIGH; the hub does not ring its change stream when its tunnel registers; the lab detects the confirmation itself and rings every open panel of that lab once, so each fetches its lists and shows links on the tunnel hostname without Refresh
   - evidence: test_switch_on_waits_for_the_tunnel_link_and_rings_the_panels_once, ui-tests/tests/hub/hub-mode.spec.ts: switching Cloudflare on pulses the icon until the hub confirms, then every open panel shows the tunnel link: pytest checks that exactly one ring follows confirmation and none before it; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
   - test: galata hub: mock hub does not ring on tunnel registration; a second page open during the wait shows the tunnel link without Refresh
   - test-tags: INTEGRATION, E2E
   - log: 2026-09-15T18:52:22Z @kj added
   - log: 2026-09-15T21:39:59Z @kj closed: met
+  - log: 2026-09-21T05:59:20Z @kj superseded 2026-09-21 by ACC-HUBM-161: the hub reports tunnel_ready itself, so CloudWait and its 120 s poll are deleted and the behaviour this criterion proved no longer exists
 - [x] `ACC-HUBM-147` **Confirmation checks are bounded** - HIGH; the lab asks the hub's items at most once every 5 s, only while a switch-on is unconfirmed, and for at most 120 s; one wait per lab server process whatever the number of open panels; with nothing waiting the lab sends no confirmation checks
   - evidence: test_confirmation_checks_are_bounded_and_none_while_nothing_waits, test_two_switch_ons_share_one_wait: pytest with the bounds set to 0.05 s and 0.5 s: no items calls while nothing waits; between 1 and 11 calls during the 0.5 s wait; no calls after it ends; two switch-ons stay within one wait's rate.; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
   - test: pytest: scripted hub; count items calls made by the wait during the wait, after confirmation and with nothing waiting
@@ -816,6 +842,7 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - log: 2026-09-15T18:52:22Z @kj added
   - log: 2026-09-15T21:05:37Z @kj review round 1: a switch-back the hub refuses or cannot receive no longer sets the default off; the reason is hub_unavailable; test_a_switch_back_the_hub_refuses_keeps_the_default_and_says_so failed before, passes after
   - log: 2026-09-15T21:39:59Z @kj closed: met
+  - log: 2026-09-21T05:59:20Z @kj superseded 2026-09-21 by ACC-HUBM-161: the hub reports tunnel_ready itself, so CloudWait and its 120 s poll are deleted and the behaviour this criterion proved no longer exists
 - [x] `ACC-HUBM-149` **Rows carry no cloud mark** - MEDIUM; in hub mode a share or request row shows no cloud beside its meta, whatever its Cloudflare switch; the header cloud icon alone shows whether Cloudflare is on
   - evidence: ui-tests/tests/hub/hub-mode.spec.ts: the cloud toggle flips every record and the next one, and a row can be switched on its own: galata hub 'the cloud toggle flips every record and the next one, and a row can be switched on its own' green: every record on, zero .jp-ShareFilesPanel-itemCloud, header icon jp-mod-active.; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
   - related: ACC-HUBM-139 - the switch whose row mark this removes
@@ -825,3 +852,135 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - log: 2026-09-15T19:06:30Z @kj edited text
   - log: 2026-09-15T19:06:30Z @kj requested: "items do not need to have cloud icon by them - the header cloud icon shows if tunnel is enabled or not"
   - log: 2026-09-15T21:39:59Z @kj closed: met
+- [x] `ACC-HUBM-161` **Tunnel state comes from the hub, not a stored flag** - HIGH; in hub mode the header cloud icon draws from the hub's `capabilities.tunnel_ready` and `tunnel_available` instead of the lab's stored `hub_cloud` flag: lit only while the hub reports the tunnel ready, a pending look while the switch is on and the tunnel is not ready, back to pending with no click when the hub rings the lab's stream after the tunnel drops, and no control at all when `tunnel_available` is false; `CloudWait` and its 120 second origin-comparison poll are removed; the lab follows the hub's vocabulary, so `cloud` gives way to `tunnel` in the config key, the route and the client, while the cloud icon stays as the control the owner sees. Blocked until the hub rebuild lands
+  - evidence: galata hub 27 passed, including the four clauses: pending to on with no click (hub-mode.spec.ts:604), on to pending with no click (:661), no icon when tunnel_available is false (:699), pending until a click switches off when the tunnel never comes up (:720), plus the route replacement (:754); live hub 5 passed against the real galaxahub, the switch-on moving the record's link to the tunnel host over https and back (live-hub.spec.ts:235); CloudWait, CONFIRM_POLL_SECONDS and CONFIRM_TIMEOUT_SECONDS deleted from hub_routes.py; config key hub_tunnel with hub_cloud read as a fallback; pytest 398 passed 8 skipped, jest 42, build and lint:check exit 0
+  - related: ACC-HUBM-145, ACC-HUBM-146, ACC-HUBM-148 - the CloudWait criteria this replaces when it lands
+  - test: mock hub: a record switched on with `tunnel_ready` false shows the pending look; flip it true and ring the stream, the icon lights with no click; flip it false and ring, it returns to pending; with `tunnel_available` false no control is offered
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-09-20T16:43:41Z @kj owner's decision 2026-09-20: the hub is dropping the notion of 'cloud' and implementing a single tunnel abstraction, which the tunnel being built on a cloud service makes the simpler name; so `tunnel_available` is the field, not the announced `cloud_available`, and the lab renames its own `cloud` vocabulary to match rather than translating between two
+  - mechanism: 2026-09-20T16:38:38Z @kj live hub checked 2026-09-20: `GET /hub/api/fileshare/capabilities` answers 200 with `tunnel_ready` (false) and `tunnel_available` (true) - the second field is named `tunnel_available`, not the announced `cloud_available`, and neither name exists anywhere in the galaxahub checkout, so the deployed hub is ahead of that tree and the field name needs the hub owner's confirmation before the lab reads it
+  - mechanism: 2026-09-20T15:57:30Z @kj the hub's supervisor already rings every open lab stream when its serving verdict flips (galaxahub `fileshare_supervisor.py:186-193`, `_set_state` calling `fileshare_stream.nudge_all`) and already holds the connector verdict (`fileshare_supervisor.py:733`), so the lab re-reads capabilities on the ring and needs no poll of its own
+  - log: 2026-09-20T15:57:30Z @kj added
+  - log: 2026-09-20T16:43:41Z @kj edited text
+  - log: 2026-09-20T16:43:53Z @kj edited test (replaced)
+  - log: 2026-09-20T16:43:53Z @kj edited title
+  - log: 2026-09-21T05:59:20Z @kj closed: closed on the migration: the panel reads tunnel_available and tunnel_ready from the hub and the lab-side wait is gone
+- [x] `ACC-HUBM-163` **An empty share is created and filled afterwards** - HIGH; on a hub that reports modification after creation, the panel creates a share with no files, the row reads as empty rather than broken, and files dropped on that row afterwards are added to it; New Share is enabled again on such a hub and stays greyed on one without the capability, and a drop on a row is still refused in words there. The panel discovers the capability from the hub instead of assuming it, because a lab can be spawned by an older hub
+  - evidence: test 'New Share creates an empty share and a dropped file fills it' and the live hub editing test; the older-hub half of the criterion is void with ACC-EDIT-164 rejected - galata 2026-09-21: mock hub 27 passed (logs/galata-hub-content.log), live hub 6 passed against galaxahub 4.4.149 (logs/galata-livehub-content.log), standalone 31 passed; pytest 398 passed 8 skipped
+  - related: ACC-DRAG-156, DEF-HUB-85, DEF-PANEL-84 - the drop half and the two defects this unblocks
+  - related: ACC-EDIT-164 - the same capability gate
+  - test: mock hub with the capability on: New Share creates an empty share, the row reads empty, a dropped file is added and the row's file count and size grow; with the capability off New Share stays greyed and a drop is refused with the existing sentence
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-09-20T17:30:56Z @kj the hub is extending its fileshare service to allow modification after creation (hub side, reported 2026-09-20); until that lands the live API has no route under /shares/<id> that adds files - items, files, paths, add, contents, entries and append all answer 404, probed 2026-09-20 - and an empty create is refused
+  - log: 2026-09-20T17:30:56Z @kj added
+  - log: 2026-09-21T08:03:35Z @kj closed
+- [x] `ACC-HUBM-169` **Progress shows while the hub takes the bytes** - MEDIUM; while a share is staging - the window where the hub copies the bytes - the row carries a progress indicator that takes no more width than the row already has, a slim vertical bar rather than a full-width one; it clears when the row turns ready and is replaced by the reason when the row turns refused
+  - evidence: galata hub 'share rows show staging, ready and refused states from the hub' asserts the spinner inside the staging row's meta, none on the ready and refused rows, and a staging row no taller than a ready one; the indicator is indeterminate because the hub row carries no byte count; mock hub suite 29 passed 2026-09-21
+  - test: mock hub: hold a record in staging, the row shows the indicator and the panel does not resize; flip it to ready and the indicator goes; flip another to refused and the reason shows instead
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-09-20T17:33:07Z @kj the hub row carries `state` (staging, ready, refused) but no transferred-byte count - probed live 2026-09-20, the row keys are bytes, created_at, expires_at, files, has_password, id, kind, owner, skipped, state, title, tunnel, url. So the indicator is indeterminate unless the hub starts reporting bytes moved; ask the hub owner before building a determinate bar, because a bar that fakes a percentage is worse than one that admits it does not know
+  - log: 2026-09-20T17:33:07Z @kj added
+  - log: 2026-09-21T09:54:41Z @kj closed
+
+## Drag and drop into the panel `DRAG`
+
+What the panel accepts as a drop target - the create zone and existing share and request rows
+
+- [x] `ACC-DRAG-156` **Drop onto an existing share** - HIGH; a file or a folder dragged from the file browser onto an existing share row is added to that share; several selected items in one drag are all added; a folder is added with its contents; the row highlights while the drag is over it and the panel says how many items were added
+  - evidence: standalone drag-drop.spec.ts (file and folder) and hub test 'New Share creates an empty share and a dropped file fills it' - galata 2026-09-21: mock hub 27 passed (logs/galata-hub-content.log), live hub 6 passed against galaxahub 4.4.149 (logs/galata-livehub-content.log), standalone 31 passed; pytest 398 passed 8 skipped
+  - related: DEF-PANEL-84
+  - related: DEF-HUB-85
+  - related: ACC-EDIT-167 - the many-at-once form of the same drop
+  - test: standalone galata: create a share, drag a file and then a folder from the file browser onto the share row, assert both appear among its entries
+  - test-tags: FUNCTIONAL, E2E
+  - mechanism: 2026-09-20T14:02:00Z @kj met on a standalone lab and proven by two galata tests (a file and a folder dropped on a share row); NOT met on a hub - the hub's fileshare API has no route that adds to an existing share (galaxahub fileshare.py:499 states the snapshot invariant, the route table at registry.py:149 carries only create, close, password and cloud), so the row now refuses the drop in words instead of ignoring it. Closing this needs a new hub route plus an append in its staging job
+  - mechanism: 2026-09-20T13:13:20Z @kj the share row carries the lm-dragenter, lm-dragover and lm-drop listeners attached by _attachDropTargetOnItem and posts the dropped paths to api/shares/<id>/items, which copies each source into the share directory
+  - log: 2026-09-20T13:13:20Z @kj added
+  - log: 2026-09-20T13:24:15Z @kj edited text
+  - log: 2026-09-20T16:43:28Z @kj owner's decision 2026-09-20: wait for the hub rebuild - the hub is dropping the notion of 'cloud' and implementing a single tunnel abstraction, so the panel gets no interim workaround; live hub probed the same day, GET /shares/<id>/items, /files, /paths and /add all answer 404 while /shares/<id> and /shares/<id>/cloud answer 405, so no add-to-share route exists yet
+  - log: 2026-09-20T17:30:28Z @kj hub side 2026-09-20: the hub is now extending its fileshare service to allow modification after creation, which is the capability these records wait on; re-probe the live API for an add-to-share route and an empty-share create when it is announced
+  - log: 2026-09-21T08:03:35Z @kj closed
+- [x] `ACC-DRAG-157` **Drop zone spacing is uniform** - LOW; the 'Drag files here to share' zone sits with the same gap on all four sides and its text has the same padding on all four sides; before the change the margin was 8px top, 10px sides, 4px bottom and the padding 14px vertical, 10px horizontal
+  - evidence: galata tests/drag-drop.spec.ts 'the drop zone carries the same gap on all four sides' reads the computed style and asserts one distinct value for the four margins and one for the four paddings; style/base.css carries margin: 10px and padding: 14px
+  - test: open the panel and measure the zone's computed margin and padding - all four values equal on each
+  - test-tags: MANUAL
+  - mechanism: 2026-09-20T13:13:30Z @kj one length on .jp-ShareFilesPanel-dropZone margin and one on its padding
+  - log: 2026-09-20T13:13:30Z @kj added
+  - log: 2026-09-20T13:24:15Z @kj edited text
+  - log: 2026-09-20T14:01:51Z @kj closed
+
+## Excluded names `EXCL`
+
+Names never copied into a share or a request, held as an internal catalogue in the extension's server configuration
+
+- [x] `ACC-EXCL-158` **Standard temporary and system names are never shared** - HIGH; a share copies neither a checkpoint folder (`.ipynb_checkpoints`), a Python cache (`__pycache__`), a macOS artefact (`__MACOSX`, `.DS_Store`, `._*`), nor a trash folder (`.Trash`, `.Trash-*`, `.Trashes`, `.trashed-*`, `$RECYCLE.BIN`); the rule applies at any depth of a copied folder and to a dropped item itself; a drop of only excluded items is refused with a sentence naming why
+  - evidence: pytest TestExcludedNames (7 tests) and test_hub_handlers (2 tests) green, all 9 verified failing on the previous storage layer and hub handler; 407 passed 8 skipped overall
+  - test: unit: copy a folder holding .ipynb_checkpoints and .DS_Store into a share, assert neither reaches the share directory
+  - test-tags: UNIT
+  - mechanism: 2026-09-20T13:13:30Z @kj a List trait on ShareFilesConfig carries the catalogue as its default so an operator can extend or replace it in jupyter_server_config.py; storage passes it to shutil.copytree as the ignore callable and checks the dropped item itself against it
+  - log: 2026-09-20T13:13:30Z @kj added
+  - log: 2026-09-20T13:24:15Z @kj edited text
+  - log: 2026-09-20T14:01:51Z @kj closed
+
+## Editing a share after creation `EDIT`
+
+Changing a share's contents once it exists - adding, removing, renaming and moving - and the capability discovery that keeps an older hub honest
+
+- [-] `ACC-EDIT-164` **Editing is offered only when the hub reports it** - HIGH; the panel reads the share-editing capability from the hub's `capabilities` and offers remove, rename, move and add only when it is present; against a hub without it every one of those stays absent or greyed and the existing refusal sentences stand, because a lab can be spawned by an older hub. A standalone lab keeps its own behaviour, where the share is a copy under the notebook root and the lab owns it outright
+  - test: mock hub with the capability flag off: no rename or remove entry on a share's file row, New Share greyed, a drop refused with the existing sentence; flag on: all four are offered; standalone suite unchanged
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-09-20T17:32:32Z @kj the hub is extending its fileshare service to allow modification after creation (owner, 2026-09-20); the panel must not infer the capability from the hub answering at all, which is how the current code assumed a cloud route that the rebuild removed
+  - log: 2026-09-20T17:32:32Z @kj added
+  - log: 2026-09-21T07:53:14Z @kj rejected: rejected: superseded by the owner's order of 2026-09-21 (no backwards compatibility) and by the hub author's answer on the question board that build 4.4.149 carries no capability field for editing; the lab requires a hub that serves POST shares/<id>/content and keeps no branch for one that does not
+- [x] `ACC-EDIT-165` **A file is removed from a share** - HIGH; a file row inside a share carries a remove action, from the row menu and from the keyboard; removing asks once, names the file, and the row and the share's item count and size update without a manual refresh; the recipient's link keeps working and no longer offers that file
+  - evidence: test 'a file in a hub share is renamed with F2, moved by a drag and removed': Delete asks once naming the file, the row goes, the mock hub's files no longer hold it - galata 2026-09-21: mock hub 27 passed (logs/galata-hub-content.log), live hub 6 passed against galaxahub 4.4.149 (logs/galata-livehub-content.log), standalone 31 passed; pytest 398 passed 8 skipped
+  - related: ACC-EDIT-164 - the capability gate that decides whether this is offered at all
+  - test: mock hub with editing on: remove a file from a two-file share, the count reads 1 item and the removed name is gone from the manifest the recipient page reads
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-09-20T17:32:53Z @kj added
+  - log: 2026-09-21T08:03:35Z @kj closed
+- [x] `ACC-EDIT-166` **A file in a share is renamed** - HIGH; a file inside a share is renamed from the row context menu and by pressing F2 on the focused row, the same two ways the JupyterLab file browser offers; the edit happens in place, Escape abandons it, Enter commits, a name that collides with a sibling is refused with the reason, and the recipient's link keeps working and hands out the new name
+  - evidence: same test: F2 renames in place, Escape keeps the name, a sibling's name is refused with 'already holds an entry', Enter commits and focus follows; the row menu carries Rename - galata 2026-09-21: mock hub 27 passed (logs/galata-hub-content.log), live hub 6 passed against galaxahub 4.4.149 (logs/galata-livehub-content.log), standalone 31 passed; pytest 398 passed 8 skipped
+  - related: ACC-EDIT-164 - the capability gate that decides whether this is offered at all
+  - test: mock hub with editing on: F2 on a focused file row renames in place; Escape leaves the old name; a name already used by a sibling is refused and the row keeps its name
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-09-20T17:32:53Z @kj added
+  - log: 2026-09-21T08:03:35Z @kj closed
+- [x] `ACC-EDIT-167` **Many files and folders are added in one drop** - HIGH; a multi-selection dropped on a share row adds every item in it, files and folders alike, in one action and with one result message naming how many landed; the excluded-names catalogue applies to each item exactly as it does at create time, and a drop where every item is excluded is refused with the sentence that names them
+  - evidence: galata hub 'a selection of files and a folder is added to a hub share in one drop' lands two files and a folder from one drop; pytest test_an_add_of_only_excluded_names_is_refused_with_the_same_sentence; the row names what did not arrive (add_refused) because the hub copies after its 202; mock hub suite 30 passed 2026-09-21
+  - mechanism: 2026-09-21T07:53:14Z @kj on a hub one drop is one add call and the hub judges it all-or-nothing by basename (board q04); the copy runs after the 202, so the panel cannot name how many landed at drop time - the share row shows a spinner while the hub copies and then names the items that did not arrive (add_refused). The excluded-names catalogue and the all-excluded sentence are shared with create through hub_routes._kept_paths. No galata test drops a multi-selection on a hub row yet
+  - related: ACC-EDIT-164 - the capability gate that decides whether this is offered at all
+  - test: mock hub with editing on: drop a selection of two files and a folder on a share row, all three land and the folder keeps its contents; drop a selection of only .ipynb_checkpoints and the refusal names them
+  - test-tags: FUNCTIONAL
+  - log: 2026-09-20T17:32:53Z @kj added
+  - log: 2026-09-21T10:37:31Z @kj closed
+- [x] `ACC-EDIT-168` **A file is moved into a folder in the same share** - HIGH; a file listed inside a share is dragged onto a folder row of that same share and moves into it: the folder row takes the drop highlight, the file leaves the level it was on, and both the folder's size and the share's item count settle without a manual refresh; a drop onto the folder the file already sits in does nothing and says nothing
+  - evidence: same test: a file row dragged onto a folder row of the same share takes the drop highlight and lands under it; the nested listing comes from the hub's flat files names - galata 2026-09-21: mock hub 27 passed (logs/galata-hub-content.log), live hub 6 passed against galaxahub 4.4.149 (logs/galata-livehub-content.log), standalone 31 passed; pytest 398 passed 8 skipped
+  - related: ACC-EDIT-164 - the capability gate that decides whether this is offered at all
+  - test: mock hub with editing on: open a share holding a file and a folder, drag the file onto the folder row, then open the folder and find it there; the share's top-level count drops by one
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-09-20T17:33:07Z @kj on a standalone lab the panel walks a share's sub-folders through the lab's own Contents API against `share.path` (`src/widget.ts:1414`, `_fetchSubEntries`), which works because the share is a copy under the notebook root. On a hub the bytes live on the hub and `share.path` is empty, so this criterion needs the hub to expose a nested listing of a share as well as a move - a move route alone cannot satisfy it
+  - log: 2026-09-20T17:33:07Z @kj added
+  - log: 2026-09-21T08:03:35Z @kj closed
+
+## Saving out of the panel into the workspace `SAVE`
+
+Taking a share's contents back into the file browser's current folder, one file or the whole record
+
+- [ ] `ACC-SAVE-170` **Every file in the panel saves to the current folder** - HIGH; every file row the panel lists carries one save action that writes it into the file browser's current folder, under one wording wherever it appears - an own share, a hub share, a connected peer's share and an upload under a request; the file lands with the name it has in the record, a collision is answered by the same rule the file browser uses rather than a silent overwrite, and on a hub the bytes come from the hub rather than from a local path
+  - test: mock hub: save a file from a hub share into a chosen folder and find it there; repeat with the same target and check the collision rule; standalone and connected-peer rows offer the identically worded action
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-09-20T17:37:44Z @kj three different wordings exist today for the same idea - `Copy to Current Folder` on an own share entry (`src/widget.ts:2346`, which takes a workspace path and so cannot work on a hub), `Save to Current Folder` on a connected peer entry (`:2314`), and `Fetch to current folder` on a request upload. Unify the verb; the peer path already streams through the server to disk and is the model the hub path should follow
+  - log: 2026-09-20T17:37:44Z @kj added
+  - log: 2026-09-21T11:20:45Z @kj 2026-09-21: the wording is unified - own share entry, connected peer entry and hub request upload all read 'Save to Current Folder' (standalone 31 and mock hub 30 galata passed). What stays open is a file of a HUB share: the hub has no route that reads a share's bytes into the lab, and its author states the route is not designed yet and in no build
+- [ ] `ACC-SAVE-171` **A whole share or request saves, zipped or unpacked** - HIGH; a share row and a request row each offer saving the whole record into the file browser's current folder two ways: as a single zip named after the record, or unpacked as the files themselves into a folder named after the record. Both report what they are doing while they run and name what landed, both obey the download size limit the settings carry, and a failure part-way leaves neither a half-written archive nor a half-filled folder. Unpacking into a folder rather than loose into the current directory is the assumption to check with the owner - a record holding many files would otherwise scatter them into the working directory with nothing to undo it by
+  - test: mock hub: save a whole share as a zip and open it, then save the same share unpacked and find a folder named after it holding every file; repeat for a request with two uploads; set the limit below the record's size and check both refusals name the limit
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-09-20T17:43:14Z @kj owner 2026-09-20: the hub developers have been asked for a zip packaging capability, so the archive is the hub's to build and this criterion no longer plans a local zipfile. The extension asks the hub for the packaged record and relays the stream to disk through its own server, the same spool path the peer download already uses, which also removes the memory question for a large record. Two things still have to come with that route and are the open dependency: an unpacked save needs either a per-file read or a listing plus per-file read on the management API, since unpacking a zip the lab just wrote is a second full copy on disk; and the route must cover a request's uploads as a set, not only a share, because requests/<id>/uploads/<uid>/fetch is per upload. The standalone path is unaffected - it keeps its own zipfile packaging, which needs no service
+  - mechanism: 2026-09-20T17:40:00Z @kj who zips, decided 2026-09-20 from live probes: the extension can build the zip itself - standalone already zips a folder into a response with Python's zipfile, and the lab already relays a peer download to disk through its own server with a spool file - so the hub is NOT required to zip. What the extension does need is a way to read a hub share's bytes. The hub's management API carries capabilities, status, items, stream, shares, requests, password, tunnel, uploads and `requests/<id>/uploads/<uid>/fetch`, so a REQUEST's uploads can already be pulled into the workspace by the hub itself; there is no share equivalent. The recipient surface is not usable as a substitute from inside a lab: `http://hub:8080/s/<id>` answers the hub's sign-in page and `https://share.stellars-tech.com/s/<id>` answered 403 with the record's tunnel off. So ask the hub for a share-download route on the management API, one file or the whole record, rather than making an internal operation depend on outbound internet and on the tunnel being on
+  - mechanism: 2026-09-20T17:37:45Z @kj nothing in the panel does this today - there is no Save All of any kind. The recipient page already downloads a whole record as a zip, and the lab already relays a peer download to disk through its own server with a spool file, so the pieces exist; the limit is the existing `peerDownloadMaxGb` setting
+  - log: 2026-09-20T17:37:45Z @kj added
+  - log: 2026-09-20T17:38:09Z @kj edited title and text and test (replaced)
+  - log: 2026-09-20T17:38:09Z @kj owner 2026-09-20: the whole record can also be saved directly as files, not only as a zip
+  - log: 2026-09-20T17:43:14Z @kj owner 2026-09-20: asked the hub developers to provide zip packaging; the extension waits for that route rather than zipping locally
+  - log: 2026-09-21T11:20:45Z @kj 2026-09-21: blocked on the hub. The owner decided on 2026-09-20 that the archive is the hub's to build; the hub's owner-side fetch of a whole share or inbox is an accepted hub criterion that is not designed yet and in no build, so nothing can be built or tested against it

@@ -7,10 +7,9 @@ the same ``api/*`` paths with the same response shapes - only the backend
 changes: paths are sent to the hub, which copies the bytes with its own
 transfer job, and recipients are served by the hub's fileshare app.
 
-What has no hub equivalent is simply not mounted: adding files to an existing
-share (a share is a snapshot), removing a single upload, peer connections,
-and the per-user Cloudflare tunnel. The cloud toggle survives with a new
-meaning - every hub record carries its own Cloudflare switch, and the toggle
+What has no hub equivalent is simply not mounted: removing a single upload,
+peer connections, and the per-user Cloudflare tunnel. The tunnel toggle survives with a new
+meaning - every hub record carries its own tunnel switch, and the toggle
 flips them all and sets the default for the next one.
 """
 
@@ -18,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -29,14 +27,20 @@ from jupyter_server.utils import url_path_join
 from tornado.iostream import StreamClosedError
 
 from .hub import HubClient, HubUnavailable, hub_api_origin
-from .hub_stream import CHANGED, CLOSE, KEEPALIVE_SECONDS, RELAY, RETRY_SECONDS
+from .hub_stream import CLOSE, KEEPALIVE_SECONDS, RELAY, RETRY_SECONDS
 from .routes import (
     GeneratePasswordHandler,
     _Base,
     _request_origin,
     probe_link,
 )
-from .storage import _is_safe_relative, _resolve_unique_target, _safe_name
+from .storage import (
+    _is_safe_relative,
+    _resolve_unique_target,
+    _safe_name,
+    all_excluded_message,
+    is_excluded,
+)
 from .tunnel import _load_config, _save_config
 
 # galaxahub share ids are url-safe base64; requests carry an `r_` prefix.
@@ -51,28 +55,16 @@ _HUB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 # typed here. Lost on restart - the dialog then shows "set" without a value.
 _PASSWORDS: dict[str, str] = {}
 
-# Config-file key for the cloud toggle in hub mode: True switches every new
+# Config-file key for the tunnel toggle in hub mode: True switches every new
 # share and request on to the hub's Cloudflare front, False leaves it on the
 # hub's own address (reachable on the hub's network only). The hub mints
 # every record with the switch off; the lab applies the preference after.
-CLOUD_KEY = "hub_cloud"
+TUNNEL_KEY = "hub_tunnel"
 
-# The wait for the hub to confirm a Cloudflare switch-on (CloudWait): the
-# hub's items are read at most every CONFIRM_POLL_SECONDS, for at most
-# CONFIRM_TIMEOUT_SECONDS - twice that when the hub comes back from an
-# outage mid-wait. CONFIRM_TIMEOUT_VAR overrides the bound - the hub-mode
-# galata suite sets it to test the timeout.
-CONFIRM_POLL_SECONDS = 5
-CONFIRM_TIMEOUT_VAR = "SHARE_FILES_CLOUD_CONFIRM_SECONDS"
-CONFIRM_TIMEOUT_SECONDS = float(os.environ.get(CONFIRM_TIMEOUT_VAR) or 120)
-# the reason api/info and api/tunnel carry after the wait switched an
-# unconfirmed switch-on back off
-UNCONFIRMED_REASON = "cloud_not_confirmed"
-# the reasons for a Cloudflare switch the hub answered with an error: the
-# wait's switch back off (the record stays on) and a create's switch on
-# (the record stays off); a hub that does not answer is hub_unavailable
-NOT_OFF_REASON = "cloud_not_switched_off"
-NOT_ON_REASON = "cloud_not_switched_on"
+# the reason a created record carries when the hub answered its switch on
+# with an error (the record stays off); a hub that does not answer is
+# hub_unavailable
+NOT_ON_REASON = "tunnel_not_switched_on"
 
 
 # --------------------------------------------------------------------------- #
@@ -100,6 +92,7 @@ def _now_iso() -> str:
 def share_from_item(item: dict, link: str) -> dict:
     """One hub ``items`` row of kind share -> the panel's share shape."""
     files = item.get("files") or []
+    last_add = item.get("last_add") or {}
     return {
         "id": item.get("id", ""),
         "name": item.get("title") or item.get("id", ""),
@@ -112,12 +105,19 @@ def share_from_item(item: dict, link: str) -> dict:
         ],
         "link": link,
         "has_password": bool(item.get("has_password")),
-        "cloud": bool(item.get("cloud")),
+        "tunnel": bool(item.get("tunnel")),
         "state": item.get("state") or "ready",
         "reason": item.get("reason") or "",
         "expires_at": _ts(item.get("expires_at")),
         "bytes": int(item.get("bytes") or 0),
+        # the hub's total for the share: the create and every add since
         "skipped": int(item.get("skipped") or 0),
+        # the hub's own record of the last add: running while it copies, and
+        # the reason when it refused
+        "adding": last_add.get("state") == "running",
+        "add_reason": str(last_add.get("reason") or "") if last_add.get("state") == "refused" else "",
+        # bytes copied and to copy, present only while the hub carries bytes
+        "progress": item.get("progress") or None,
     }
 
 
@@ -151,7 +151,7 @@ def request_from_item(
         ),
         "link": link,
         "has_password": bool(item.get("has_password")),
-        "cloud": bool(item.get("cloud")),
+        "tunnel": bool(item.get("tunnel")),
         "state": item.get("state") or "ready",
         "reason": item.get("reason") or "",
         "expires_at": _ts(item.get("expires_at")),
@@ -173,14 +173,14 @@ def relay_error(code: int, data: Any) -> tuple[int, dict]:
     return code, body
 
 
-def cloud_default() -> bool:
-    """The cloud toggle: switch every new share and request on to Cloudflare."""
-    return bool(_load_config().get(CLOUD_KEY, False))
+def tunnel_default() -> bool:
+    """The tunnel toggle: switch every new share and request on to Cloudflare."""
+    return bool(_load_config().get(TUNNEL_KEY, False))
 
 
-def set_cloud_default(value: bool) -> None:
+def set_tunnel_default(value: bool) -> None:
     cfg = _load_config()
-    cfg[CLOUD_KEY] = bool(value)
+    cfg[TUNNEL_KEY] = bool(value)
     _save_config(cfg)
 
 
@@ -191,7 +191,7 @@ def rewrite_link(url: str, browser_origin: str) -> str:
     answers, so a lab-originated call yields the hub's internal address; it
     is replaced by the origin the browser reaches the lab on. Any other
     origin is the Cloudflare hostname the hub chose for a record with its
-    cloud switch on, and is kept as the hub composed it.
+    tunnel switch on, and is kept as the hub composed it.
     """
     parsed = urlparse(url or "")
     if not parsed.scheme or not parsed.netloc:
@@ -202,133 +202,8 @@ def rewrite_link(url: str, browser_origin: str) -> str:
     return browser_origin + parsed.path + (f"?{parsed.query}" if parsed.query else "")
 
 
-def on_tunnel(url: str) -> bool:
-    """True when a hub ``url`` carries an origin other than the hub's own -
-    the tunnel hostname, the only sign that Cloudflare serves the record.
-    ``capabilities.public_base_url`` is always the hub's own address and
-    confirms nothing."""
-    parsed = urlparse(url or "")
-    if not parsed.scheme or not parsed.netloc:
-        return False
-    return f"{parsed.scheme}://{parsed.netloc}" != hub_api_origin()
-
-
 def plural(kind: str) -> str:
     return "shares" if kind == "share" else "requests"
-
-
-# --------------------------------------------------------------------------- #
-# The Cloudflare confirmation wait
-# --------------------------------------------------------------------------- #
-
-
-class CloudWait:
-    """The lab's one wait for the hub to confirm a Cloudflare switch-on.
-
-    A cloud-on record's url carries the tunnel hostname only once the hub's
-    tunnel is registered, and the hub rings its change stream when a record
-    changes, not when the tunnel registers. So after a switch-on the lab
-    reads the hub's items itself until every record switched on during the
-    wait carries a url off the hub's origin, then rings every open panel
-    once so each fetches the tunnel links. Unconfirmed at the bound, it
-    switches those records and the default back off, keeps ``reason`` for
-    the panel, and rings; a switch back off that fails leaves the default as
-    it is, with reason ``hub_unavailable`` when the hub did not answer and
-    ``cloud_not_switched_off`` when it answered other than 204 or 404. A
-    record switched off or removed during the wait needs no confirmation.
-    A hub that stopped answering during the wait reports its own origin
-    when it answers again, until its tunnel connector registers, so its
-    first answer back restarts the bound; the restart happens once per
-    wait, so a hub that goes down again does not extend it further.
-    """
-
-    def __init__(self):
-        self._records: dict[str, str] = {}  # id -> kind, still unconfirmed
-        self._task: asyncio.Task | None = None
-        self.reason = ""
-
-    @property
-    def waiting(self) -> bool:
-        return self._task is not None
-
-    def start(self, records: dict[str, str], items: list[dict]) -> None:
-        """Records just switched on (id -> kind), with the hub's items read
-        after the switch: a record whose url already carries the tunnel
-        hostname needs nothing; the rest start the wait, or join the one
-        running. Every switch-on clears the previous timeout reason."""
-        self.reason = ""
-        confirmed = {i.get("id") for i in items if on_tunnel(i.get("url", ""))}
-        self._records.update({k: v for k, v in records.items() if k not in confirmed})
-        if self._records and self._task is None:
-            self._task = asyncio.ensure_future(self._run())
-
-    def drop(self, ids) -> None:
-        """Records switched off: nothing to confirm for them; the last one
-        ends the wait."""
-        for id_ in ids:
-            self._records.pop(id_, None)
-        if not self._records and self._task is not None:
-            self._task.cancel()
-            self._task = None
-
-    async def _run(self) -> None:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + CONFIRM_TIMEOUT_SECONDS
-        unreachable = restarted = False
-        try:
-            while self._records:
-                await asyncio.sleep(max(0.0, min(CONFIRM_POLL_SECONDS, deadline - loop.time())))
-                items = await self._items()
-                # a hub back from an outage reports its own origin until its
-                # tunnel registers: its first answer restarts the bound, once
-                if items is None:
-                    unreachable = True
-                elif unreachable and not restarted:
-                    deadline = loop.time() + CONFIRM_TIMEOUT_SECONDS
-                    restarted = True
-                self._settle(items)
-                if self._records and loop.time() >= deadline:
-                    await self._switch_back()
-        finally:
-            if self._task is asyncio.current_task():
-                self._task = None
-        RELAY.ring(CHANGED)
-
-    async def _items(self) -> list[dict] | None:
-        try:
-            code, data = await HubClient().request("GET", "items")
-        except HubUnavailable:
-            return None
-        return (data.get("items") or []) if code == 200 and isinstance(data, dict) else None
-
-    def _settle(self, items: list[dict] | None) -> None:
-        if items is None:
-            return
-        rows = {i.get("id"): i for i in items}
-        for id_ in list(self._records):
-            row = rows.get(id_)
-            if row is None or not row.get("cloud") or on_tunnel(row.get("url", "")):
-                del self._records[id_]
-
-    async def _switch_back(self) -> None:
-        unanswered = refused = False
-        while self._records:
-            id_, kind = self._records.popitem()
-            try:
-                code, _ = await HubClient().request("PUT", f"{plural(kind)}/{id_}/cloud", {"cloud": False})
-            except HubUnavailable:
-                unanswered = True
-            else:
-                refused = refused or code not in (204, 404)
-        # a record the hub kept on stays on - the default must not claim off
-        if unanswered or refused:
-            self.reason = HubUnavailable.reason if unanswered else NOT_OFF_REASON
-            return
-        set_cloud_default(False)
-        self.reason = UNCONFIRMED_REASON
-
-
-CLOUD_WAIT = CloudWait()
 
 
 # --------------------------------------------------------------------------- #
@@ -403,51 +278,73 @@ class _HubBase(_Base):
             return []
         return list(data.get("uploads") or [])
 
+    def _kept_paths(self, paths: Any) -> list[str] | None:
+        """The paths the hub is sent, or ``None`` with the 400 already written.
+        The hub copies what it is sent, so the excluded-names catalogue is
+        applied here on the chosen items themselves; below a sent folder the
+        hub applies the plain names of ``_hub_exclude`` beside its own skips."""
+        if not isinstance(paths, list):
+            self.write_error_json(400, "'paths' must be a list")
+            return None
+        for rel in paths:
+            if not isinstance(rel, str) or not _is_safe_relative(rel):
+                self.write_error_json(400, f"Unsafe path: {rel}")
+                return None
+        kept = [rel for rel in paths if not is_excluded(Path(rel).name, self.excluded_names)]
+        if paths and not kept:
+            self.write_error_json(400, all_excluded_message([Path(rel).name for rel in paths]))
+            return None
+        return kept
+
+    def _hub_exclude(self) -> list[str]:
+        """The catalogue entries the hub can apply below the sent paths: it
+        takes plain names, no pattern, at most 64."""
+        return [n for n in self.excluded_names if not any(c in n for c in "*?[/")][:64]
+
     def _tunnel_state(self, capabilities: dict) -> dict:
-        """The cloud toggle as the panel reads it. The hub decides whether a
+        """The tunnel toggle as the panel reads it. The hub decides whether a
         record may be switched on (its group policy), so the toggle is always
         offered while the hub answers; a refused switch names its reason.
-        ``tunnel_waiting`` is true while a switch-on waits for the hub's
-        confirmation, ``tunnel_reason`` names why the last switch-on ended
-        unconfirmed ('' otherwise)."""
+        ``tunnel_available`` and ``tunnel_ready`` are the hub's own verdicts -
+        its group policy has a tunnel at all, and its connector is up and
+        serving; ``tunnel_default`` is the lab's stored default."""
         return {
             "tunnel_configured": True,
-            "tunnel_active": cloud_default(),
+            "tunnel_active": tunnel_default(),
             "tunnel_autostart": False,
             "tunnel_running": bool(capabilities.get("serving")),
-            "tunnel_waiting": CLOUD_WAIT.waiting,
-            "tunnel_reason": CLOUD_WAIT.reason,
+            "tunnel_available": bool(capabilities.get("tunnel_available")),
+            "tunnel_ready": bool(capabilities.get("tunnel_ready")),
+            "tunnel_default": tunnel_default(),
         }
 
-    async def _set_cloud(self, kind: str, id_: str, cloud: bool) -> tuple[int, Any]:
-        return await self._hub_quiet("PUT", f"{plural(kind)}/{id_}/cloud", {"cloud": cloud})
+    async def _set_tunnel(self, kind: str, id_: str, tunnel: bool) -> tuple[int, Any]:
+        return await self._hub_quiet("PUT", f"{plural(kind)}/{id_}/tunnel", {"tunnel": tunnel})
 
     async def _items_quiet(self) -> list[dict]:
         """The hub's items after a switch, or [] when the read fails."""
         code, data = await self._hub_quiet("GET", "items")
         return (data.get("items") or []) if code == 200 and isinstance(data, dict) else []
 
-    async def _apply_cloud_default(self, kind: str, row: dict) -> dict:
+    async def _apply_tunnel_default(self, kind: str, row: dict) -> dict:
         """A record the hub just minted with its switch off: switch it on when
         the toggle says so. A refusal turns the toggle off and rides on the
-        row as ``cloud_reason`` so the panel can say why the link stayed on
+        row as ``tunnel_reason`` so the panel can say why the link stayed on
         the hub's network; the switched-on row's url is read back from the
-        hub, which composes it, and starts the wait while it is the hub's own."""
-        if not cloud_default():
+        hub, which composes it."""
+        if not tunnel_default():
             return row
-        code, data = await self._set_cloud(kind, row["id"], True)
+        code, data = await self._set_tunnel(kind, row["id"], True)
         if code == 204:
-            items = await self._items_quiet()
-            CLOUD_WAIT.start({row["id"]: kind}, items)
-            for item in items:
+            for item in await self._items_quiet():
                 if item.get("id") == row["id"]:
-                    return {**row, "cloud": True, "link": self._link(item.get("url", ""))}
-            return {**row, "cloud": True}
+                    return {**row, "tunnel": True, "link": self._link(item.get("url", ""))}
+            return {**row, "tunnel": True}
         reason = data.get("reason") if isinstance(data, dict) else ""
-        if reason == "cloud_not_configured":
-            set_cloud_default(False)
+        if reason == "tunnel_not_available":
+            set_tunnel_default(False)
         # code 0: the hub did not answer
-        return {**row, "cloud_reason": reason or (NOT_ON_REASON if code else HubUnavailable.reason)}
+        return {**row, "tunnel_reason": reason or (NOT_ON_REASON if code else HubUnavailable.reason)}
 
 
 class HubInfoHandler(_HubBase):
@@ -462,11 +359,12 @@ class HubInfoHandler(_HubBase):
             "requests_subdir": "",
             "public_base_url": "",
             "tunnel_configured": False,
-            "tunnel_active": cloud_default(),
+            "tunnel_active": tunnel_default(),
             "tunnel_autostart": False,
             "tunnel_running": False,
-            "tunnel_waiting": CLOUD_WAIT.waiting,
-            "tunnel_reason": CLOUD_WAIT.reason,
+            "tunnel_available": False,
+            "tunnel_ready": False,
+            "tunnel_default": tunnel_default(),
         }
         try:
             code, data = await HubClient().request("GET", "capabilities")
@@ -503,12 +401,11 @@ class HubInfoHandler(_HubBase):
 
 
 class HubTunnelHandler(_HubBase):
-    """api/tunnel - the cloud toggle. No daemon: it flips the Cloudflare
+    """api/tunnel - the tunnel toggle. No daemon: it flips the Cloudflare
     switch on every share and request this user has and sets the default
     for the next one. The hub refuses a switch on while the group policy has
     Cloudflare off; that refusal is relayed and the toggle stays off unless
-    the switch on already switched a record. A switch on starts the wait for
-    the hub's confirmation; a switch off ends it for the records it switched."""
+    the switch on already switched a record."""
 
     @tornado.web.authenticated
     async def get(self):
@@ -532,62 +429,48 @@ class HubTunnelHandler(_HubBase):
             if code != 200:
                 return self._relay(code, data)
             items = (data.get("items") if isinstance(data, dict) else None) or []
-            switched: dict[str, str] = {}
+            switched = 0  # records the hub really switched
             for item in items:
-                if bool(item.get("cloud")) == active:
+                if bool(item.get("tunnel")) == active:
                     continue
-                answer = await self._hub("PUT", f"{plural(item.get('kind', ''))}/{item.get('id', '')}/cloud", {"cloud": active})
-                # 204 switched, 404 the record is already gone - the same
-                # acceptance CloudWait._switch_back uses for this call
+                answer = await self._hub("PUT", f"{plural(item.get('kind', ''))}/{item.get('id', '')}/tunnel", {"tunnel": active})
+                # 204 switched, 404 the record is already gone (DEF-HUB-54)
                 if answer is None or answer[0] not in (204, 404):
-                    # a switch on that fails partway: the records it switched
-                    # wait for the confirmation like any switch on, so none is
-                    # left on while the header reads off
+                    # a switch on that fails partway leaves the records it
+                    # switched on, so the default must not read off
                     if active and switched:
-                        set_cloud_default(True)
-                        CLOUD_WAIT.start(switched, await self._items_quiet())
+                        set_tunnel_default(True)
                     return None if answer is None else self._relay(*answer)
-                switched[item.get("id", "")] = item.get("kind", "")
-            set_cloud_default(active)
-            if active:
-                # a record already on whose url is still the hub's own - a
-                # switch back off that failed - waits with the ones switched
-                on = {i.get("id", ""): i.get("kind", "") for i in items if i.get("cloud")}
-                CLOUD_WAIT.start({**on, **switched}, await self._items_quiet() if switched else items)
-            else:
-                CLOUD_WAIT.drop(switched)
+                if answer[0] == 204:
+                    switched += 1
+            set_tunnel_default(active)
         self.write_json(self._tunnel_state(caps))
 
 
-class HubCloudHandler(_HubBase):
-    """api/<shares|requests>/<id>/cloud - one record's Cloudflare switch."""
+class HubItemTunnelHandler(_HubBase):
+    """api/<shares|requests>/<id>/tunnel - one record's Cloudflare switch."""
 
     @tornado.web.authenticated
     async def post(self, kind, id_):
         body = self.get_json_body() or {}
-        cloud = body.get("cloud")
-        if not isinstance(cloud, bool):
-            return self.write_error_json(400, "'cloud' must be a boolean")
-        answer = await self._hub("PUT", f"{kind}/{id_}/cloud", {"cloud": cloud})
+        tunnel = body.get("tunnel")
+        if not isinstance(tunnel, bool):
+            return self.write_error_json(400, "'tunnel' must be a boolean")
+        answer = await self._hub("PUT", f"{kind}/{id_}/tunnel", {"tunnel": tunnel})
         if answer is None:
             return
         code, data = answer
         if code != 204:
             return self._relay(code, data)
-        if cloud:
-            CLOUD_WAIT.start({id_: "share" if kind == "shares" else "request"}, await self._items_quiet())
-        else:
-            CLOUD_WAIT.drop([id_])
-        self.write_json({"id": id_, "cloud": cloud})
+        self.write_json({"id": id_, "tunnel": tunnel})
 
 
 class HubStreamHandler(_HubBase):
     """api/stream - the panel's change stream, Server-Sent Events held open.
 
     One ``changed`` event per ring of the hub's own stream (the lab holds one
-    hub stream for all its panels, ``hub_stream.RELAY``), a keepalive comment
-    while idle, and one ``poll`` event when the hub has no stream route, in
-    which case the panel falls back to its timer. No payload: the panel
+    hub stream for all its panels, ``hub_stream.RELAY``) and a keepalive
+    comment while idle. No payload: the panel
     fetches its lists once per event and once per open.
     """
 
@@ -672,13 +555,11 @@ class HubSharesListHandler(_HubBase):
         password = str(body.get("password") or "")
         if not name:
             return self.write_error_json(400, "Missing 'name'")
-        if not isinstance(paths, list) or not paths:
-            return self.write_error_json(400, "'paths' must be a non-empty list")
-        for rel in paths:
-            if not isinstance(rel, str) or not _is_safe_relative(rel):
-                return self.write_error_json(400, f"Unsafe path: {rel}")
+        paths = self._kept_paths(paths)
+        if paths is None:
+            return
         answer = await self._hub(
-            "POST", "shares", {"title": name, "paths": paths, "password": password}
+            "POST", "shares", {"title": name, "paths": paths, "password": password, "exclude": self._hub_exclude()}
         )
         if answer is None:
             return
@@ -697,7 +578,7 @@ class HubSharesListHandler(_HubBase):
             "created_at": _now_iso(),
         }
         row = share_from_item(item, self._link(item["url"]))
-        self.write_json(await self._apply_cloud_default("share", row))
+        self.write_json(await self._apply_tunnel_default("share", row))
 
 
 class HubShareItemHandler(_HubBase):
@@ -720,6 +601,91 @@ class HubShareItemHandler(_HubBase):
         if code != 204:
             return self._relay(code, data)
         _PASSWORDS.pop(id_, None)
+        self.write_json({"ok": True})
+
+
+class HubShareItemsHandler(_HubBase):
+    """api/shares/<id>/items - a share's contents on the hub, through its one
+    ``content`` route: POST adds, DELETE removes, PUT renames. A name holds
+    ``/`` for a nested entry, and a rename to a name under another folder
+    moves it."""
+
+    async def _content(self, id_: str, body: dict) -> int | None:
+        """One content call; ``None`` when the refusal was already written."""
+        answer = await self._hub("POST", f"shares/{id_}/content", body)
+        if answer is None:
+            return None
+        code, data = answer
+        if code not in (202, 204):
+            self._relay(code, data)
+            return None
+        return code
+
+    @tornado.web.authenticated
+    async def post(self, id_):
+        paths = self._kept_paths((self.get_json_body() or {}).get("paths") or [])
+        if paths is None:
+            return
+        # The hub lands every path at the share root under its own name. It
+        # refuses a taken name without saying which, and drops two paths of
+        # one name after its 202, so both are answered here by name.
+        names = [Path(rel).name for rel in paths]
+        twice = sorted({n for n in names if names.count(n) > 1})
+        if twice:
+            return self.write_error_json(
+                400, f"Two of the chosen items are named {', '.join(twice)} - a share holds one entry per name"
+            )
+        items = await self._items("share")
+        if items is None:
+            return
+        held = {
+            str(f.get("name", "")).split("/")[0]
+            for item in items if item.get("id") == id_
+            for f in item.get("files") or []
+        }
+        taken = [n for n in names if n in held]
+        if taken:
+            return self.write_error_json(
+                400, f"The share already holds {', '.join(taken)} - remove or rename it there first"
+            )
+        body = {
+            "action": "add", "paths": paths, "password": _PASSWORDS.get(id_, ""),
+            "exclude": self._hub_exclude(),
+        }
+        answer = await self._hub("POST", f"shares/{id_}/content", body)
+        if answer is None:
+            return
+        code, data = answer
+        if isinstance(data, dict) and data.get("reason") in ("password_required", "password_wrong"):
+            # the hub keeps a hash only, and this process holds the password
+            # from the moment it was set here until it restarts
+            return self.write_error_json(
+                400,
+                "The hub asks for this share's password before it adds files, and the lab does not hold "
+                "the current one - open Change Password in the share's menu, enter the same password "
+                "again, then add the files",
+            )
+        if code not in (202, 204):
+            return self._relay(code, data)
+        self.write_json({"ok": True})
+
+    @tornado.web.authenticated
+    async def delete(self, id_):
+        for name in [n for n in self.get_arguments("name") if n]:
+            if await self._content(id_, {"action": "remove", "name": name}) is None:
+                return
+        self.write_json({"ok": True})
+
+    @tornado.web.authenticated
+    async def put(self, id_):
+        body = self.get_json_body() or {}
+        rename = {
+            "action": "rename",
+            "name": str(body.get("name") or ""),
+            "new_name": str(body.get("new_name") or ""),
+        }
+        if await self._content(id_, rename) is None:
+            return
         self.write_json({"ok": True})
 
 
@@ -761,7 +727,7 @@ class HubRequestsListHandler(_HubBase):
             "created_at": _now_iso(),
         }
         row = request_from_item(item, [], self._link(item["url"]))
-        self.write_json(await self._apply_cloud_default("request", row))
+        self.write_json(await self._apply_tunnel_default("request", row))
 
 
 class HubRequestItemHandler(_HubBase):
@@ -861,9 +827,10 @@ def hub_handlers(base_url: str, ns: str) -> list:
         (api("tunnel"), HubTunnelHandler),
         (api("generate-password"), GeneratePasswordHandler),
         (api(r"(shares|requests)", HUB_ID, "password"), HubPasswordHandler),
-        (api(r"(shares|requests)", HUB_ID, "cloud"), HubCloudHandler),
+        (api(r"(shares|requests)", HUB_ID, "tunnel"), HubItemTunnelHandler),
         (api("shares"), HubSharesListHandler),
         (api("shares", HUB_ID), HubShareItemHandler),
+        (api("shares", HUB_ID, "items"), HubShareItemsHandler),
         (api("requests"), HubRequestsListHandler),
         (api("requests", HUB_ID), HubRequestItemHandler),
         (api("requests", HUB_ID, "uploads", UPLOAD_ID, "fetch"), HubUploadFetchHandler),

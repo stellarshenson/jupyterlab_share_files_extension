@@ -12,7 +12,6 @@ import errno
 import json
 import re
 import socket
-import types
 
 import pytest
 import tornado.httpserver
@@ -21,7 +20,7 @@ from tornado.httpclient import AsyncHTTPClient, HTTPClientError
 from tornado.simple_httpclient import HTTPTimeoutError
 from tornado.testing import bind_unused_port
 
-from jupyterlab_share_files_extension import hub_routes, hub_stream, routes
+from jupyterlab_share_files_extension import hub_routes, hub_stream, routes, tunnel
 from jupyterlab_share_files_extension.hub import HubClient, HubUnavailable
 
 pytest_plugins = ["pytest_jupyter.jupyter_server"]
@@ -47,9 +46,11 @@ class FakeHub:
             "retention_days": 14, "public_base_url": "http://hub:8080", "serving": True,
             "password_required": False,
         }
+        # the group policy has a tunnel at all - capabilities.tunnel_available
         self.cloudflare_enabled = True
-        # the hub's own address, and its Cloudflare tunnel: a cloud-on record's
-        # url carries the tunnel hostname only while the tunnel is registered
+        # the hub's own address, and its Cloudflare tunnel: a switched-on
+        # record's url carries the tunnel hostname only while the tunnel is
+        # registered, which is capabilities.tunnel_ready
         self.own_base = "http://hub:8080"
         self.tunnel_base = "https://share.example.com"
         self.tunnel_registered = True
@@ -59,17 +60,61 @@ class FakeHub:
         self.unavailable = False
         self.raise_for: set[str] = set()
         self.counter = 0
+        # one add in flight: (share id, names); ``land_add`` settles it
+        self.pending_add: tuple[str, list[str]] | None = None
+
+    def land_add(self, reason: str = "") -> None:
+        """Settle the add in flight the way the hub's row reports it."""
+        id_, names = self.pending_add
+        self.pending_add = None
+        item = next(i for i in self.items if i["id"] == id_)
+        item.pop("progress", None)
+        if reason:
+            item["last_add"] = {"state": "refused", "reason": reason, "skipped": 0, "at": "2026-09-21T12:00:00Z"}
+            return
+        item["files"] += [{"name": n, "size": 3, "sha256": "0" * 64} for n in names]
+        item["last_add"] = {"state": "done", "skipped": 0, "at": "2026-09-21T12:00:00Z"}
+
+    def _content(self, id_, body):
+        item = next((i for i in self.items if i["id"] == id_), None)
+        if item is None:
+            return 404, {"status": 404, "message": "No such share"}
+        action = body["action"]
+        refuse = lambda reason, code=400: (code, {"reason": reason, "message": f"The {action} was refused: {reason}"})  # noqa: E731
+        if self.pending_add:
+            return refuse("busy", 409)
+        names = [f["name"] for f in item["files"]]
+        held = lambda n: [x for x in names if x == n or x.startswith(n + "/")]  # noqa: E731
+        if action == "add":
+            added = [p.rstrip("/").split("/")[-1] for p in body["paths"]]
+            if any(held(n) for n in added):
+                return refuse("name_taken")
+            self.pending_add = (id_, added)
+            item["last_add"] = {"state": "running"}
+            item["progress"] = {"copied": 1, "total": 3}
+            return 202, {}
+        if not held(body["name"]):
+            return refuse("unknown_entry")
+        if action == "remove":
+            item["files"] = [f for f in item["files"] if f["name"] not in held(body["name"])]
+        elif held(body["new_name"]):
+            return refuse("name_taken")
+        else:
+            for f in item["files"]:
+                if f["name"] in held(body["name"]):
+                    f["name"] = body["new_name"] + f["name"][len(body["name"]):]
+        return 204, {}
 
     def _new_id(self, prefix=""):
         self.counter += 1
         return f"{prefix}Fake_id_{self.counter:04d}"
 
     def _with_url(self, item):
-        """The tunnel hostname while the record's cloud switch is on and the
+        """The tunnel hostname while the record's tunnel switch is on and the
         tunnel is registered, the hub's own address otherwise
         (`record_base_url`, galaxahub v4.4.58)."""
-        on_tunnel = item.get("cloud") and self.tunnel_registered
-        base = self.tunnel_base if on_tunnel else self.own_base
+        switched_on = item.get("tunnel") and self.tunnel_registered
+        base = self.tunnel_base if switched_on else self.own_base
         return {**item, "url": f"{base}/s/{item['id']}"}
 
     async def request(self, method, path, body=None):
@@ -79,23 +124,28 @@ class FakeHub:
         if (method, path) in self.overrides:
             return self.overrides[(method, path)]
         if method == "GET" and path == "capabilities":
-            return 200, dict(self.capabilities)
+            return 200, {**self.capabilities,
+                         "tunnel_available": self.cloudflare_enabled,
+                         "tunnel_ready": self.tunnel_registered}
         if method == "GET" and path == "items":
             return 200, {"items": [self._with_url(i) for i in self.items]}
         if method == "POST" and path in ("shares", "requests"):
             kind = "share" if path == "shares" else "request"
             id_ = self._new_id("r_" if kind == "request" else "")
-            state = "staging" if kind == "share" else "ready"
+            state = "staging" if kind == "share" and body["paths"] else "ready"
             if self.capabilities.get("password_required") and not (body.get("password") or "").strip():
                 return 400, {"reason": "password_required", "message": "Your group requires a password"}
             self.items.append({
                 "id": id_, "kind": kind, "owner": "alice", "title": body["title"],
                 "state": state, "files": [], "bytes": 0, "skipped": 0,
                 "created_at": "2026-09-03T20:00:00Z", "expires_at": "2026-09-17T20:00:00Z",
-                "has_password": bool(body.get("password")), "cloud": False,
+                "has_password": bool(body.get("password")), "tunnel": False,
             })
-            return (202 if kind == "share" else 201), {
+            return (202 if state == "staging" else 201), {
                 "id": id_, "url": f"{self.own_base}/s/{id_}", "state": state}
+        m = re.fullmatch(r"shares/([^/]+)/content", path)
+        if m and method == "POST":
+            return self._content(m.group(1), body)
         m = re.fullmatch(r"(shares|requests)/([^/]+)", path)
         if m and method == "DELETE":
             before = len(self.items)
@@ -108,13 +158,13 @@ class FakeHub:
                     item["has_password"] = bool(body.get("password"))
                     return 204, {}
             return 404, {"status": 404, "message": "No such share"}
-        m = re.fullmatch(r"(shares|requests)/([^/]+)/cloud", path)
+        m = re.fullmatch(r"(shares|requests)/([^/]+)/tunnel", path)
         if m and method == "PUT":
             for item in self.items:
                 if item["id"] == m.group(2):
-                    if body["cloud"] and not self.cloudflare_enabled:
-                        return 403, {"reason": "cloud_not_configured", "message": "Cloudflare is off"}
-                    item["cloud"] = bool(body["cloud"])
+                    if body["tunnel"] and not self.cloudflare_enabled:
+                        return 403, {"reason": "tunnel_not_available", "message": "Cloudflare is off"}
+                    item["tunnel"] = bool(body["tunnel"])
                     return 204, {}
             return 404, {"status": 404, "message": "No such share"}
         m = re.fullmatch(r"requests/([^/]+)/uploads", path)
@@ -133,7 +183,6 @@ def fake_hub(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     hub = FakeHub()
     monkeypatch.setattr(hub_routes, "HubClient", lambda: hub)
-    monkeypatch.setattr(hub_routes, "CLOUD_WAIT", hub_routes.CloudWait())
     hub_routes._PASSWORDS.clear()
     return hub
 
@@ -178,12 +227,21 @@ async def test_info_reflects_capabilities(jp_fetch, fake_hub):
     assert info["tunnel_configured"] is True
     assert info["tunnel_active"] is False
     assert info["tunnel_running"] is False
+    # the hub's own verdicts, and the lab's stored default
+    assert info["tunnel_available"] is True
+    assert info["tunnel_ready"] is True
+    assert info["tunnel_default"] is False
+    assert "tunnel_waiting" not in info and "tunnel_reason" not in info
     assert info["public_base_url"] == ""
     assert info["hub"] == {
         "available": True, "allow_share": False, "allow_request": True,
         "reason": "share_not_granted", "serving": False, "password_required": False,
         "max_share_bytes": 5, "max_upload_bytes": 10, "max_shares": 20, "retention_days": 14,
     }
+    # the tunnel state is re-read from the hub, so a connector that drops is
+    # reported on the next read without a click (ACC-HUBM-161)
+    fake_hub.tunnel_registered = False
+    assert _json(await jp_fetch(NS, "api", "info"))["tunnel_ready"] is False
 
 
 async def test_info_reports_an_unavailable_hub_without_failing(jp_fetch, fake_hub):
@@ -197,7 +255,10 @@ async def test_info_reports_an_unavailable_hub_without_failing(jp_fetch, fake_hu
 async def test_create_share_sends_paths_and_returns_a_staging_row(jp_fetch, fake_hub):
     resp = await _post(jp_fetch, "api", "shares", body={"name": "Report", "paths": ["notes/report.csv"], "password": "pw"})
     row = _json(resp)
-    assert ("POST", "shares", {"title": "Report", "paths": ["notes/report.csv"], "password": "pw"}) in fake_hub.calls
+    sent = next(c[2] for c in fake_hub.calls if c[:2] == ("POST", "shares"))
+    assert {k: sent[k] for k in ("title", "paths", "password")} == {
+        "title": "Report", "paths": ["notes/report.csv"], "password": "pw"}
+    assert "__pycache__" in sent["exclude"]
     assert row["state"] == "staging"
     assert row["name"] == "Report"
     assert row["kind"] == "share"
@@ -214,6 +275,123 @@ async def test_create_share_refuses_an_unsafe_path_before_calling_the_hub(jp_fet
         await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["../etc/passwd"]})
     assert err.value.code == 400
     assert not any(c[0] == "POST" for c in fake_hub.calls)
+
+
+async def test_an_empty_share_is_created_ready(jp_fetch, fake_hub):
+    """ACC-HUBM-163: the hub creates a share with no files, born ready; the
+    owner fills it afterwards."""
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))
+    assert row["state"] == "ready" and row["entries"] == []
+    assert any(c[:2] == ("POST", "shares") and c[2]["paths"] == [] for c in fake_hub.calls)
+
+
+async def _share_row(jp_fetch, id_):
+    return _json(await jp_fetch(NS, "api", "shares", id_))
+
+
+async def test_an_add_is_sent_filtered_and_the_row_relays_the_hubs_last_add(jp_fetch, fake_hub):
+    """ACC-DRAG-156: files go into an existing hub share. The hub's row
+    carries ``last_add`` and ``progress`` while it copies; the lab relays them
+    and sends the catalogue's plain names for the hub to apply below a folder."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": [], "password": "pw"}))["id"]
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["data/q3.csv", "src/__pycache__"]})
+    method, path, body = fake_hub.calls[-1]
+    assert (method, path) == ("POST", f"shares/{id_}/content")
+    assert body["paths"] == ["data/q3.csv"] and body["password"] == "pw"
+    assert "__pycache__" in body["exclude"] and not any("*" in n for n in body["exclude"])
+    row = await _share_row(jp_fetch, id_)
+    assert row["adding"] is True and row["progress"] == {"copied": 1, "total": 3}
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["b.txt"]})
+    assert err.value.code == 409 and json.loads(err.value.response.body)["reason"] == "busy"
+    fake_hub.land_add()
+    row = await _share_row(jp_fetch, id_)
+    assert [e["name"] for e in row["entries"]] == ["q3.csv"]
+    assert row["adding"] is False and row["add_reason"] == "" and row["progress"] is None
+
+
+async def test_an_add_the_hub_refuses_carries_its_reason_on_the_row(jp_fetch, fake_hub):
+    """The hub records a refused add as ``last_add`` with the reason; the row
+    carries it until the next add."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["big.bin"]})
+    fake_hub.land_add("over_cap")
+    row = await _share_row(jp_fetch, id_)
+    assert row["entries"] == [] and row["add_reason"] == "over_cap" and row["adding"] is False
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["small.txt"]})
+    fake_hub.land_add()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == ""
+
+
+async def test_an_add_to_a_password_share_the_lab_forgot_says_how_to_recover(jp_fetch, fake_hub):
+    """The password lives in this process only; after a restart the hub
+    refuses the add with `password_required` (probed live 2026-09-21)."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    fake_hub.overrides[("POST", f"shares/{id_}/content")] = (
+        400, {"reason": "password_required", "message": "The add was refused: password_required"})
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["a.txt"]})
+    body = json.loads(err.value.response.body)
+    assert err.value.code == 400 and "enter the same password again" in body["error"] and "reason" not in body
+
+
+async def test_a_taken_or_repeated_name_is_refused_by_name_before_the_hub_is_asked(jp_fetch, fake_hub):
+    """The hub refuses a taken name without saying which, and drops two paths
+    of one name after its 202."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    fake_hub.items[0]["files"] = [{"name": "data/q3.csv", "size": 1, "sha256": ""}]
+    for paths, words in ((["new/data"], "already holds data"), (["a/x.txt", "b/x.txt"], "named x.txt")):
+        with pytest.raises(HTTPClientError) as err:
+            await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": paths})
+        assert err.value.code == 400 and words in json.loads(err.value.response.body)["error"]
+    assert not any(c[1].endswith("/content") for c in fake_hub.calls)
+
+
+async def test_remove_and_rename_go_through_the_content_route(jp_fetch, fake_hub):
+    """ACC-EDIT-165, 166, 168: a name may hold a slash, and a rename under
+    another folder is the move."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    fake_hub.items[0]["files"] = [{"name": n, "size": 1, "sha256": ""} for n in ("a.txt", "sub/c.txt")]
+    await jp_fetch(NS, "api", "shares", id_, "items", method="PUT",
+                   body=json.dumps({"name": "a.txt", "new_name": "sub/a.txt"}))
+    assert fake_hub.calls[-1][2] == {"action": "rename", "name": "a.txt", "new_name": "sub/a.txt"}
+    with pytest.raises(HTTPClientError) as err:
+        await jp_fetch(NS, "api", "shares", id_, "items", method="PUT",
+                       body=json.dumps({"name": "sub/a.txt", "new_name": "sub/c.txt"}))
+    assert err.value.code == 400 and json.loads(err.value.response.body)["reason"] == "name_taken"
+    await jp_fetch(NS, "api", "shares", id_, "items", method="DELETE", params={"name": "sub"})
+    assert (await _share_row(jp_fetch, id_))["entries"] == []
+
+
+async def test_an_excluded_name_is_not_sent_to_the_hub(jp_fetch, fake_hub):
+    """ACC-EXCL-158: the hub copies what it is sent, so the catalogue is
+    applied to the dropped items before the call."""
+    await _post(
+        jp_fetch,
+        "api",
+        "shares",
+        body={"name": "x", "paths": ["notes.txt", ".ipynb_checkpoints", "src/__pycache__"]},
+    )
+    sent = next(c for c in fake_hub.calls if c[0] == "POST" and c[1] == "shares")
+    assert sent[2]["paths"] == ["notes.txt"]
+
+
+async def test_a_share_of_only_excluded_names_is_refused(jp_fetch, fake_hub):
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": [".DS_Store"]})
+    assert err.value.code == 400
+    assert "excluded list" in json.loads(err.value.response.body)["error"]
+    assert not any(c[0] == "POST" for c in fake_hub.calls)
+
+
+async def test_an_add_of_only_excluded_names_is_refused_with_the_same_sentence(jp_fetch, fake_hub):
+    """ACC-EDIT-167: the catalogue applies to a drop on a share as it does at create."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["a/.ipynb_checkpoints", ".DS_Store"]})
+    assert err.value.code == 400
+    assert "excluded list" in json.loads(err.value.response.body)["error"]
+    assert not any(c[1].endswith("/content") for c in fake_hub.calls)
 
 
 async def test_hub_refusal_is_relayed_with_its_reason(jp_fetch, fake_hub):
@@ -270,12 +448,12 @@ async def test_hub_outage_during_the_upload_listing_answers_502(jp_fetch, fake_h
     assert json.loads(err.value.response.body)["reason"] == "hub_unavailable"
 
 
-async def test_cloud_toggle_is_not_persisted_when_the_hub_is_unreachable(jp_fetch, fake_hub):
+async def test_the_toggle_is_not_persisted_when_the_hub_is_unreachable(jp_fetch, fake_hub):
     fake_hub.unavailable = True
     with pytest.raises(HTTPClientError) as err:
         await _post(jp_fetch, "api", "tunnel", body={"active": True})
     assert err.value.code == 502
-    assert hub_routes.cloud_default() is False
+    assert hub_routes.tunnel_default() is False
 
 
 async def test_delete_share_forwards_and_404_stays_404(jp_fetch, fake_hub):
@@ -436,80 +614,81 @@ async def test_link_check_says_why_nothing_answered_in_plain_words(monkeypatch):
     assert (await routes.probe_link("https://share.example.invalid/s/x"))["error"] == "a network error"
 
 
-async def test_cloud_toggle_flips_every_record_and_sets_the_default(jp_fetch, fake_hub):
+async def test_the_toggle_flips_every_record_and_sets_the_default(jp_fetch, fake_hub):
     share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
     req = _json(await _post(jp_fetch, "api", "requests", body={"name": "y"}))
     # born off: the hub's own address, restored to the browser origin
-    assert share["cloud"] is False and re.fullmatch(r"http://[^/]+/s/" + share["id"], share["link"])
+    assert share["tunnel"] is False and re.fullmatch(r"http://[^/]+/s/" + share["id"], share["link"])
     state = _json(await jp_fetch(NS, "api", "tunnel"))
     assert state == {"tunnel_configured": True, "tunnel_active": False, "tunnel_autostart": False,
-                     "tunnel_running": True, "tunnel_waiting": False, "tunnel_reason": ""}
+                     "tunnel_running": True, "tunnel_available": True, "tunnel_ready": True,
+                     "tunnel_default": False}
     state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))
-    assert state["tunnel_active"] is True
-    assert [c for c in fake_hub.calls if c[0] == "PUT" and c[1].endswith("/cloud")] == [
-        ("PUT", f"shares/{share['id']}/cloud", {"cloud": True}),
-        ("PUT", f"requests/{req['id']}/cloud", {"cloud": True}),
+    assert state["tunnel_active"] is True and state["tunnel_default"] is True
+    assert [c for c in fake_hub.calls if c[0] == "PUT" and c[1].endswith("/tunnel")] == [
+        ("PUT", f"shares/{share['id']}/tunnel", {"tunnel": True}),
+        ("PUT", f"requests/{req['id']}/tunnel", {"tunnel": True}),
     ]
     listing = _json(await jp_fetch(NS, "api", "shares"))
-    assert listing["shares"][0]["cloud"] is True
+    assert listing["shares"][0]["tunnel"] is True
     assert listing["shares"][0]["link"] == f"https://share.example.com/s/{share['id']}"
     # a record minted while the toggle is on is switched on after the create
     # and answers with the url the hub composed for it
     new = _json(await _post(jp_fetch, "api", "requests", body={"name": "z"}))
-    assert new["cloud"] is True and new["link"] == f"https://share.example.com/s/{new['id']}"
+    assert new["tunnel"] is True and new["link"] == f"https://share.example.com/s/{new['id']}"
     state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": False}))
     assert state["tunnel_active"] is False
     listing = _json(await jp_fetch(NS, "api", "requests"))
-    assert all(r["cloud"] is False for r in listing["requests"])
+    assert all(r["tunnel"] is False for r in listing["requests"])
     assert all(re.fullmatch(r"http://[^/]+/s/" + r["id"], r["link"]) for r in listing["requests"])
 
 
 async def test_a_record_gone_mid_switch_does_not_abort_the_bulk_switch(jp_fetch, fake_hub):
     """DEF-HUB-54: one record deleted in another panel answers 404; the bulk
-    switch counts it as done, like CloudWait._switch_back does, and the
-    default lands on the side the owner chose."""
+    switch counts it as done, and the default lands on the side the owner
+    chose."""
     share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
     req = _json(await _post(jp_fetch, "api", "requests", body={"name": "y"}))
     state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))
     assert state["tunnel_active"] is True
     # the share is deleted elsewhere before the switch off reaches it
-    fake_hub.overrides[("PUT", f"shares/{share['id']}/cloud")] = (404, {"status": 404, "message": "No such share"})
+    fake_hub.overrides[("PUT", f"shares/{share['id']}/tunnel")] = (404, {"status": 404, "message": "No such share"})
     state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": False}))
     assert state["tunnel_active"] is False
-    assert hub_routes.cloud_default() is False
-    assert [c for c in fake_hub.calls if c[0] == "PUT" and c[1].endswith("/cloud")][-1] == (
-        "PUT", f"requests/{req['id']}/cloud", {"cloud": False})
+    assert hub_routes.tunnel_default() is False
+    assert [c for c in fake_hub.calls if c[0] == "PUT" and c[1].endswith("/tunnel")][-1] == (
+        "PUT", f"requests/{req['id']}/tunnel", {"tunnel": False})
     listing = _json(await jp_fetch(NS, "api", "requests"))
-    assert listing["requests"][0]["cloud"] is False
+    assert listing["requests"][0]["tunnel"] is False
 
 
-async def test_cloud_toggle_on_is_refused_while_the_policy_has_cloudflare_off(jp_fetch, fake_hub):
+async def test_the_toggle_on_is_refused_while_the_policy_has_cloudflare_off(jp_fetch, fake_hub):
     fake_hub.cloudflare_enabled = False
     await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]})
     with pytest.raises(HTTPClientError) as exc:
         await _post(jp_fetch, "api", "tunnel", body={"active": True})
-    assert exc.value.code == 403 and _json(exc.value.response)["reason"] == "cloud_not_configured"
-    assert hub_routes.cloud_default() is False
+    assert exc.value.code == 403 and _json(exc.value.response)["reason"] == "tunnel_not_available"
+    assert hub_routes.tunnel_default() is False
     # with no record to refuse on, the preference stands until the first
     # create is refused - then it is dropped and the row says why
     fake_hub.items.clear()
     assert _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))["tunnel_active"] is True
     row = _json(await _post(jp_fetch, "api", "requests", body={"name": "y"}))
-    assert row["cloud"] is False and row["cloud_reason"] == "cloud_not_configured"
-    assert hub_routes.cloud_default() is False
+    assert row["tunnel"] is False and row["tunnel_reason"] == "tunnel_not_available"
+    assert hub_routes.tunnel_default() is False
 
 
 async def test_one_record_is_switched_on_its_own(jp_fetch, fake_hub):
     share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
-    res = _json(await _post(jp_fetch, "api", "shares", share["id"], "cloud", body={"cloud": True}))
-    assert res == {"id": share["id"], "cloud": True}
+    res = _json(await _post(jp_fetch, "api", "shares", share["id"], "tunnel", body={"tunnel": True}))
+    assert res == {"id": share["id"], "tunnel": True}
     row = _json(await jp_fetch(NS, "api", "shares", share["id"]))
-    assert row["cloud"] is True and row["link"].startswith("https://share.example.com/")
+    assert row["tunnel"] is True and row["link"].startswith("https://share.example.com/")
     with pytest.raises(HTTPClientError) as exc:
-        await _post(jp_fetch, "api", "shares", share["id"], "cloud", body={"cloud": "yes"})
+        await _post(jp_fetch, "api", "shares", share["id"], "tunnel", body={"tunnel": "yes"})
     assert exc.value.code == 400
     with pytest.raises(HTTPClientError) as exc:
-        await _post(jp_fetch, "api", "requests", "r_Fake_id_9999", "cloud", body={"cloud": False})
+        await _post(jp_fetch, "api", "requests", "r_Fake_id_9999", "tunnel", body={"tunnel": False})
     assert exc.value.code == 404
 
 
@@ -525,268 +704,30 @@ async def test_password_required_is_reported_and_relayed(jp_fetch, fake_hub):
     assert row["has_password"] is True
 
 
-# --------------------------------------------------------------------------- #
-# The Cloudflare confirmation wait
-# --------------------------------------------------------------------------- #
-
-
-@pytest.fixture
-def rings(monkeypatch):
-    """Short bounds for the wait; the rings it sends to the open panels."""
-    monkeypatch.setattr(hub_routes, "CONFIRM_POLL_SECONDS", 0.05)
-    monkeypatch.setattr(hub_routes, "CONFIRM_TIMEOUT_SECONDS", 0.5)
-    sent: list[str] = []
-    monkeypatch.setattr(hub_routes, "RELAY", types.SimpleNamespace(ring=sent.append))
-    return sent
-
-
-def _items_calls(hub) -> int:
-    return sum(1 for c in hub.calls if c[:2] == ("GET", "items"))
-
-
-async def _until(predicate, seconds=3.0):
-    for _ in range(int(seconds / 0.01)):
-        if predicate():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("not reached in time")
-
-
-async def test_switch_on_waits_for_the_tunnel_link_and_rings_the_panels_once(jp_fetch, fake_hub, rings):
-    fake_hub.tunnel_registered = False
-    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
-    state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))
-    assert state["tunnel_active"] is True and state["tunnel_waiting"] is True
-    await asyncio.sleep(0.2)
-    assert _json(await jp_fetch(NS, "api", "info"))["tunnel_waiting"] is True
-    assert rings == []
-    # the tunnel registers; the hub rings nothing for it
-    fake_hub.tunnel_registered = True
-    await _until(lambda: not hub_routes.CLOUD_WAIT.waiting)
-    assert rings == ["changed"]
-    state = _json(await jp_fetch(NS, "api", "tunnel"))
-    assert (state["tunnel_active"], state["tunnel_waiting"], state["tunnel_reason"]) == (True, False, "")
-    listing = _json(await jp_fetch(NS, "api", "shares"))
-    assert listing["shares"][0]["link"] == f"https://share.example.com/s/{share['id']}"
-    calls = _items_calls(fake_hub)
-    await asyncio.sleep(0.3)
-    assert _items_calls(fake_hub) == calls and rings == ["changed"]
-
-
-async def test_confirmation_checks_are_bounded_and_none_while_nothing_waits(jp_fetch, fake_hub, rings):
-    fake_hub.tunnel_registered = False
-    await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]})
-    idle = _items_calls(fake_hub)
-    await asyncio.sleep(0.3)
-    assert _items_calls(fake_hub) == idle
-    await _post(jp_fetch, "api", "tunnel", body={"active": True})
-    start = _items_calls(fake_hub)
-    await _until(lambda: not hub_routes.CLOUD_WAIT.waiting)
-    # 0.5 s at no more than one check per 0.05 s
-    assert 1 <= _items_calls(fake_hub) - start <= 11
-    end = _items_calls(fake_hub)
-    await asyncio.sleep(0.3)
-    assert _items_calls(fake_hub) == end
-
-
-async def test_two_switch_ons_share_one_wait(jp_fetch, fake_hub, rings, monkeypatch):
-    monkeypatch.setattr(hub_routes, "CONFIRM_TIMEOUT_SECONDS", 5)
-    fake_hub.tunnel_registered = False
-    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
-    req = _json(await _post(jp_fetch, "api", "requests", body={"name": "y"}))
-    await _post(jp_fetch, "api", "shares", share["id"], "cloud", body={"cloud": True})
-    await _post(jp_fetch, "api", "requests", req["id"], "cloud", body={"cloud": True})
-    start = _items_calls(fake_hub)
-    await asyncio.sleep(0.5)
-    # one wait's cadence - two waits would check twice as often
-    assert _items_calls(fake_hub) - start <= 11
-    fake_hub.tunnel_registered = True
-    await _until(lambda: not hub_routes.CLOUD_WAIT.waiting)
-    assert rings == ["changed"]
-
-
-async def test_unconfirmed_switch_on_goes_back_off_with_a_reason(jp_fetch, fake_hub, rings):
-    fake_hub.tunnel_registered = False
-    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
-    req = _json(await _post(jp_fetch, "api", "requests", body={"name": "y"}))
-    await _post(jp_fetch, "api", "tunnel", body={"active": True})
-    await _until(lambda: not hub_routes.CLOUD_WAIT.waiting)
-    offs = [c for c in fake_hub.calls if c[0] == "PUT" and c[2] == {"cloud": False}]
-    assert sorted(offs) == [
-        ("PUT", f"requests/{req['id']}/cloud", {"cloud": False}),
-        ("PUT", f"shares/{share['id']}/cloud", {"cloud": False}),
-    ]
-    assert all(i["cloud"] is False for i in fake_hub.items)
-    assert hub_routes.cloud_default() is False
-    state = _json(await jp_fetch(NS, "api", "tunnel"))
-    assert (state["tunnel_active"], state["tunnel_waiting"], state["tunnel_reason"]) == (
-        False, False, "cloud_not_confirmed")
-    assert _json(await jp_fetch(NS, "api", "info"))["tunnel_reason"] == "cloud_not_confirmed"
-    assert rings == ["changed"]
-    # the next switch-on clears the reason; switching off ends its wait at once
-    state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))
-    assert (state["tunnel_waiting"], state["tunnel_reason"]) == (True, "")
-    state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": False}))
-    assert (state["tunnel_waiting"], state["tunnel_reason"]) == (False, "")
-
-
-async def test_a_check_the_hub_never_answers_fails_and_the_wait_still_goes_back_off(jp_fetch, fake_hub, rings, monkeypatch):
-    fake_hub.tunnel_registered = False
-    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
-    await _post(jp_fetch, "api", "tunnel", body={"active": True})
-    assert hub_routes.CLOUD_WAIT.waiting is True
-    sock = _stall(fake_hub, monkeypatch, "items")
-    try:
-        await _until(lambda: not hub_routes.CLOUD_WAIT.waiting)
-    finally:
-        sock.close()
-    assert ("PUT", f"shares/{share['id']}/cloud", {"cloud": False}) in fake_hub.calls
-    assert fake_hub.items[0]["cloud"] is False
-    assert hub_routes.cloud_default() is False
-    assert hub_routes.CLOUD_WAIT.reason == "cloud_not_confirmed"
-    assert rings == ["changed"]
-
-
-async def test_a_hub_back_from_an_outage_gets_a_full_bound_to_register_its_tunnel(jp_fetch, fake_hub, rings):
-    fake_hub.tunnel_registered = False
-    await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]})
-    await _post(jp_fetch, "api", "tunnel", body={"active": True})
-    # the hub stops answering 0.1 s into the wait and is back 0.15 s later,
-    # still on its own address
-    await asyncio.sleep(0.1)
-    fake_hub.raise_for.add("items")
-    await asyncio.sleep(0.15)
-    fake_hub.raise_for.discard("items")
-    # the first bound has passed: the record is still on, the wait still runs
-    await asyncio.sleep(0.3)
-    assert hub_routes.CLOUD_WAIT.waiting is True
-    assert fake_hub.items[0]["cloud"] is True
-    fake_hub.tunnel_registered = True
-    await _until(lambda: not hub_routes.CLOUD_WAIT.waiting)
-    assert not [c for c in fake_hub.calls if c[0] == "PUT" and c[2] == {"cloud": False}]
-    assert fake_hub.items[0]["cloud"] is True
-    assert hub_routes.CLOUD_WAIT.reason == ""
-    assert rings == ["changed"]
-
-
-async def test_a_hub_back_without_its_tunnel_for_a_full_bound_goes_back_off_once(jp_fetch, fake_hub, rings):
-    fake_hub.tunnel_registered = False
-    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
-    await _post(jp_fetch, "api", "tunnel", body={"active": True})
-    await asyncio.sleep(0.1)
-    fake_hub.raise_for.add("items")
-    await asyncio.sleep(0.15)
-    fake_hub.raise_for.discard("items")
-    await asyncio.sleep(0.3)
-    assert hub_routes.CLOUD_WAIT.waiting is True
-    # a second outage inside the restarted bound does not restart it again:
-    # the wait ends 0.5 s after the first answer back, 0.8 s in
-    fake_hub.raise_for.add("items")
-    await asyncio.sleep(0.1)
-    fake_hub.raise_for.discard("items")
-    await asyncio.sleep(0.3)
-    assert hub_routes.CLOUD_WAIT.waiting is False
-    assert ("PUT", f"shares/{share['id']}/cloud", {"cloud": False}) in fake_hub.calls
-    assert fake_hub.items[0]["cloud"] is False
-    assert hub_routes.cloud_default() is False
-    assert hub_routes.CLOUD_WAIT.reason == "cloud_not_confirmed"
-    assert rings == ["changed"]
-
-
-async def test_a_switch_back_the_hub_refuses_keeps_the_default_and_says_so(jp_fetch, fake_hub, rings):
-    fake_hub.tunnel_registered = False
-    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
-    await _post(jp_fetch, "api", "tunnel", body={"active": True})
-    assert hub_routes.CLOUD_WAIT.waiting is True
-    fake_hub.raise_for.add(f"shares/{share['id']}/cloud")
-    await _until(lambda: not hub_routes.CLOUD_WAIT.waiting)
-    assert ("PUT", f"shares/{share['id']}/cloud", {"cloud": False}) in fake_hub.calls
-    # the record is still on at the hub, so the default and the header stay on
-    assert fake_hub.items[0]["cloud"] is True
-    assert hub_routes.cloud_default() is True
-    assert hub_routes.CLOUD_WAIT.reason == "hub_unavailable"
-    assert rings == ["changed"]
-
-
-async def test_a_switch_back_the_hub_answers_with_an_error_says_it_stayed_on(jp_fetch, fake_hub, rings):
-    fake_hub.tunnel_registered = False
-    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
-    await _post(jp_fetch, "api", "tunnel", body={"active": True})
-    fake_hub.overrides[("PUT", f"shares/{share['id']}/cloud")] = (500, {"status": 500, "message": "boom"})
-    await _until(lambda: not hub_routes.CLOUD_WAIT.waiting)
-    # the hub answered, so the reason is not an unreachable hub
-    assert fake_hub.items[0]["cloud"] is True
-    assert hub_routes.cloud_default() is True
-    state = _json(await jp_fetch(NS, "api", "tunnel"))
-    assert (state["tunnel_active"], state["tunnel_waiting"], state["tunnel_reason"]) == (
-        True, False, "cloud_not_switched_off")
-    # the next header switch on waits for the record still on, and does not
-    # answer on before the hub confirms it
-    del fake_hub.overrides[("PUT", f"shares/{share['id']}/cloud")]
-    state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))
-    assert (state["tunnel_waiting"], state["tunnel_reason"]) == (True, "")
-    state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": False}))
-    assert state["tunnel_waiting"] is False
-
-
 async def test_a_default_switch_on_after_create_names_why_it_failed(jp_fetch, fake_hub):
     await _post(jp_fetch, "api", "tunnel", body={"active": True})
     # the hub answers with an error: its own lab slug, not an unreachable hub
-    fake_hub.overrides[("PUT", "requests/r_Fake_id_0001/cloud")] = (500, {"status": 500, "message": "boom"})
+    fake_hub.overrides[("PUT", "requests/r_Fake_id_0001/tunnel")] = (500, {"status": 500, "message": "boom"})
     row = _json(await _post(jp_fetch, "api", "requests", body={"name": "y"}))
-    assert row["cloud_reason"] == "cloud_not_switched_on"
+    assert row["tunnel_reason"] == "tunnel_not_switched_on"
     # the hub does not answer
-    fake_hub.raise_for.add("requests/r_Fake_id_0002/cloud")
+    fake_hub.raise_for.add("requests/r_Fake_id_0002/tunnel")
     row = _json(await _post(jp_fetch, "api", "requests", body={"name": "z"}))
-    assert row["cloud_reason"] == "hub_unavailable"
+    assert row["tunnel_reason"] == "hub_unavailable"
 
 
-async def test_a_header_switch_on_that_fails_partway_waits_for_the_records_it_switched(jp_fetch, fake_hub, rings):
-    fake_hub.tunnel_registered = False
-    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+async def test_a_header_switch_on_that_fails_partway_keeps_the_records_it_switched(jp_fetch, fake_hub):
+    await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]})
     req = _json(await _post(jp_fetch, "api", "requests", body={"name": "y"}))
-    fake_hub.overrides[("PUT", f"requests/{req['id']}/cloud")] = (500, {"status": 500, "message": "boom"})
+    fake_hub.overrides[("PUT", f"requests/{req['id']}/tunnel")] = (500, {"status": 500, "message": "boom"})
     with pytest.raises(HTTPClientError) as exc:
         await _post(jp_fetch, "api", "tunnel", body={"active": True})
     assert exc.value.code == 500
-    # the share went on: the header waits for it instead of reading off
-    assert fake_hub.items[0]["cloud"] is True
+    # the share went on: the default must not read off over a record that is on
+    assert fake_hub.items[0]["tunnel"] is True
+    assert hub_routes.tunnel_default() is True
     state = _json(await jp_fetch(NS, "api", "tunnel"))
-    assert (state["tunnel_active"], state["tunnel_waiting"]) == (True, True)
-    # unconfirmed, it goes back off with the default
-    await _until(lambda: not hub_routes.CLOUD_WAIT.waiting)
-    assert ("PUT", f"shares/{share['id']}/cloud", {"cloud": False}) in fake_hub.calls
-    assert fake_hub.items[0]["cloud"] is False
-    assert hub_routes.cloud_default() is False
-    # the hub stops answering partway: the same wait
-    fake_hub.tunnel_registered = True
-    fake_hub.overrides.clear()
-    fake_hub.raise_for.add(f"requests/{req['id']}/cloud")
-    with pytest.raises(HTTPClientError) as exc:
-        await _post(jp_fetch, "api", "tunnel", body={"active": True})
-    assert exc.value.code == 502
-    state = _json(await jp_fetch(NS, "api", "tunnel"))
-    # the tunnel stands, so the share is confirmed at once and the header reads on
-    assert (state["tunnel_active"], state["tunnel_waiting"]) == (True, False)
-
-
-async def test_no_wait_without_a_record_or_for_a_link_already_on_the_tunnel(jp_fetch, fake_hub, rings):
-    # no record: the toggle stores the default and shows on at once
-    state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))
-    assert (state["tunnel_active"], state["tunnel_waiting"]) == (True, False)
-    # the tunnel stands: a record born on already carries its hostname
-    row = _json(await _post(jp_fetch, "api", "requests", body={"name": "y"}))
-    assert row["cloud"] is True and row["link"].startswith("https://share.example.com/")
-    assert hub_routes.CLOUD_WAIT.waiting is False
-    calls = _items_calls(fake_hub)
-    await asyncio.sleep(0.2)
-    assert _items_calls(fake_hub) == calls and rings == []
-    # the tunnel is down: the next record switched on starts the wait
-    fake_hub.tunnel_registered = False
-    await _post(jp_fetch, "api", "requests", body={"name": "z"})
-    assert _json(await jp_fetch(NS, "api", "tunnel"))["tunnel_waiting"] is True
-    state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": False}))
-    assert (state["tunnel_waiting"], state["tunnel_reason"]) == (False, "")
+    assert (state["tunnel_active"], state["tunnel_default"]) == (True, True)
 
 
 # --------------------------------------------------------------------------- #
@@ -846,15 +787,6 @@ async def test_stream_relays_the_hub_rings(jp_fetch, jp_http_port, jp_base_url, 
     assert text.count("event: changed\ndata:\n\n") == 3
     await asyncio.sleep(0.1)  # the server notices the closed connection
     assert hub_stream.RELAY.connected is False  # the last reader took the hub stream down
-
-
-async def test_stream_tells_the_panel_to_poll_on_an_older_hub(jp_fetch, jp_http_port, jp_base_url, jp_auth_header, fake_hub, fake_hub_stream):
-    fake_hub_stream["status"] = 404
-    url = _stream_url(jp_http_port, jp_base_url, jp_auth_header)
-    text = await _read_stream(url, 1)
-    assert "event: poll\ndata:\n\n" in text
-    assert "event: changed" not in text
-    assert fake_hub_stream["opens"] == 1
 
 
 async def test_stream_answers_403_without_the_lab_credentials(jp_fetch, jp_http_port, jp_base_url, fake_hub, fake_hub_stream):

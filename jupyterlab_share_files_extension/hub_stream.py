@@ -9,10 +9,8 @@ the panels as one ``changed`` event each. A ring carries nothing: the panel
 fetches the whole current state, so a missed ring is covered by the next
 open and a duplicate ring is idempotent.
 
-A hub without the route (an older galaxahub) answers 404. The relay then
-tells its panels to ``poll`` and does not try the hub again until every
-panel has left and a new one subscribes; a hub that cannot be reached is
-retried every ``RETRY_SECONDS`` for as long as a panel is listening.
+A hub that cannot be reached, or answers anything but a stream, is retried
+every ``RETRY_SECONDS`` for as long as a panel is listening.
 """
 
 from __future__ import annotations
@@ -25,7 +23,6 @@ from urllib.parse import urlparse
 from .hub import HubClient, HubUnavailable
 
 CHANGED = "changed"
-POLL = "poll"
 CLOSE = object()
 
 # seconds between reconnects to the hub, the hub's own `retry:` hint
@@ -130,34 +127,28 @@ class Relay:
     def __init__(self):
         self._queues: set[asyncio.Queue] = set()
         self._task: asyncio.Task | None = None
-        self._unsupported = False
 
     @property
     def connected(self) -> bool:
-        # a run that ended (the hub answered 404) holds no hub stream
         return self._task is not None and not self._task.done()
 
     def subscribe(self) -> asyncio.Queue:
         """One panel stream opened: its queue, and the hub stream if this is
-        the first. A hub known to lack the route answers ``poll`` at once."""
+        the first."""
         queue: asyncio.Queue = asyncio.Queue(maxsize=1)
         self._queues.add(queue)
-        if self._unsupported:
-            queue.put_nowait(POLL)
-        elif self._task is None:
+        if self._task is None:
             self._task = asyncio.ensure_future(self._run())
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
-        """One panel stream closed. The last one takes the hub stream down
-        and forgets the 404 verdict, so a re-subscribe tries the hub again."""
+        """One panel stream closed. The last one takes the hub stream down."""
         self._queues.discard(queue)
         if self._queues:
             return
         if self._task is not None:
             self._task.cancel()
             self._task = None
-        self._unsupported = False
 
     def ring(self, event: str) -> None:
         for queue in self._queues:
@@ -171,13 +162,9 @@ class Relay:
         # clearing it here would clear the task the next subscribe started
         while self._queues:
             try:
-                code = await hold(lambda: self.ring(CHANGED), self._on_event)
+                await hold(lambda: self.ring(CHANGED), self._on_event)
             except HubUnavailable:
-                code = 0
-            if code == 404:
-                self._unsupported = True
-                self.ring(POLL)
-                return
+                pass
             await asyncio.sleep(RETRY_SECONDS)
 
     def _on_event(self, name: str) -> None:

@@ -31,6 +31,8 @@ const REPO = path.resolve(__dirname, '..');
 
 module.exports = {
   ...baseConfig,
+  // refuse a lab this suite did not start, see global-setup.js
+  globalSetup: require.resolve('./global-setup.js'),
   testDir: './tests/livehub',
   // one real hub, shared by every test - no parallel workers, no retries
   // that would re-run a switch against records a first attempt left behind

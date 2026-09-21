@@ -23,7 +23,16 @@ const REPO = path.resolve(__dirname, '..');
 
 module.exports = {
   ...baseConfig,
+  // refuse a lab this suite did not start, see global-setup.js
+  globalSetup: require.resolve('./global-setup.js'),
   testDir: './tests/hub',
+  // Playwright defaults to half the machine's cores, which on a 64-thread
+  // workstation is 32 browsers against one JupyterLab. Galata's own waits are
+  // fixed at 15 s, so under that load its file-browser helpers time out and
+  // tests fail for the load, not the code. The run is bound by the single
+  // server either way - two workers take the same wall-clock as thirty-two
+  // and pass repeatably. PLAYWRIGHT_WORKERS overrides it.
+  workers: Number(process.env.PLAYWRIGHT_WORKERS || 2),
   use: { ...baseConfig.use, baseURL: BASE_URL },
   webServer: [
     {
@@ -44,9 +53,6 @@ module.exports = {
         JUPYTERHUB_API_TOKEN: 'test-token',
         JUPYTERHUB_BASE_URL: '/',
         PYTHONPATH: REPO,
-        // the lab's wait for the hub to confirm a Cloudflare switch-on ends
-        // after 10 s instead of 120 s, so the timeout is testable
-        SHARE_FILES_CLOUD_CONFIRM_SECONDS: '10',
         // the cloud toggle persists to the CLI config file - keep it out of
         // the developer's real one
         XDG_CONFIG_HOME: path.join(os.tmpdir(), 'share-files-galata-hub')

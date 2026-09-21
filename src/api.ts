@@ -106,12 +106,14 @@ export interface IExtensionInfo {
   tunnel_autostart?: boolean;
   /** The cloudflared daemon process is running. */
   tunnel_running?: boolean;
-  /** Hub mode: a switch-on waits for the hub to confirm its Cloudflare address. */
-  tunnel_waiting?: boolean;
-  /** Hub mode: why the last switch-on ended unconfirmed - the lab switched it
-   * back off, or the switch back off failed (a slug, see hubReasonText); ''
-   * otherwise. */
-  tunnel_reason?: string;
+  /** Hub mode: the group policy has a tunnel at all - the header icon is
+   * shown only while this is true. */
+  tunnel_available?: boolean;
+  /** Hub mode: the hub's tunnel connector is up and serving. */
+  tunnel_ready?: boolean;
+  /** Hub mode: the lab's stored default - every new share and request is
+   * switched on to the tunnel while true. */
+  tunnel_default?: boolean;
 }
 
 export function getInfo(
@@ -125,8 +127,6 @@ export interface ITunnelState {
   tunnel_active: boolean;
   tunnel_autostart: boolean;
   tunnel_running: boolean;
-  tunnel_waiting?: boolean;
-  tunnel_reason?: string;
 }
 
 /** Toggle the Cloudflare tunnel (active: public vs private links) or
@@ -138,18 +138,6 @@ export function setTunnel(
   body: { active?: boolean; autostart?: boolean }
 ): Promise<ITunnelState> {
   return requestAPI('api/tunnel', s, jsonBody(body));
-}
-
-/** Hub mode: one record's Cloudflare switch. The hub refuses a switch on
- * with `cloud_not_configured` while the group policy has Cloudflare off. */
-export function setCloud(
-  s: ServerConnection.ISettings,
-  kind: 'share' | 'request',
-  id: string,
-  cloud: boolean
-): Promise<{ id: string; cloud: boolean }> {
-  const plural = kind === 'share' ? 'shares' : 'requests';
-  return requestAPI(`api/${plural}/${id}/cloud`, s, jsonBody({ cloud }));
 }
 
 /** Hub mode: the panel's change stream (Server-Sent Events). The browser
@@ -256,6 +244,20 @@ export function removeShareItems(
   return requestAPI(`api/shares/${id}/items?${qs}`, s, { method: 'DELETE' });
 }
 
+/** Hub mode: rename one entry of a share; a `newName` under another folder
+ * of the share moves it there. */
+export function renameShareItem(
+  s: ServerConnection.ISettings,
+  id: string,
+  name: string,
+  newName: string
+): Promise<{ ok: boolean }> {
+  return requestAPI(`api/shares/${id}/items`, s, {
+    ...jsonBody({ name, new_name: newName }),
+    method: 'PUT'
+  });
+}
+
 // --------------------------------------------------------------------------- //
 // Requests
 // --------------------------------------------------------------------------- //
@@ -340,36 +342,27 @@ export function hubReasonText(slug: string): string {
     expired: 'The retention period has passed.',
     over_cap: 'The files are larger than your group allows for one share.',
     bad_filename: 'A file name was rejected by the hub.',
+    name_taken: 'The share already holds an entry with that name.',
+    unknown_entry: 'The share no longer holds that entry.',
     password_required:
       'Your group requires a password on every share and request.',
-    cloud_not_configured:
+    tunnel_not_available:
       'Your group policy has Cloudflare turned off - links work on the hub network only.',
+    tunnel_not_switched_on:
+      'The hub did not switch this record on - its link works on the hub network only.',
     policy_conflict:
-      'Two groups claim file sharing on this hub - ask the administrator.',
-    // the lab's own slugs: the wait for a switch-on's confirmation ran out,
-    // and a switch the hub answered with an error
-    cloud_not_confirmed:
-      'The hub did not bring up its Cloudflare address - links stay on the hub network.',
-    cloud_not_switched_off:
-      'The hub did not switch Cloudflare off - those links may still be on Cloudflare.',
-    cloud_not_switched_on:
-      'The hub did not switch Cloudflare on - this link works on the hub network only.'
+      'Two groups claim file sharing on this hub - ask the administrator.'
   };
-  return text[slug] || slug;
-}
-
-/** The header tooltip's short form of a refusal reason - the full sentence
- * lives in hubReasonText for the toast; the tooltip line has 45 characters */
-export const HUB_REASON_SHORT: Record<string, string> = {
-  cloud_not_confirmed: 'Hub did not bring up its Cloudflare address',
-  cloud_not_switched_on: 'The hub did not switch Cloudflare on',
-  cloud_not_switched_off: 'The hub did not switch Cloudflare off',
-  hub_unavailable: 'The hub could not be reached'
-};
-
-/** HUB_REASON_SHORT for a known slug, the full sentence for any other */
-export function hubReasonShort(slug: string): string {
-  return HUB_REASON_SHORT[slug] || hubReasonText(slug);
+  // an unknown slug comes from a hub newer than this extension - the hub is
+  // versioned separately and renamed its whole vocabulary once already. The
+  // owner reads a sentence rather than a field name (DEF-HUB-87); the slug
+  // itself stays reachable in the refused row's hover.
+  return (
+    text[slug] ||
+    (slug
+      ? 'The hub refused this and named a reason this version does not know - ask the administrator.'
+      : '')
+  );
 }
 
 /** The link dialog's reachability line: what answered, in plain words, and
@@ -387,32 +380,25 @@ export function linkCheckText(res: ILinkCheck, shown = ''): string {
 
 /** Hub mode: the header cloud icon's look, whether it reads pressed, and its
  * tooltip (two lines at most). `switching` is the direction of a switch
- * still in flight. A switch-on reads pressed and shows waiting, not on,
- * until the hub confirms it; one the hub never confirmed shows off with its
- * reason in the second line until the next switch-on. A click switches off
- * when the icon reads pressed, on otherwise. */
-export function hubCloudLook(
+ * still in flight. The look follows the lab's stored default and the hub's
+ * tunnel: on only while both hold, pending while the default is on and the
+ * hub's tunnel is not up yet, armed while the default is on and no record
+ * (`wanted`) asks the hub for a tunnel, off otherwise. `hidden` is a group policy with no tunnel at all - the icon is not shown.
+ * A click switches off when the icon reads pressed, on otherwise. */
+export function hubTunnelLook(
   info: IExtensionInfo,
-  switching: '' | 'on' | 'off'
+  switching: '' | 'on' | 'off',
+  wanted = true
 ): {
-  look: 'on' | 'off' | 'waiting' | 'unreachable';
+  look: 'on' | 'off' | 'armed' | 'pending' | 'unreachable' | 'hidden';
   pressed: boolean | 'mixed';
   title: string;
 } {
   if (switching) {
     return {
-      look: 'waiting',
+      look: 'pending',
       pressed: switching === 'on',
       title: `Switching Cloudflare sharing ${switching}`
-    };
-  }
-  if (info.hub?.available && info.tunnel_waiting) {
-    return {
-      // mixed: the links are not public yet and may never be
-      look: 'waiting',
-      pressed: 'mixed',
-      title:
-        'Switching Cloudflare on - waiting for the hub\nClick to end the wait and switch it off'
     };
   }
   if (!info.hub?.available) {
@@ -422,21 +408,35 @@ export function hubCloudLook(
       title: 'Hub unavailable\nCloudflare state unknown'
     };
   }
-  if (info.tunnel_reason && !info.tunnel_active) {
+  if (!info.tunnel_available) {
+    return { look: 'hidden', pressed: false, title: '' };
+  }
+  if (info.tunnel_default && !info.tunnel_ready && !wanted) {
+    // the hub starts its tunnel for a record that asks for one, and no record
+    // does: nothing is on the way, so nothing blinks (DEF-PANEL-89). The
+    // silhouette stays - the accent cloud is the hub's confirmation
     return {
-      look: 'off',
-      pressed: false,
-      title: `Cloudflare not confirmed - click to switch on\n${hubReasonShort(info.tunnel_reason)}`
+      look: 'armed',
+      pressed: true,
+      title: 'Cloudflare sharing on - no tunnel up yet\nClick to switch it off'
     };
   }
-  if (info.tunnel_active) {
-    return {
-      look: 'on',
-      pressed: true,
-      title: info.tunnel_reason
-        ? `Cloudflare sharing on - click to switch off\n${hubReasonShort(info.tunnel_reason)}`
-        : 'Cloudflare sharing on\nClick to switch it off'
-    };
+  if (info.tunnel_default) {
+    return info.tunnel_ready
+      ? {
+          look: 'on',
+          pressed: true,
+          title: 'Cloudflare sharing on\nClick to switch it off'
+        }
+      : {
+          // mixed: a record is switched on but the hub's tunnel is not up
+          // yet, so that record's link is on the hub's network until it comes
+          // up - the hub brings the tunnel up because the record asked for it
+          look: 'pending',
+          pressed: 'mixed',
+          title:
+            'Cloudflare sharing on - waiting for the hub\nClick to switch it off'
+        };
   }
   return {
     look: 'off',

@@ -11,8 +11,27 @@ created lazily on first use.
 
 from __future__ import annotations
 
-from traitlets import Bool, Int, Unicode
+from traitlets import Bool, Int, List, Unicode
 from traitlets.config import Configurable
+
+#: Names never copied into a share - checkpoint and cache folders, the
+#: artefacts macOS writes beside the files it copies, and the trash folders
+#: of the three desktop systems. Matched with `fnmatch` against one path
+#: component, so `._*` and `.Trash-*` cover the numbered variants. This is
+#: the default of `ShareFilesConfig.excluded_names`; an operator replaces
+#: the whole catalogue there.
+EXCLUDED_NAMES: list[str] = [
+    ".ipynb_checkpoints",
+    "__pycache__",
+    "__MACOSX",
+    ".DS_Store",
+    "._*",
+    ".Trash",
+    ".Trash-*",
+    ".Trashes",
+    ".trashed-*",
+    "$RECYCLE.BIN",
+]
 
 
 class ShareFilesConfig(Configurable):
@@ -54,6 +73,27 @@ class ShareFilesConfig(Configurable):
             "uploads) and files an uploader removes from a request page are "
             "sent to the OS trash via send2trash. When False, "
             "they are deleted permanently."
+        ),
+    )
+
+    excluded_names = List(
+        Unicode(),
+        default_value=EXCLUDED_NAMES,
+        config=True,
+        help=(
+            "Names never copied into a share. Each entry is matched with "
+            "fnmatch against a single path component. The dropped item's own "
+            "name is matched in both modes; names inside a folder are matched "
+            "at every depth only where this lab copies the folder itself, "
+            "which is a standalone lab. On a hub the patterns are matched "
+            "against the dropped item's own name only, and the plain names "
+            "(no pattern, the first 64) are sent to the hub, which leaves "
+            "them out at every depth. The "
+            "default catalogue holds the checkpoint and cache folders "
+            "(.ipynb_checkpoints, __pycache__), the macOS artefacts "
+            "(__MACOSX, .DS_Store, ._*) and the trash folders (.Trash, "
+            ".Trash-*, .Trashes, .trashed-*, $RECYCLE.BIN). Setting this "
+            "replaces the whole catalogue; set it to [] to copy everything."
         ),
     )
 

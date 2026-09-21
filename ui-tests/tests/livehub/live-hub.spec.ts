@@ -5,7 +5,7 @@ import { expect, test } from '@jupyterlab/galata';
  * hub-managed lab with the contract galaxahub injected into that lab, so the
  * extension talks to the hub the developer's own lab talks to. Nothing here is
  * mocked - a record exists on the hub until a test deletes it, and a
- * Cloudflare switch-on waits for the hub's real tunnel. Every fixture carries
+ * switch-on brings the hub's real tunnel up. Every fixture carries
  * the run's prefix; each test removes its own, and the first sweeps whatever
  * an aborted run left behind. The failure paths a live hub cannot be asked to
  * produce stay in `../hub`.
@@ -128,7 +128,11 @@ test('api/info reports hub mode against the real hub and mounts no recipient or 
   expect(info.data.mode).toBe('hub');
   expect(info.data.hub).toMatchObject({ available: true });
   expect(typeof info.data.hub.serving).toBe('boolean');
-  expect(info.data.tunnel_waiting).toBe(false);
+  // the hub's own verdicts; the lab-side wait they replaced is gone
+  expect(typeof info.data.tunnel_available).toBe('boolean');
+  expect(typeof info.data.tunnel_ready).toBe('boolean');
+  expect(info.data.tunnel_waiting).toBeUndefined();
+  expect(info.data.tunnel_reason).toBeUndefined();
   for (const path of [
     '/jupyterlab-share-files-extension/public/share/AAAAAAAA',
     '/jupyterlab-share-files-extension/public/request/AAAAAAAA',
@@ -145,7 +149,7 @@ test('a share of a workspace file is staged by the hub, becomes ready with its f
   test.setTimeout(240000);
   const name = `${RUN}-share`;
   const created = await readyShare(page, tmpPath, name);
-  expect(created.cloud).toBe(false);
+  expect(created.tunnel).toBe(false);
   expect(created.link).toMatch(new RegExp(`/s/${created.id}$`));
   const ready = await row(page, 'shares', created.id);
   expect(ready.entries.map((e: any) => e.name)).toEqual(['report.txt']);
@@ -166,11 +170,81 @@ test('a share of a workspace file is staged by the hub, becomes ready with its f
   await expect(item(page, name)).toHaveCount(0);
 });
 
+test('an empty share is filled, and its file is renamed into a folder and removed, on the real hub', async ({
+  page,
+  tmpPath
+}) => {
+  test.setTimeout(240000);
+  await page.contents.uploadContent(
+    'added later\n',
+    'text',
+    `${tmpPath}/late.txt`
+  );
+  const created = await api(page, 'POST', `${API}/shares`, {
+    name: `${RUN}-edit`,
+    paths: []
+  });
+  expect(created.status).toBe(200);
+  expect(created.data.state).toBe('ready');
+  const items = `${API}/shares/${created.data.id}/items`;
+  const names = async () =>
+    (await row(page, 'shares', created.data.id)).entries.map(
+      (e: any) => e.name
+    );
+
+  expect(
+    (await api(page, 'POST', items, { paths: [`${tmpPath}/late.txt`] })).status
+  ).toBe(200);
+  // the hub's row carries last_add, which the lab relays as adding
+  await expect
+    .poll(names, { timeout: 150000, message: 'the add lands' })
+    .toEqual(['late.txt']);
+  await expect
+    .poll(async () => (await row(page, 'shares', created.data.id)).adding)
+    .toBe(false);
+  expect((await row(page, 'shares', created.data.id)).add_reason).toBe('');
+
+  // an add of a path that is not there is accepted, then refused on the row
+  expect(
+    (await api(page, 'POST', items, { paths: [`${tmpPath}/not-there.txt`] }))
+      .status
+  ).toBe(200);
+  await expect
+    .poll(async () => (await row(page, 'shares', created.data.id)).add_reason, {
+      timeout: 60000
+    })
+    .not.toBe('');
+
+  // a name the share holds is refused by name before the hub is asked
+  const again = await api(page, 'POST', items, {
+    paths: [`${tmpPath}/late.txt`]
+  });
+  expect(again.status).toBe(400);
+  expect(again.data.error).toContain('already holds late.txt');
+
+  const moved = await api(page, 'PUT', items, {
+    name: 'late.txt',
+    new_name: 'kept/later.txt'
+  });
+  expect(moved.status).toBe(200);
+  expect(await names()).toEqual(['kept/later.txt']);
+  const taken = await api(page, 'PUT', items, {
+    name: 'kept/later.txt',
+    new_name: 'kept'
+  });
+  expect(taken.status).toBe(400);
+  expect(taken.data.reason).toBe('name_taken');
+
+  const removed = await api(page, 'DELETE', `${items}?name=kept`);
+  expect(removed.status).toBe(200);
+  expect(await names()).toEqual([]);
+});
+
 test('a request is created on the hub and deleted', async ({ page }) => {
   const name = `${RUN}-request`;
   const created = await api(page, 'POST', `${API}/requests`, { name });
   expect(created.status).toBe(200);
-  expect(created.data.cloud).toBe(false);
+  expect(created.data.tunnel).toBe(false);
   expect(created.data.link).toMatch(new RegExp(`/s/${created.data.id}$`));
   await openPanel(page);
   await refreshPanel(page);
@@ -188,8 +262,8 @@ test('the hub refuses what it cannot do and the lab relays the reason', async ({
 }) => {
   test.setTimeout(240000);
   // an unknown record: the hub's 404 is relayed with its message
-  const missing = await api(page, 'POST', `${API}/shares/ZZZZZZZZ/cloud`, {
-    cloud: true
+  const missing = await api(page, 'POST', `${API}/shares/ZZZZZZZZ/tunnel`, {
+    tunnel: true
   });
   expect(missing.status).toBe(404);
   expect(typeof missing.data.error).toBe('string');
@@ -228,27 +302,27 @@ test('the hub refuses what it cannot do and the lab relays the reason', async ({
   ).toHaveAttribute('title', new RegExp(`refused: ${refused.reason}$`));
 });
 
-test('a Cloudflare switch-on is confirmed by the hub tunnel, the link moves to the tunnel host, and off brings it back', async ({
+test("a tunnel switch-on brings the hub's tunnel up, the link moves to the tunnel host, and off brings it back", async ({
   page,
   tmpPath
 }) => {
   test.setTimeout(480000);
-  const name = `${RUN}-cloud`;
+  const name = `${RUN}-tunnel`;
   const created = await readyShare(page, tmpPath, name);
   const before = new URL(created.link);
-  const on = await api(page, 'POST', `${API}/shares/${created.id}/cloud`, {
-    cloud: true
+  const on = await api(page, 'POST', `${API}/shares/${created.id}/tunnel`, {
+    tunnel: true
   });
   expect(on.status).toBe(200);
-  expect(on.data).toEqual({ id: created.id, cloud: true });
-  // the hub provisions its tunnel on demand; the lab waits until the
-  // record's url carries the tunnel hostname, then the wait is over with
-  // no reason left behind
+  expect(on.data).toEqual({ id: created.id, tunnel: true });
+  // the hub provisions its tunnel on demand and composes the record's link
+  // on the tunnel hostname once its connector serves; the lab polls nothing
+  // and only reads what the hub reports
   await expect
     .poll(
       async () => {
         const r = await row(page, 'shares', created.id);
-        if (!r || !r.cloud) {
+        if (!r || !r.tunnel) {
           return '';
         }
         const url = new URL(r.link);
@@ -260,15 +334,18 @@ test('a Cloudflare switch-on is confirmed by the hub tunnel, the link moves to t
       }
     )
     .toBe('https:');
+  // the hub's readiness reaches api/info on the capabilities tick
   await expect
     .poll(
-      async () => (await api(page, 'GET', `${API}/info`)).data.tunnel_waiting,
-      { timeout: 30000 }
+      async () => (await api(page, 'GET', `${API}/info`)).data.tunnel_ready,
+      {
+        timeout: 60000,
+        message: 'the hub reports its tunnel ready once the connector serves'
+      }
     )
-    .toBe(false);
-  expect((await api(page, 'GET', `${API}/info`)).data.tunnel_reason).toBe('');
-  // one row switched on its own: the header toggle (the default) stays off,
-  // the row's link dialog shows the tunnel address
+    .toBe(true);
+  // one row switched on its own: the header toggle (the stored default)
+  // stays off, and the row's link dialog shows the tunnel address
   await openPanel(page);
   await refreshPanel(page);
   await expect(
@@ -280,15 +357,15 @@ test('a Cloudflare switch-on is confirmed by the hub tunnel, the link moves to t
   );
   await page.locator('.jp-Dialog button', { hasText: 'Close' }).click();
   // off: the link returns to the hub's own address
-  const off = await api(page, 'POST', `${API}/shares/${created.id}/cloud`, {
-    cloud: false
+  const off = await api(page, 'POST', `${API}/shares/${created.id}/tunnel`, {
+    tunnel: false
   });
   expect(off.status).toBe(200);
   await expect
     .poll(
       async () => {
         const r = await row(page, 'shares', created.id);
-        return r ? [r.cloud, new URL(r.link).hostname] : null;
+        return r ? [r.tunnel, new URL(r.link).hostname] : null;
       },
       { timeout: 60000 }
     )

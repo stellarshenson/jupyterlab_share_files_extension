@@ -229,6 +229,58 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - root-cause: 2026-09-18T16:16:05Z @kj each a missed state or attribute at one site; the toggle's in-flight class was set in the switch-on branch only
   - log: 2026-09-18T16:16:05Z @kj added
   - log: 2026-09-18T16:16:24Z @kj closed
+- [x] `DEF-PANEL-84` **Drop onto an existing share does nothing** - MAJOR; dragging a file or folder from the file browser onto an existing share row adds nothing and shows no message; on a hub-managed lab the row is not a drop target at all
+  - evidence: a drop on a hub share row is added through POST shares/<id>/content; test 'New Share creates an empty share and a dropped file fills it' - galata 2026-09-21: mock hub 27 passed (logs/galata-hub-content.log), live hub 6 passed against galaxahub 4.4.149 (logs/galata-livehub-content.log), standalone 31 passed; pytest 398 passed 8 skipped
+  - related: ACC-DRAG-156 - the criterion this defect blocks
+  - repro: on a lab spawned with SHARE_FILES_PUBLIC_ZONE=hub, create a share, then drag a file from the file browser onto its row - no highlight, no message, share unchanged
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-09-20T14:02:00Z @kj two causes: on a standalone lab the row was already a drop target and worked (two galata tests now cover it), so the report is hub-only; on a hub src/widget.ts attached no drop target at all, and the hub API has no add-items route to attach one to
+  - root-cause: 2026-09-20T13:12:18Z @kj src/widget.ts:1138 attaches the row drop target only when the panel is not in hub mode, so no hub share row listens for lm-dragenter
+  - log: 2026-09-20T13:12:18Z @kj added
+  - log: 2026-09-20T13:24:15Z @kj edited text
+  - log: 2026-09-20T16:43:28Z @kj owner's decision 2026-09-20: wait for the hub rebuild - the hub is dropping the notion of 'cloud' and implementing a single tunnel abstraction, so the panel gets no interim workaround; live hub probed the same day, GET /shares/<id>/items, /files, /paths and /add all answer 404 while /shares/<id> and /shares/<id>/cloud answer 405, so no add-to-share route exists yet
+  - log: 2026-09-20T17:30:28Z @kj hub side 2026-09-20: the hub is now extending its fileshare service to allow modification after creation, which is the capability these records wait on; re-probe the live API for an add-to-share route and an empty-share create when it is announced
+  - log: 2026-09-21T08:03:34Z @kj closed
+- [x] `DEF-PANEL-86` **A greyed menu entry never says why** - MINOR; a command's caption never reaches the user: Lumino's menu renderer writes no title attribute and no aria-describedby, so the hub's refusal reason set on the New Share and New Request entries has never been readable; a user sees a greyed entry and no reason
+  - evidence: no command is greyed with a caption: New Share is offered on a hub again and creates an empty share, New Request answers a refusal with the hub's sentence; galata 'create is refused with the hub reason' and 'New Share creates an empty share and a dropped file fills it' pass (logs/galata-hub-content.log)
+  - repro: hub-managed lab whose group policy refuses shares: open the panel's New menu, hover the greyed New Share entry - no tooltip appears
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-20T15:25:20Z @kj src/widget.ts sets caption on both commands, but @lumino/widgets Menu.Renderer.renderItem builds the li from className, dataset, tabindex and the ARIA map only (node_modules/@lumino/widgets/dist/index.js:6951-6961, createItemARIA at :7078), and none of them carries the caption
+  - log: 2026-09-20T15:25:20Z @kj added
+  - log: 2026-09-21T07:09:57Z @kj 2026-09-21 review: two further consequences of the same invisible caption - the plain refusal sentence written for it in hub_routes.py is reachable from no panel path, and the CHANGELOG line advertising it promises the owner something no owner can read. Decide one shape next - enable and warn, relabel, or omit the item in hub mode - rather than refining the greying
+  - log: 2026-09-21T07:49:34Z @kj closed
+- [x] `DEF-PANEL-89` **the header icon waits for a tunnel nothing asked for** - MINOR; MINOR; in hub mode with the stored default on and no record switched on, `hubTunnelLook` returns the pending look - the blinking icon, aria-pressed=mixed, 'Cloudflare sharing on - waiting for the hub' - and the hub never resolves it, because it starts its tunnel connector only for a record that wants one. It clears itself the moment the owner creates their first share, so it does not survive one walk of the primary path
+  - evidence: hubTunnelLook returns the armed look (no blink, aria-pressed true, 'no tunnel up yet') when the default is on and no record asks for a tunnel; jest 'does not wait for a tunnel no record asked for' and galata hub 'the icon does not wait for a tunnel no record asked for' pass, mock hub suite 29 passed 2026-09-21
+  - repro: hub-managed lab, no shares and no requests, stored default on (POST api/tunnel {active: true} with an empty panel): the header icon blinks and its tooltip says it is waiting for the hub, with nothing on the way
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-09-21T07:09:26Z @kj the pending branch keys on tunnel_default && !tunnel_ready and never asks whether a record is on. A third parameter answering that was written and reverted on 2026-09-21: it made the icon read a plain on with aria-pressed true while the hub had confirmed nothing, which the panel's own guarantee forbids, and it flashed on for one refresh after every switch
+  - log: 2026-09-21T07:09:26Z @kj added
+  - log: 2026-09-21T09:54:41Z @kj closed
+- [x] `DEF-PANEL-92` **under reduced motion the pending and off cloud icons differ only by colour** - MINOR; MINOR; the pending and off looks share the dashed cloud silhouette and are separated by the blink. The reduced-motion block turns the blink off, and the 2026-09-20 ux round removed the 0.5 opacity that had separated them - measured at 1.98:1 against the 3:1 non-text bar - so a reduced-motion owner tells 'switched on, tunnel not up' from 'off' by hue alone inside the icon. The tooltip, aria-pressed=mixed and the link dialog still carry the state, so nobody is blocked. The remedy is one declaration restoring a non-colour cue, not a repaint of either state
+  - evidence: style/base.css reduced-motion block gives the pending icon an inset 1px outline in place of the blink; galata mock hub run logs/galata-hub-defects.log
+  - repro: hub-managed lab with prefers-reduced-motion set in the browser: put a record on the tunnel while the hub's connector is down, then switch off - the two icons are the same glyph at the same strength, differing only in colour
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-21T07:09:57Z @kj the reduced-motion rule now sets animation: none alone; the glyph is shared with the off look and the opacity that had distinguished them was removed to clear the non-text contrast bar
+  - log: 2026-09-21T07:09:57Z @kj added
+  - log: 2026-09-21T07:49:34Z @kj closed
+- [x] `DEF-PANEL-93` **the hub's empty-share refusal sentence is written twice** - MINOR; MINOR; the all-excluded refusal sentence exists once in `storage.py` for a standalone lab and again in `hub_routes.py` for a hub, reading identically today and free to drift tomorrow. Hub mode holds no ShareStore, so one canonical sentence needs a module-level helper - a new mechanism for a duplication that harms nobody yet, which is why it was not taken during the review
+  - evidence: storage.all_excluded_message is the one source of the sentence, used by the store and by hub_routes._kept_paths; pytest 398 passed 8 skipped
+  - repro: read the two refusal strings side by side; change one and no test notices the other still says the old words
+  - test-tags: UNIT
+  - root-cause: 2026-09-21T07:09:57Z @kj the hub path cannot reach the standalone store's helper, so the sentence was copied rather than shared
+  - log: 2026-09-21T07:09:57Z @kj added
+  - log: 2026-09-21T07:49:34Z @kj closed
+- [x] `DEF-PANEL-96` **closing an unchanged rename field by clicking another panel control loses that click** - MINOR; hub mode: a rename field that is closed with no change renders the panel inside the blur handler, which replaces the element under the pointer, so the control the owner clicked does not receive the click; the second click works. Left live by the review adjudicator in round 2: the remedy is a third rework of the rename field within two rounds
+  - evidence: the unchanged close restores the label in place and refreshes afterwards; hub test 'a file in a hub share is renamed with F2, moved by a drag and removed' clicks Toggle filter to close the field and the filter opens; mock hub 28 passed (logs/galata-hub-content.log)
+  - root-cause: 2026-09-21T08:42:29Z @kj finish() in _renameHubEntry calls _render() synchronously on the no-change branch
+  - log: 2026-09-21T08:42:29Z @kj added
+  - log: 2026-09-21T09:08:44Z @kj closed
+- [x] `DEF-PANEL-97` **a cut pasted into a hub share is added as a copy and the panel does not say so** - MINOR; hub mode: Paste on a share row after a cut in the file browser adds the files and leaves the originals in place, because the hub copies after its 202 and nothing may be deleted on the strength of it; the panel shows no note and the clip stays armed as a cut. The README states the behaviour. Left live by the review adjudicator in round 2
+  - evidence: a cut pasted into a hub share shows 'Added as a copy - the originals stay in your workspace' and clears the clip; hub test 'a file copied in the file browser is pasted into a hub share by keyboard' cuts, pastes, asserts the note and that the file still exists; mock hub 28 passed
+  - root-cause: 2026-09-21T08:42:29Z @kj the paste-into-share command's hub branch ignores clip.mode
+  - log: 2026-09-21T08:42:29Z @kj added
+  - log: 2026-09-21T09:08:44Z @kj closed
+  - log: 2026-09-21T09:13:51Z @kj the note now reads 'A cut is pasted as a copy - the originals stay in your workspace': it states the rule and claims no outcome, because it is shown before the hub answers (review round 3)
 
 ## Public sharing `PUBLIC`
 
@@ -632,6 +684,51 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - log: 2026-09-17T08:35:22Z @kj edited title and text and repro (replaced)
   - log: 2026-09-18T04:06:55Z @kj closed
   - log: 2026-09-18T04:07:06Z @kj edited test-tags (added)
+- [x] `DEF-HUB-85` **An empty share cannot be created** - MAJOR; on a hub-managed lab, creating a share with no files chosen is refused with "Could not create share: 'paths' must be a non-empty list"; the owner wants an empty share to exist first and to drag files into it afterwards
+  - evidence: the hub creates an empty share (201 ready) and New Share is offered on a hub; same test, and live test 'an empty share is filled...' - galata 2026-09-21: mock hub 27 passed (logs/galata-hub-content.log), live hub 6 passed against galaxahub 4.4.149 (logs/galata-livehub-content.log), standalone 31 passed; pytest 398 passed 8 skipped
+  - related: ACC-DRAG-156 - both wait on the same hub API gap
+  - repro: hub-managed lab: panel header, New share, give a name, choose nothing - the panel shows the refusal
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-09-20T13:14:00Z @kj jupyterlab_share_files_extension/hub_routes.py:676 refuses an empty paths list before calling the hub, and the hub's own POST /hub/api/fileshare/shares refuses one as well (galaxahub fileshare.py:506)
+  - log: 2026-09-20T13:14:00Z @kj added
+  - log: 2026-09-20T13:24:15Z @kj edited text
+  - log: 2026-09-20T16:43:28Z @kj owner's decision 2026-09-20: wait for the hub rebuild - the hub is dropping the notion of 'cloud' and implementing a single tunnel abstraction, so the panel gets no interim workaround; live hub probed the same day, GET /shares/<id>/items, /files, /paths and /add all answer 404 while /shares/<id> and /shares/<id>/cloud answer 405, so no add-to-share route exists yet
+  - log: 2026-09-20T17:30:28Z @kj hub side 2026-09-20: the hub is now extending its fileshare service to allow modification after creation, which is the capability these records wait on; re-probe the live API for an add-to-share route and an empty-share create when it is announced
+  - log: 2026-09-21T08:03:35Z @kj closed
+- [x] `DEF-HUB-87` **an unknown hub reason slug reaches the user as a raw slug** - MINOR; MINOR; `hubReasonText` in `src/api.ts` maps a closed set of refusal slugs to sentences and ends `return text[slug] || slug`, so any slug the map does not carry is shown to the user verbatim - machine text where the bar requires plain language. The hub is a separately versioned service that can add or rename a slug at any time, and it just did: its 2026-09-20 rebuild renamed the whole cloud vocabulary, and the lab's own `cloud_not_switched_on` briefly became unrenderable during this migration. The panel cannot invent a sentence for a slug it does not know, so the fix is a decision about the fallback, not a mapping
+  - evidence: hubReasonText answers an unknown slug with a sentence and the slug stays in the refused row's hover; jest 'answers an unknown slug with a sentence, never the slug itself' passes (42 of 42)
+  - repro: in hub mode, make the server answer a create with a reason slug absent from hubReasonText - e.g. set NOT_ON_REASON in hub_routes.py to any unmapped word and refuse the create-time switch-on - then create a share: the toast reads the bare slug instead of a sentence
+  - test-tags: UNIT
+  - root-cause: 2026-09-20T18:37:54Z @kj the map is the only translation layer and its fallback returns its input; nothing warns when the two services' vocabularies drift apart
+  - log: 2026-09-20T18:37:54Z @kj added
+  - log: 2026-09-21T07:49:34Z @kj closed
+- [-] `DEF-HUB-88` **a hub serving no tunnel route reports a switch that never happened** - MEDIUM; MEDIUM; `HubTunnelHandler.post` accepts 404 from `PUT <kind>/<id>/tunnel` as 'the record is already gone' (DEF-HUB-54). A hub that serves no such route answers 404 to every record, so the loop finishes, `set_tunnel_default(active)` stores the owner's choice and the panel reports Cloudflare sharing switched while no record moved. This is how the hub's 2026-09-20 rename presented and why nothing reported it. Reaching it needs a hub running the pre-rename cloud routes, which CHANGELOG.md declares a breaking, unsupported combination
+  - repro: point the lab at a hub whose fileshare API serves /cloud rather than /tunnel, hold at least one record, click the header cloud icon: the icon switches, the default is stored, and GET items shows every record unchanged
+  - test-tags: UNIT
+  - root-cause: 2026-09-21T07:09:26Z @kj the 404 tolerance cannot tell 'this record is gone' from 'this route is gone' - the answers carry the same status and the distinction is not in them. A guard counting all-404 was written and reverted on 2026-09-21: it regressed DEF-HUB-54 whenever the panel held exactly one record, and on a switch off it left the stored default on, so the next share went public
+  - log: 2026-09-21T07:09:26Z @kj added
+  - log: 2026-09-21T09:49:09Z @kj rejected: the owner ordered no backwards compatibility on 2026-09-21: the lab requires galaxahub 4.4.149 or later (CHANGELOG Breaking), and this defect is reachable only on a hub build that predates the 2026-09-20 tunnel rename
+- [-] `DEF-HUB-90` **a hub that reports no tunnel capability is read as a group policy with no tunnel** - MAJOR; MAJOR; `_tunnel_state` reads `capabilities.get('tunnel_available')` and collapses an absent key into false, and the panel hides the header icon entirely on false. Against a hub build predating the 2026-09-20 rename the key is absent, so the control disappears with no message and the owner cannot tell 'my group has no tunnel' from 'this lab cannot speak to this hub'. The remedy is a tri-state - present-and-true, present-and-false, absent - shown with the existing unreachable look rather than a sixth icon state
+  - repro: point the lab at a hub whose capabilities payload carries no tunnel_available key (the mock hub with that key removed reproduces it): the header cloud icon is not rendered at all and nothing says why
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-09-21T07:09:44Z @kj bool(capabilities.get('tunnel_available')) maps absent and false to the same value, and hubTunnelLook has no branch for 'the hub did not say'
+  - log: 2026-09-21T07:09:44Z @kj added
+  - log: 2026-09-21T09:49:09Z @kj rejected: the owner ordered no backwards compatibility on 2026-09-21: the lab requires galaxahub 4.4.149 or later (CHANGELOG Breaking), and this defect is reachable only on a hub build that predates the 2026-09-20 tunnel rename
+- [x] `DEF-HUB-91` **the superseded hub_cloud key is never removed, so the file holds two contradictory defaults** - MINOR; MINOR; `tunnel_default()` reads `hub_tunnel` and falls back to the older `hub_cloud`, but `set_tunnel_default()` writes only the new key, so a lab upgraded from 1.2.46 keeps both forever with values that drift apart. This build is unaffected - the new key is read first - but an extension downgrade reads the owner's pre-upgrade choice and can come up switching new records onto the tunnel against the owner's last recorded intent
+  - evidence: the hub_cloud key is no longer read or written at all (owner order 2026-09-21: no backwards compatibility); tunnel_default reads hub_tunnel alone; pytest 398 passed 8 skipped
+  - repro: write {"hub_cloud": true} into the CLI config file, run this build and switch Cloudflare sharing off: the file then holds hub_cloud true beside hub_tunnel false
+  - test-tags: UNIT
+  - root-cause: 2026-09-21T07:09:44Z @kj the fallback was added for a clean upgrade and no writer removes the superseded key; one line in set_tunnel_default (cfg.pop(LEGACY_TUNNEL_KEY, None)) closes it, and test_hub_handlers.py pins the two-key file as intended today
+  - log: 2026-09-21T07:09:44Z @kj added
+  - log: 2026-09-21T07:49:34Z @kj closed
+- [x] `DEF-HUB-95` **the add watcher has no end when the hub keeps failing, and no word when the hub becomes unreachable** - MINOR; hub mode: while an add runs the lab probes the hub once a second. A hub that keeps answering 429 or 5xx on the content route leaves the share row on 'adding' and refuses further adds as busy until the lab restarts; a probe that cannot reach the hub at all ends the watch with no verdict, so an add lost during a hub outage leaves the old item count and no note. Both need the content route to fail for longer than one copy while the items route still answers. Left live by the review adjudicator in rounds 1 and 2: a cap has no measured input behind it, and the watcher is deleted when the hub reports a refused add itself (hub DEF-FSHR-561)
+  - evidence: test_a_hub_that_keeps_failing_the_probe_ends_the_watch_with_no_verdict fails with the bound removed and passes with it; _watch_add ends after ADD_PROBE_FAILURES=30 consecutive 429, 5xx or unreachable probes; pytest 401 passed 8 skipped 2026-09-21
+  - root-cause: 2026-09-21T08:42:29Z @kj _watch_add in hub_routes.py loops on 409, 429 and 5xx with no bound and catches HubUnavailable outside the loop
+  - log: 2026-09-21T08:42:29Z @kj added
+  - log: 2026-09-21T09:47:44Z @kj closed
+  - log: 2026-09-21T10:39:04Z @kj the watch now continues only on 409 with the reason busy, ends on a 409 with no reason, and ends after 660 probes; tests test_a_share_that_stopped_being_editable_ends_the_watch and test_the_idle_probe_name_is_never_sent_as_an_entry; pytest 404 passed 8 skipped
+  - log: 2026-09-21T10:55:15Z @kj residual, accepted: a watch that reaches a bound ends with the spinner gone and no sentence; it needs 30 s of 429 or 5xx on the content route together with a later hub refusal, and the watcher is deleted when the hub reports a refused add itself (hub DEF-FSHR-561, built in hub 4.4.150 as last_add)
+  - log: 2026-09-21T13:10:35Z @kj 2026-09-21: the watcher is deleted. The updated hub carries last_add and progress on the share row (probed live), so the lab relays them and holds no add state; the idle probe, its bounds and the probe-name guard are gone with it
 
 ## Test suites `TESTS`
 
@@ -645,3 +742,10 @@ Galata and pytest suites - isolation from the developer's machine and from real 
   - log: 2026-09-15T20:15:11Z @kj reported: found by the wf_b57900bd-9fa workflow agents on 2026-09-15, confirmed by reading the code
   - log: 2026-09-15T20:32:36Z @kj attempted: standalone playwright webServer env sets XDG_CONFIG_HOME to a temp dir; 'the test lab reads no Cloudflare configuration' failed before (tunnel_configured true), passes after; standalone suite 14 passed
   - log: 2026-09-15T21:40:00Z @kj closed: fixed
+- [x] `DEF-TESTS-94` **a galata run silently attaches to another project's JupyterLab and reports its failures as ours** - MEDIUM; MEDIUM; both playwright configs carry `reuseExistingServer: !process.env.CI`, so a run whose configured port is already held by another project's JupyterLab attaches to that server instead of starting its own. The suite then exercises a lab serving a different extension and the failures read as product defects: on 2026-09-20 a run against a sibling project's lab on 8899 reported 7 failures then died at 97 s, and on 2026-09-21 the same collision reported 30 of 31 tests failed. Both readings were invalid and both cost a full diagnosis. This workstation holds several JupyterLab extension projects whose suites share the documented port
+  - evidence: ui-tests/global-setup.js refuses a run whose port answers 404 on this extension's api/info, wired into all three playwright configs; simulated foreign server REFUSED, free port ALLOWED; standalone 31 passed on 8899 (logs/galata-standalone-defects.log)
+  - repro: start any other extension project's galata suite on 8899, then run JUPYTER_TEST_PORT=8899 jlpm test here: the run attaches to the foreign lab, the extension under test is absent, and unrelated tests fail
+  - test-tags: MANUAL
+  - root-cause: 2026-09-21T07:17:57Z @kj reuseExistingServer cannot tell a server this suite started from a server that merely answers on the port; playwright only checks that the url responds. A guard would have to ask the server what it is serving - for instance fetching the extension's own api/info before the first test - and refuse a lab that is not ours
+  - log: 2026-09-21T07:17:57Z @kj added
+  - log: 2026-09-21T07:49:34Z @kj closed

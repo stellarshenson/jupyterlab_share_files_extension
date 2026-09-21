@@ -7,7 +7,7 @@
  */
 
 import {
-  hubCloudLook,
+  hubTunnelLook,
   hubReasonText,
   linkCheckText,
   streamUrl,
@@ -72,31 +72,19 @@ describe('hub refusal slugs', () => {
     expect(hubReasonText('hub_unavailable')).toMatch(/could not be reached/);
   });
 
-  it('says why the lab switched an unconfirmed switch-on back off', () => {
-    expect(hubReasonText('cloud_not_confirmed')).toMatch(
-      /did not bring up its Cloudflare address.*hub network/
-    );
-  });
-
-  it('says a switch the hub answered with an error stayed as it was, and what that means for the links', () => {
-    expect(hubReasonText('cloud_not_switched_off')).toBe(
-      'The hub did not switch Cloudflare off - those links may still be on Cloudflare.'
-    );
-    expect(hubReasonText('cloud_not_switched_on')).toBe(
-      'The hub did not switch Cloudflare on - this link works on the hub network only.'
-    );
-  });
-
   it('names the policy refusals galaxahub added with the cloud switch', () => {
     expect(hubReasonText('password_required')).toMatch(/requires a password/);
-    expect(hubReasonText('cloud_not_configured')).toMatch(
+    expect(hubReasonText('tunnel_not_available')).toMatch(
       /Cloudflare turned off/
     );
     expect(hubReasonText('policy_conflict')).toMatch(/administrator/);
   });
 
-  it('passes an unknown slug through unchanged', () => {
-    expect(hubReasonText('something_new')).toBe('something_new');
+  it('answers an unknown slug with a sentence, never the slug itself', () => {
+    const text = hubReasonText('something_new');
+    expect(text).not.toContain('something_new');
+    expect(text).toMatch(/does not know/);
+    expect(hubReasonText('')).toBe('');
   });
 });
 
@@ -174,47 +162,66 @@ describe('hub cloud icon', () => {
     requests_subdir: '',
     mode: 'hub',
     hub: { available: true },
-    tunnel_configured: true,
+    tunnel_available: true,
     ...extra
   });
   const looks = {
-    off: hubCloudLook(info({ tunnel_active: false }), ''),
-    on: hubCloudLook(info({ tunnel_active: true }), ''),
-    waiting: hubCloudLook(
-      info({ tunnel_active: true, tunnel_waiting: true }),
+    off: hubTunnelLook(info({ tunnel_default: false, tunnel_ready: true }), ''),
+    on: hubTunnelLook(info({ tunnel_default: true, tunnel_ready: true }), ''),
+    // switched on, hub tunnel not up yet
+    pending: hubTunnelLook(
+      info({ tunnel_default: true, tunnel_ready: false }),
       ''
     ),
-    switchingOn: hubCloudLook(info({ tunnel_active: false }), 'on'),
-    switchingOff: hubCloudLook(info({ tunnel_active: true }), 'off'),
-    unreachable: hubCloudLook(
-      info({
-        tunnel_configured: false,
-        hub: { available: false, reason: 'hub_unavailable' }
-      }),
+    // switched on with no record asking for a tunnel: nothing is on the way
+    armed: hubTunnelLook(
+      info({ tunnel_default: true, tunnel_ready: false }),
+      '',
+      false
+    ),
+    hidden: hubTunnelLook(
+      info({ tunnel_available: false, tunnel_default: true }),
       ''
     ),
-    notConfirmed: hubCloudLook(
-      info({ tunnel_active: false, tunnel_reason: 'cloud_not_confirmed' }),
-      ''
-    ),
-    // the switch back off failed: the default is still on
-    stayedOn: hubCloudLook(
-      info({ tunnel_active: true, tunnel_reason: 'cloud_not_switched_off' }),
-      ''
-    ),
-    notReached: hubCloudLook(
-      info({ tunnel_active: true, tunnel_reason: 'hub_unavailable' }),
+    switchingOn: hubTunnelLook(info({ tunnel_default: false }), 'on'),
+    switchingOff: hubTunnelLook(info({ tunnel_default: true }), 'off'),
+    unreachable: hubTunnelLook(
+      info({ hub: { available: false, reason: 'hub_unavailable' } }),
       ''
     )
   };
 
-  it('shows on only once no switch-on waits, and hub-down apart from off', () => {
-    expect(looks.off.look).toBe('off');
+  it('reads on only once the hub tunnel is ready, pending until it is', () => {
     expect(looks.on.look).toBe('on');
-    expect(looks.waiting.look).toBe('waiting');
-    expect(looks.switchingOn.look).toBe('waiting');
-    expect(looks.switchingOff.look).toBe('waiting');
+    expect(looks.pending.look).toBe('pending');
+    expect(looks.off.look).toBe('off');
+  });
+
+  it('does not wait for a tunnel no record asked for', () => {
+    expect(looks.armed.look).toBe('armed');
+    expect(looks.armed.pressed).toBe(true);
+  });
+
+  it('hides the icon where the group policy has no tunnel at all', () => {
+    expect(looks.hidden.look).toBe('hidden');
+  });
+
+  it('reads unreachable while the hub does not answer', () => {
     expect(looks.unreachable.look).toBe('unreachable');
+    expect(looks.unreachable.pressed).toBe(false);
+  });
+
+  it('shows a switch still in flight in the direction it is going', () => {
+    expect(looks.switchingOn.look).toBe('pending');
+    expect(looks.switchingOn.pressed).toBe(true);
+    expect(looks.switchingOff.look).toBe('pending');
+    expect(looks.switchingOff.pressed).toBe(false);
+  });
+
+  it('reads pressed on, mixed while the hub tunnel is not up, off otherwise', () => {
+    expect(looks.on.pressed).toBe(true);
+    expect(looks.pending.pressed).toBe('mixed');
+    expect(looks.off.pressed).toBe(false);
   });
 
   it('keeps every tooltip to two short lines', () => {
@@ -230,42 +237,7 @@ describe('hub cloud icon', () => {
   it('names the action a click takes', () => {
     expect(looks.on.title).toMatch(/Click to switch it off$/);
     expect(looks.off.title).toMatch(/Click to switch it on$/);
-  });
-
-  it('reads pressed during a switch-on and names what a click does', () => {
-    expect(looks.waiting.pressed).toBe('mixed');
-    expect(looks.switchingOn.pressed).toBe(true);
-    expect(looks.switchingOff.pressed).toBe(false);
-    expect(looks.on.pressed).toBe(true);
-    expect(looks.off.pressed).toBe(false);
-    expect(looks.waiting.title.split('\n')[1]).toBe(
-      'Click to end the wait and switch it off'
-    );
-  });
-
-  it('shows on while the hub kept Cloudflare on after a failed switch back', () => {
-    for (const look of [looks.stayedOn, looks.notReached]) {
-      expect(look.look).toBe('on');
-      expect(look.pressed).toBe(true);
-    }
-  });
-
-  it('keeps the reason of an unconfirmed switch-on in the second line', () => {
-    expect(looks.notConfirmed.title.split('\n')[1]).toBe(
-      'Hub did not bring up its Cloudflare address'
-    );
-    expect(looks.notConfirmed.title.split('\n')[0]).toMatch(
-      /click to switch on$/
-    );
-  });
-
-  it('names a standing reason on the on look, after a failed switch back', () => {
-    expect(looks.stayedOn.title).toBe(
-      'Cloudflare sharing on - click to switch off\nThe hub did not switch Cloudflare off'
-    );
-    expect(looks.notReached.title).toBe(
-      'Cloudflare sharing on - click to switch off\nThe hub could not be reached'
-    );
+    expect(looks.pending.title).toMatch(/Click to switch it off$/);
   });
 });
 
