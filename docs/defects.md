@@ -388,6 +388,13 @@ The unauthenticated public/\* surface - recipient pages, manifests, downloads an
   - root-cause: 2026-09-18T16:16:05Z @kj the launch failure was caught outside the with-open block that owns the log file
   - log: 2026-09-18T16:16:05Z @kj added
   - log: 2026-09-18T16:16:25Z @kj closed
+- [x] `DEF-PUBLIC-99` **A finished or failed upload card keeps the layer that reports a transfer in flight** - MINOR; On the recipient's upload page the accent layer is created when an upload starts and none of the three terminal branches of uploadOne removes it. A finished card keeps a full-width wash with the full-strength leading edge at its right; a card whose upload was refused or lost the network keeps a wash frozen at the fraction last sent, with the edge parked mid-card under a red Failed line. ACC-PROG-172 requires that a row with nothing in flight carries no overlay at all, and the panel already retires its own layer when the hub settles a row, so the two surfaces disagreed about what a lingering layer means.
+  - evidence: uploadOne's three terminal branches now call fill.remove(); ui-tests/tests/upload-progress.spec.ts holds the server's answer to read the layer in flight, then releases it and asserts the layer is gone and the status line reads Uploaded. Green 2026-09-22: galata standalone 32, mock hub 30, live hub 6, jest 43, pytest 403 passed 8 skipped
+  - root-cause: 2026-09-22T11:13:55Z @kj The layer was built where the upload starts and treated as part of the card, so nothing owned its end. The panel builds its layer per render from the row's own state, which is why the panel never had the fault: a settled row simply stops producing one.
+  - repro: Open an upload request page, drop a file, wait for the green Uploaded line: the card still wears the accent wash. Stop the server mid-upload and the card keeps a partial wash under the red Network error line.
+  - test-tags: E2E
+  - log: 2026-09-22T11:13:47Z @kj added
+  - log: 2026-09-22T11:13:55Z @kj closed
 
 ## Storage `STORE`
 

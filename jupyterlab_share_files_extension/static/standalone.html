@@ -190,8 +190,11 @@
     bottom: 0;
     left: 0;
     width: 0;
-    background: var(--accent);
-    opacity: 0.2;
+    /* the wash is stated in the colour, not in `opacity`, which would dim
+       the leading edge with it - and that edge is the only thing that says
+       how far along the card is */
+    background: rgb(59 130 246 / 20%);
+    box-shadow: inset -2px 0 0 var(--accent);
     pointer-events: none;
     transition: width 0.2s;
   }
@@ -685,12 +688,18 @@
       };
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          setSent(100);
+          // the transfer has ended, so the layer goes: it is the indicator
+          // for one in flight, and the status line below states the outcome.
+          // The panel retires its own layer on settle the same way, so a
+          // layer means one thing on both surfaces (ACC-PROG-172)
+          fill.remove();
           const status = document.createElement('div');
           status.className = 'status ok';
           status.textContent = 'Uploaded: ' + file.name;
           container.appendChild(status);
         } else {
+          // the transfer has ended; the status line below carries why
+          fill.remove();
           const status = document.createElement('div');
           status.className = 'status err';
           let reason = '';
@@ -701,6 +710,8 @@
         resolve();
       };
       xhr.onerror = () => {
+        // the transfer has ended; the status line below carries why
+        fill.remove();
         const status = document.createElement('div');
         status.className = 'status err';
         status.textContent = 'Network error: ' + file.name;

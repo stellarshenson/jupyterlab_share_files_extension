@@ -456,7 +456,7 @@ export function linkRef(
   if (own) {
     return { kind: own[1] as 'share' | 'request', id: own[2] };
   }
-  const hub = link.match(/\/s\/[A-Za-z0-9_-]+\/([A-Za-z0-9_-]{6,64})$/);
+  const hub = link.match(/\/s\/[^/]+\/([A-Za-z0-9_-]{6,64})$/);
   if (hub) {
     return { kind: hub[1].startsWith('r_') ? 'request' : 'share', id: hub[1] };
   }

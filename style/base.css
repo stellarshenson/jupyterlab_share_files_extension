@@ -302,8 +302,15 @@
   top: 0;
   bottom: 0;
   left: 0;
-  background: var(--jp-brand-color1);
-  opacity: 0.2;
+
+  /* The wash is the same accent at the same strength, but stated in the
+     colour rather than in `opacity`, which would dim the edge with it. The
+     leading edge is drawn at full strength because it is the only thing
+     that says how far along the row is - the percentage text is gone. The
+     drop target above uses the same pairing, and the same hardcoded blue,
+     for the same reason. */
+  background: rgb(33 150 243 / 20%);
+  box-shadow: inset -2px 0 0 var(--jp-brand-color1);
   pointer-events: none;
   transition: width 0.2s ease-out;
 }

@@ -2,7 +2,7 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
-## [Unreleased]
+## [1.2.48] - 2026-09-22
 
 ### Added
 
@@ -27,6 +27,12 @@
 - The drop zone reads with one gap on all four sides: its margin and its padding each carry a single length
 - The hub's policy refusal of a Cloudflare switch is read under its current name `tunnel_not_available`
 - A refused New Request stays clickable and answers with the hub's reason, because a greyed menu entry carries its reason in a caption Lumino never renders
+- A transfer in flight is drawn across its own row instead of beside it: a translucent accent layer lying over the row, from the row's left edge to the fraction copied, with the row's name, meta and buttons readable through it and its leading edge at full accent strength. Both surfaces carry it - a share row in the panel while the hub copies, and a file's card on the recipient's upload page. The layer is the only place the fraction is stated, so it carries the progressbar role and its value for a screen reader, and the ` staging 42%` text is gone. A row with nothing in flight carries no layer
+
+### Fixed
+
+- Hub mode: the link dialog dropped its password line and its reachability line for every hub link. A record's public address now carries the group's policy id (`/s/<policy id>/<record id>`, the Cloudflare address included) and the lab parsed only the older one-segment form (DEF-HUB-98)
+- The recipient's upload page kept its progress layer after a transfer ended, so a finished card wore a full accent wash and a refused one a partial wash under its red status line; the layer is removed when the transfer ends, as it already was on a panel row the hub has settled (DEF-PUBLIC-99)
 
 ## [1.2.47] - 2026-09-18
 
