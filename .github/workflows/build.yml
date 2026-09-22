@@ -150,19 +150,80 @@ jobs:
         mkdir -p "$JUPYTERLAB_GALATA_ROOT_DIR"
         jlpm playwright test
 
-    - name: Execute hub-mode integration tests
-      working-directory: ui-tests
-      env:
-        JUPYTERLAB_GALATA_ROOT_DIR: ${{ github.workspace }}/.galata-root
-      # A lab spawned with galaxahub's contract against the mock hub in
-      # mock_hub.py - no real hub, no tunnel; the same browser and build
-      run: jlpm playwright test -c playwright.hub.config.js
-
     - name: Upload Playwright Test report
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: jupyterlab_share_files_extension-playwright-tests
+        path: |
+          ui-tests/test-results
+          ui-tests/playwright-report
+
+  hub-integration-tests:
+    # The hub-mode suite: a lab spawned with the contract galaxahub injects,
+    # talking to the mock hub in ui-tests/mock_hub.py - no real hub, no
+    # Cloudflare tunnel, nothing off the loopback interface. It is its own job
+    # rather than a step of the one above so that the two suites report
+    # separately: as one job the standalone run failing meant the hub run
+    # never happened, and its result was read as absent rather than unknown.
+    name: Hub-mode integration tests
+    needs: build
+    runs-on: ubuntu-latest
+
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/pw-browsers
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Base Setup
+      uses: jupyterlab/maintainer-tools/.github/actions/base-setup@v1
+
+    - name: Download extension package
+      uses: actions/download-artifact@v4
+      with:
+        name: extension-artifacts
+
+    - name: Install the extension
+      run: |
+        set -eux
+        python -m pip install "jupyterlab>=4.0.0,<5" jupyterlab_share_files_extension*.whl
+
+    - name: Install dependencies
+      working-directory: ui-tests
+      env:
+        YARN_ENABLE_IMMUTABLE_INSTALLS: 0
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      run: jlpm install
+
+    - name: Set up browser cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ github.workspace }}/pw-browsers
+        key: ${{ runner.os }}-${{ hashFiles('ui-tests/yarn.lock') }}
+
+    - name: Install browser
+      run: |
+        set -eux
+        jlpm playwright install-deps
+        jlpm playwright install chromium
+      working-directory: ui-tests
+
+    - name: Execute hub-mode integration tests
+      working-directory: ui-tests
+      env:
+        JUPYTERLAB_GALATA_ROOT_DIR: ${{ github.workspace }}/.galata-root
+      run: |
+        mkdir -p "$JUPYTERLAB_GALATA_ROOT_DIR"
+        jlpm playwright test -c playwright.hub.config.js
+
+    - name: Upload Playwright Test report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: jupyterlab_share_files_extension-hub-playwright-tests
         path: |
           ui-tests/test-results
           ui-tests/playwright-report

@@ -2,6 +2,19 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.49] - 2026-09-22
+
+### Changed
+
+- Hub mode: Cloudflare sharing is one switch over every record, not a flag each record carries. While the switch is on, listing the shares brings onto the tunnel any record whose own switch is off - a record whose switch-on never landed used to keep a hub-network link while the panel said sharing was on - and switching off writes the switch before it reads the records, reads it again after every write so a write that lands after the press is taken back, and keeps the press when the press moved anything
+- The header cloud icon breathes while a tunnel comes up - a slow ease in and out over 2.4 s, the wait being about 90 seconds - and sits still on the panel's accent once the tunnel is up. The breath is drawn on the icon's ring, so the glyph holds full strength and stays over the 3:1 contrast a non-text control has to clear
+
+### Fixed
+
+- Hub mode: a share whose link carried the hub's own address while the panel reported sharing on (`DEF-HUB-101`)
+- The galata test server serves only this build's labextension and galata's own helper, and reads the extension manager without network. The image these suites run in carries about forty other labextensions, whose frontends exhausted the browser's six connections per origin and left the panel's first `api/info` queued for 16 s while the server answered every request in under 7 ms, failing tests for the image rather than the code (`DEF-TESTS-102`)
+- The hub-mode integration suite runs as its own GitHub job. As a step of the standalone job it never ran when that suite failed
+
 ## [1.2.48] - 2026-09-22
 
 ### Added

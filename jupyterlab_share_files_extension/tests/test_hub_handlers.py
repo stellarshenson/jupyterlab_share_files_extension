@@ -799,3 +799,140 @@ async def test_hub_address_links_are_rewritten_to_the_browser_origin(jp_fetch, f
     row = _json(await _post(jp_fetch, "api", "requests", body={"name": "x"}))
     assert not row["link"].startswith("http://hub:8080"), row["link"]
     assert row["link"].endswith(f"/s/{row['id']}")
+
+
+async def test_a_record_left_behind_the_switch_is_brought_onto_the_tunnel(jp_fetch, fake_hub):
+    """DEF-HUB-101: the tunnel is one state, not a property of a record.
+
+    A create whose switch-on never landed leaves the record off while the
+    switch stays on, and its link stays on the hub's own network. Listing
+    brings the straggler onto the tunnel rather than reporting the drift.
+    """
+    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    assert _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))["tunnel_active"] is True
+    # the hub lost the record's switch; `_with_url` then composes its url
+    # from the hub's own address, which is the drift the panel showed
+    next(i for i in fake_hub.items if i["id"] == share["id"])["tunnel"] = False
+
+    rows = _json(await jp_fetch(NS, "api", "shares"))["shares"]
+    assert [r["tunnel"] for r in rows] == [True]
+    assert rows[0]["link"].startswith(fake_hub.tunnel_base)
+    assert next(i for i in fake_hub.items if i["id"] == share["id"])["tunnel"] is True
+
+
+async def test_nothing_is_switched_while_the_toggle_is_off(jp_fetch, fake_hub):
+    """The reconciliation follows the switch: off means no record is touched."""
+    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    assert hub_routes.tunnel_default() is False
+    rows = _json(await jp_fetch(NS, "api", "shares"))["shares"]
+    assert [r["tunnel"] for r in rows] == [False]
+    assert next(i for i in fake_hub.items if i["id"] == share["id"])["tunnel"] is False
+
+
+async def test_a_switch_off_writes_its_intent_before_it_reads_the_records(jp_fetch, fake_hub):
+    """The window to close is the one before the write, not after it.
+
+    A switch off takes a round trip per record, and the listing path reads
+    the same switch. While that switch still read on, a listing arriving
+    during the handler's own items read reconciled every record back on, so
+    the owner kept public links under a header reading off.
+    """
+    _json(await _post(jp_fetch, "api", "shares", body={"name": "a", "paths": ["a.txt"]}))
+    assert _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))["tunnel_active"] is True
+
+    inner = fake_hub.request
+    seen: list[tuple[str, bool]] = []
+
+    async def record(method, path, body=None):
+        # what a listing arriving at this moment would read
+        seen.append((path, hub_routes.tunnel_default()))
+        return await inner(method, path, body)
+
+    fake_hub.request = record
+    assert _json(await _post(jp_fetch, "api", "tunnel", body={"active": False}))["tunnel_active"] is False
+    # from the read of the records onward - the capabilities read ahead of it
+    # touches no record and is the hub's own answer to the panel
+    after = seen[next(i for i, (path, _) in enumerate(seen) if path == "items"):]
+    assert after and not any(on for _, on in after), seen
+
+
+async def test_a_switch_off_under_a_reconciliation_leaves_no_record_published(jp_fetch, fake_hub):
+    """The reconciliation reads the switch after its write, so it can take it
+    back: the owner can press off while a write is in flight, and a write
+    that lands after the press would otherwise leave that one record on the
+    tunnel for good - nothing switches a record off outside this handler."""
+    for name in ("a", "b", "c"):
+        _json(await _post(jp_fetch, "api", "shares", body={"name": name, "paths": ["a.txt"]}))
+    assert _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))["tunnel_active"] is True
+    for item in fake_hub.items:
+        item["tunnel"] = False  # three records behind the switch
+
+    inner = fake_hub.request
+    in_flight = asyncio.Event()
+    release = asyncio.Event()
+    gate = True
+
+    async def gated(method, path, body=None):
+        nonlocal gate
+        if gate and method == "PUT" and path.endswith("/tunnel") and body.get("tunnel"):
+            gate = False
+            in_flight.set()
+            await release.wait()
+        return await inner(method, path, body)
+
+    fake_hub.request = gated
+
+    async def switch_off():
+        await in_flight.wait()
+        answer = await _post(jp_fetch, "api", "tunnel", body={"active": False})
+        release.set()
+        return answer
+
+    _, off = await asyncio.gather(jp_fetch(NS, "api", "shares"), switch_off())
+    assert _json(off)["tunnel_active"] is False
+    assert hub_routes.tunnel_default() is False
+    assert [i["tunnel"] for i in fake_hub.items] == [False, False, False]
+
+
+async def test_a_refused_switch_off_leaves_the_switch_where_it_stood(jp_fetch, fake_hub):
+    """A switch off the hub refuses must not answer by switching sharing on.
+
+    The rollback exists so the switch never reads off while a record is still
+    on the tunnel, but writing a fixed "on" turned a failed "stop sharing"
+    into "share everything": the next listing reconciled every record onto
+    the tunnel. It puts back what the switch said before the request.
+    """
+    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "a", "paths": ["a.txt"]}))
+    assert hub_routes.tunnel_default() is False
+    # one record on the tunnel while the switch reads off, and a hub that
+    # refuses to take it off again
+    next(i for i in fake_hub.items if i["id"] == share["id"])["tunnel"] = True
+    fake_hub.overrides[("PUT", f"shares/{share['id']}/tunnel")] = (500, {"message": "no"})
+
+    with pytest.raises(HTTPClientError):
+        await _post(jp_fetch, "api", "tunnel", body={"active": False})
+    assert hub_routes.tunnel_default() is False
+
+
+async def test_a_switch_off_that_fails_partway_keeps_the_records_it_closed(jp_fetch, fake_hub):
+    """A press that moved records keeps the press.
+
+    Writing back what the switch said before the request was right only when
+    the request moved nothing. From the state an owner actually presses off
+    from - the switch on, every record published - a hub refusing one record
+    put the switch back to on, and the next listing reconciled the records
+    the press had already taken off the tunnel straight back onto it.
+    """
+    a = _json(await _post(jp_fetch, "api", "shares", body={"name": "a", "paths": ["a.txt"]}))
+    b = _json(await _post(jp_fetch, "api", "shares", body={"name": "b", "paths": ["a.txt"]}))
+    assert _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))["tunnel_active"] is True
+    assert [i["tunnel"] for i in fake_hub.items] == [True, True]
+
+    fake_hub.overrides[("PUT", f"shares/{b['id']}/tunnel")] = (500, {"message": "no"})
+    with pytest.raises(HTTPClientError):
+        await _post(jp_fetch, "api", "tunnel", body={"active": False})
+
+    assert hub_routes.tunnel_default() is False
+    rows = _json(await jp_fetch(NS, "api", "shares"))["shares"]
+    # a stays closed; b is the one the hub refused and reports itself on
+    assert {r["id"]: r["tunnel"] for r in rows} == {a["id"]: False, b["id"]: True}

@@ -3996,8 +3996,8 @@ export class ShareFilesPanel extends Widget {
   /** Render the header cloud icon from the server-reported tunnel state:
    * hidden when no tunnel is configured; the accent cloud when the tunnel is
    * on (public links); dashed silhouette when off (private links); the
-   * blinking accent silhouette while connecting - on and connecting carry the
-   * same accent, so the glyph is what separates them where the blink is
+   * breathing accent silhouette while connecting - on and connecting carry
+   * the same accent, so the glyph is what separates them where the motion is
    * suppressed. Hub mode draws the looks of `hubTunnelLook`. */
   private _updateCloudIndicator(): void {
     if (!this._cloudIndicator) {

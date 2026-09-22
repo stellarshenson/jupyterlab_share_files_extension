@@ -413,7 +413,7 @@ export function hubTunnelLook(
   }
   if (info.tunnel_default && !info.tunnel_ready && !wanted) {
     // the hub starts its tunnel for a record that asks for one, and no record
-    // does: nothing is on the way, so nothing blinks (DEF-PANEL-89). The
+    // does: nothing is on the way, so the icon stays still (DEF-PANEL-89). The
     // silhouette stays - the accent cloud is the hub's confirmation
     return {
       look: 'armed',

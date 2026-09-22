@@ -91,7 +91,13 @@
   align-items: center;
   justify-content: center;
   margin-left: 2px;
-  padding: 0 3px;
+
+  /* the vertical padding and the radius are the ring's, not the glyph's: the
+     connecting state draws a 1px inset ring, and with no vertical padding it
+     sits hard against the 14px glyph as a square-cornered rectangle beside
+     header buttons that are 20x20 with a 2px radius */
+  padding: 1px 3px;
+  border-radius: 2px;
   cursor: pointer;
 
   /* tunnel off / not configured - dashed no-fill silhouette; same colour
@@ -109,11 +115,19 @@
 }
 
 .jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
-  /* switch in flight - the accent on the dashed silhouette, blinking. "On"
-     carries the same accent on the filled cloud, so the glyph is what tells
-     the two apart where the blink is suppressed. */
+  /* switch in flight - the accent on the dashed silhouette, breathing: a
+     slow ease in and out rather than a blink, because the wait for a hub
+     tunnel runs about 90 seconds and a fast flicker reads as an alarm over
+     that long. "On" carries the same accent on the filled cloud, so the
+     glyph is what tells the two apart where the motion is suppressed.
+     The breath is on the ring, not the glyph's own opacity: dimming the
+     glyph puts it at 1.92:1 in the light theme and 1.79:1 in the dark one
+     at the trough, and even at opacity 0.8 only 2.97:1 and 2.57:1, so no
+     value below 1.0 clears the 3:1 bar a non-text control has to hold
+     (DEF-PANEL-103). The ring is the same one the motion-suppressed rule
+     below draws, held rather than pulsed. */
   color: var(--jp-brand-color1);
-  animation: share-files-blink 0.9s ease-in-out infinite;
+  animation: share-files-breathe 2.4s ease-in-out infinite;
 }
 
 .jp-ShareFilesPanel-cloudIndicator.jp-mod-armed {
@@ -136,24 +150,23 @@
 
 @media (prefers-reduced-motion: reduce) {
   .jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
-    /* switch in flight without motion. The glyph keeps full strength rather
-       than dimming to 1.98:1, under the 3:1 bar a non-text control has to
-       clear - but off carries the same dashed silhouette, so with the blink
-       gone a ring is what tells the two apart without asking the reader to
-       see a colour (DEF-PANEL-92) */
+    /* switch in flight without motion: the same ring the breath pulses,
+       held. Off carries the same dashed silhouette, so the ring is what
+       tells the two apart without asking the reader to see a colour
+       (DEF-PANEL-92) */
     animation: none;
     box-shadow: inset 0 0 0 1px currentcolor;
   }
 }
 
-@keyframes share-files-blink {
+@keyframes share-files-breathe {
   0%,
   100% {
-    opacity: 1;
+    box-shadow: inset 0 0 0 1px transparent;
   }
 
   50% {
-    opacity: 0.25;
+    box-shadow: inset 0 0 0 1px currentcolor;
   }
 }
 

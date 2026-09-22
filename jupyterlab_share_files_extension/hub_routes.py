@@ -265,7 +265,49 @@ class _HubBase(_Base):
             self._relay(code, data)
             return None
         items = data.get("items") if isinstance(data, dict) else None
-        return [i for i in (items or []) if i.get("kind") == kind]
+        items = await self._reconcile_tunnel(list(items or []))
+        return [i for i in items if i.get("kind") == kind]
+
+    async def _reconcile_tunnel(self, items: list[dict]) -> list[dict]:
+        """The tunnel is one state, not a property of a record: while the
+        switch is on, every record is on it.
+
+        A create whose switch-on never landed - the hub did not answer - left
+        the record off with the switch still on, and nothing afterwards
+        brought the two together, so that record kept a hub-network link
+        while the panel said sharing was on (DEF-HUB-101). Switch the
+        stragglers on and re-read, so the link the panel shows is the one the
+        switch promises. A record the hub refuses stays off and is read again
+        next time; the switch is the owner's and one refused record does not
+        revoke it.
+        """
+        if not tunnel_default():
+            return items
+        behind = [i for i in items if not i.get("tunnel")]
+        if not behind:
+            return items
+        switched = False
+        for item in behind:
+            kind, id_ = item.get("kind", ""), item.get("id", "")
+            code, _ = await self._set_tunnel(kind, id_, True)
+            if code == 204 and not tunnel_default():
+                # The owner switched off while this write was in flight. Read
+                # the switch after the write, not before it, so the write can
+                # be taken back: a check before it leaves the record published
+                # under a header that already reads off, and nothing switches
+                # it off afterwards. Sound because a switch off writes its
+                # intent before it reads the records, so a write that lands
+                # after the press always reads the press.
+                await self._set_tunnel(kind, id_, False)
+                # read the records again, as the success path below does: the
+                # switch off that ran under this loop took every record off
+                # the tunnel, and the list read before the write still shows
+                # them on it, with tunnel links the hub no longer serves
+                return await self._items_quiet() or items
+            switched = switched or code == 204
+        if not switched:
+            return items
+        return await self._items_quiet() or items
 
     async def _uploads(self, request_id: str) -> list[dict] | None:
         """None means the 502 was already written; a non-200 answer for one
@@ -422,12 +464,24 @@ class HubTunnelHandler(_HubBase):
             return
         if "active" in body:
             active = bool(body["active"])
+            before = tunnel_default()  # what to put back if nothing lands
+            # A switch off writes its intent before it reads the records. The
+            # listing path reads this same switch, and every moment it still
+            # reads on is a moment a listing can put the records this handler
+            # is about to switch off straight back on the tunnel - public
+            # links under a header that reads off. A switch on cannot do the
+            # same, because the hub may refuse it and a refused switch on has
+            # to leave the stored default off.
+            if not active:
+                set_tunnel_default(False)
             answer = await self._hub("GET", "items")
-            if answer is None:
-                return
-            code, data = answer
+            code, data = answer or (0, {})
             if code != 200:
-                return self._relay(code, data)
+                # nothing was switched, so the switch goes back to what it
+                # said before this request - never to a fixed value, which
+                # would answer "turn sharing off" by turning it on
+                set_tunnel_default(before)
+                return None if answer is None else self._relay(code, data)
             items = (data.get("items") if isinstance(data, dict) else None) or []
             switched = 0  # records the hub really switched
             for item in items:
@@ -436,10 +490,14 @@ class HubTunnelHandler(_HubBase):
                 answer = await self._hub("PUT", f"{plural(item.get('kind', ''))}/{item.get('id', '')}/tunnel", {"tunnel": active})
                 # 204 switched, 404 the record is already gone (DEF-HUB-54)
                 if answer is None or answer[0] not in (204, 404):
-                    # a switch on that fails partway leaves the records it
-                    # switched on, so the default must not read off
-                    if active and switched:
-                        set_tunnel_default(True)
+                    # a switch that got at least one record moved keeps the
+                    # press: a switch off that put two of three records off
+                    # the tunnel must not read on again, or the next listing
+                    # reconciles the two it just closed straight back open.
+                    # A switch that moved nothing goes back to what the
+                    # switch said before the request - never to a fixed
+                    # value, which would answer "stop sharing" with "on".
+                    set_tunnel_default(active if switched else before)
                     return None if answer is None else self._relay(*answer)
                 if answer[0] == 204:
                     switched += 1

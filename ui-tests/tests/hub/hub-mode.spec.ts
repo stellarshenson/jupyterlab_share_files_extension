@@ -896,6 +896,25 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
   await expect(cloud).toHaveClass(/jp-mod-connecting/);
   await expect(cloud).toHaveAttribute('aria-pressed', 'mixed');
   await expect(cloud).not.toHaveClass(/jp-mod-active/);
+  // waiting for a tunnel breathes: a slow ease in and out, not a blink. The
+  // hub takes about 90 seconds to bring one up, and a fast flicker over that
+  // long reads as an alarm rather than as waiting.
+  const breath = await cloud.evaluate(el => {
+    const cs = getComputedStyle(el);
+    return {
+      name: cs.animationName,
+      seconds: Number.parseFloat(cs.animationDuration),
+      timing: cs.animationTimingFunction,
+      opacity: cs.opacity
+    };
+  });
+  expect(breath.name).toBe('share-files-breathe');
+  expect(breath.seconds).toBeGreaterThanOrEqual(2);
+  expect(breath.timing).toContain('ease-in-out');
+  // the breath is on the ring, never the glyph's own opacity: dimming a
+  // 14 px accent glyph puts it under the 3:1 bar a non-text control has to
+  // hold, and no opacity below 1.0 clears it (DEF-PANEL-103)
+  expect(breath.opacity).toBe('1');
   // the record is still switched on at the hub - only the hub's tunnel
   // moved - and its link fell back to the hub's own address
   const dropped = await api(page, 'GET', `${API}/shares`);
@@ -909,13 +928,27 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
   await expect(cloud).toHaveClass(/jp-mod-active/);
   await expect(cloud).toHaveAttribute('aria-pressed', 'true');
   await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
+  // established is a still, solid glyph in the panel's own accent - the
+  // colour its other header icons take when active, never one of its own
+  const [iconColor, accentColor, settled] = await page.evaluate(() => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--jp-brand-color1)';
+    document.body.appendChild(probe);
+    const accent = getComputedStyle(probe).color;
+    probe.remove();
+    const el = document.querySelector('.jp-ShareFilesPanel-cloudIndicator')!;
+    const cs = getComputedStyle(el);
+    return [cs.color, accent, cs.animationName];
+  });
+  expect(iconColor).toBe(accentColor);
+  expect(settled).toBe('none');
 });
 
 test('the icon does not wait for a tunnel no record asked for', async ({
   page
 }) => {
   // DEF-PANEL-89: the hub starts its tunnel for a record that wants one, so
-  // on an empty panel nothing is on the way and nothing blinks
+  // on an empty panel nothing is on the way, so the icon stays still
   await openPanel(page);
   await refreshPanel(page);
   const cloud = page.locator(CLOUD);
