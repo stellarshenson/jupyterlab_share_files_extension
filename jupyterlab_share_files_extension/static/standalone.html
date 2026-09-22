@@ -177,17 +177,22 @@
     border-radius: 6px;
     padding: 12px 16px;
     font-size: 13px;
-  }
-  .progress-bar {
-    height: 6px;
-    background: var(--secondary-bg);
-    border-radius: 3px;
+    /* holds the fill below, and clips it to the rounded corners */
+    position: relative;
     overflow: hidden;
-    margin-top: 8px;
   }
-  .progress-bar > div {
-    height: 100%;
+  /* ACC-PROG-172: the row wears its own progress - an accent layer over the
+     name and the size, as wide as the fraction sent, faint enough to read
+     the row through. Out of flow, so the row keeps its height. */
+  .progress-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 0;
     background: var(--accent);
+    opacity: 0.2;
+    pointer-events: none;
     transition: width 0.2s;
   }
   .status {
@@ -653,9 +658,16 @@
     return new Promise((resolve) => {
       const progress = document.createElement('div');
       progress.className = 'progress';
-      progress.innerHTML = '<div class="row"><span class="name">' + escapeHtml(file.name) + '</span><span class="size">' + fmtSize(file.size) + '</span></div><div class="progress-bar"><div style="width:0%"></div></div>';
+      progress.innerHTML = '<div class="row"><span class="name">' + escapeHtml(file.name) + '</span><span class="size">' + fmtSize(file.size) + '</span></div><div class="progress-fill" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>';
       container.appendChild(progress);
-      const bar = progress.querySelector('.progress-bar > div');
+      // the fill is the only place the fraction is stated, so it says it for
+      // a screen reader as well as in the tint (ACC-PROG-172)
+      const fill = progress.querySelector('.progress-fill');
+      fill.setAttribute('aria-label', 'Uploading ' + file.name);
+      const setSent = (pct) => {
+        fill.style.width = pct + '%';
+        fill.setAttribute('aria-valuenow', String(pct));
+      };
 
       const xhr = new XMLHttpRequest();
       xhr.open('POST', api('/upload?uploader=' + encodeURIComponent(uploader)));
@@ -668,12 +680,12 @@
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
-          bar.style.width = ((e.loaded / e.total) * 100).toFixed(0) + '%';
+          setSent(Math.round((e.loaded / e.total) * 100));
         }
       };
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          bar.style.width = '100%';
+          setSent(100);
           const status = document.createElement('div');
           status.className = 'status ok';
           status.textContent = 'Uploaded: ' + file.name;

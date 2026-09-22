@@ -984,3 +984,14 @@ Taking a share's contents back into the file browser's current folder, one file 
   - log: 2026-09-20T17:38:09Z @kj owner 2026-09-20: the whole record can also be saved directly as files, not only as a zip
   - log: 2026-09-20T17:43:14Z @kj owner 2026-09-20: asked the hub developers to provide zip packaging; the extension waits for that route rather than zipping locally
   - log: 2026-09-21T11:20:45Z @kj 2026-09-21: blocked on the hub. The owner decided on 2026-09-20 that the archive is the hub's to build; the hub's owner-side fetch of a whole share or inbox is an accepted hub criterion that is not designed yet and in no build, so nothing can be built or tested against it
+
+## Transfer progress `PROG`
+
+How a transfer still in flight is shown, on every surface that shows one
+
+- [ ] `ACC-PROG-172` **A transfer in flight tints its own row, rather than carrying a bar beside it** - MEDIUM; Every surface that reports a running transfer draws it the same way: one translucent accent layer lying OVER the row, from the row's left edge to the fraction transferred, on top of the row's own text and icons, which stay readable through it. Two surfaces are in scope - a file uploading on the recipient's upload page (`jupyterlab_share_files_extension/static/standalone.html`), which today draws a separate 6 pixel strip under the file name, and a share or request row in the panel while the hub copies its bytes (`src/widget.ts`), which today reads ` staging 42%` as text. No separate bar element is drawn on either surface, no row grows taller while a transfer runs, the overlay reaches the row's full width as the transfer completes, and a row with nothing in flight carries no overlay at all.
+  - test: on the upload page, start an upload and assert the file row carries the overlay at the reported fraction and that no separate bar element exists; in the panel, create a hub share and assert the row carries the overlay while its state is staging, none once it is ready, and that the row's height is unchanged between the two
+  - test-tags: E2E
+  - mechanism: 2026-09-22T09:52:32Z @kj the numbers do not change, only what is drawn with them: xhr.upload.onprogress on the upload page, and the hub's `progress {copied, total}` on a panel row. Decided with the owner 2026-09-22: the layer sits over the row content, not behind it, and is transparent enough to read the text through
+  - log: 2026-09-22T09:52:32Z @kj added
+  - log: 2026-09-22T09:53:57Z @kj scoped: only a share row carries a transfer in the panel. A request's bytes reach the hub from the recipient, not from the lab, so the hub reports no progress on a request row and none is drawn there. The panel keeps the spinner and the word staging or adding for what is happening; the overlay carries the fraction, which the text no longer repeats, and the overlay states it as a progressbar role for a screen reader

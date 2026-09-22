@@ -47,13 +47,15 @@ describe('hub-mode link references', () => {
   });
 
   it('reads kind and id off a hub link, request ids carry the r_ prefix', () => {
-    expect(linkRef('https://hub.example.com/s/9LEqaQ_QZgKxjj0De_u1wA')).toEqual(
-      {
-        kind: 'share',
-        id: '9LEqaQ_QZgKxjj0De_u1wA'
-      }
-    );
-    expect(linkRef('http://hub:8080/s/r_PhcmNOMGM_zLhkr7bsuA')).toEqual({
+    expect(
+      linkRef('https://hub.example.com/s/fsmumfbhul/9LEqaQ_QZgKxjj0De_u1wA')
+    ).toEqual({
+      kind: 'share',
+      id: '9LEqaQ_QZgKxjj0De_u1wA'
+    });
+    expect(
+      linkRef('http://hub:8080/s/fsmumfbhul/r_PhcmNOMGM_zLhkr7bsuA')
+    ).toEqual({
       kind: 'request',
       id: 'r_PhcmNOMGM_zLhkr7bsuA'
     });
@@ -61,6 +63,9 @@ describe('hub-mode link references', () => {
 
   it('returns null for anything else', () => {
     expect(linkRef('https://hub.example.com/hub/home')).toBeNull();
+    expect(
+      linkRef('https://hub.example.com/s/9LEqaQ_QZgKxjj0De_u1wA')
+    ).toBeNull();
     expect(linkRef('')).toBeNull();
   });
 });

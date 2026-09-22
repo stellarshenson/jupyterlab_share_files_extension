@@ -10,13 +10,15 @@ a title containing ``stay-staging`` never leaves ``staging``, one containing
 ``refuse`` is refused with ``over_cap``, any other share is promoted to
 ``ready`` on the next listing with one file per submitted path.
 
-Links follow galaxahub v4.4.58: ``capabilities.public_base_url`` is always
-the hub's own address, and a tunnel-on record's url carries the tunnel base
-only once ``capabilities.tunnel_ready`` is true. The first record switched on
+Links follow the galaxahub deployed on 2026-09-22:
+``capabilities.public_base_url`` is always the hub's own address, and a
+tunnel-on record's url carries the tunnel base only once
+``capabilities.tunnel_ready`` is true. The first record switched on
 starts the connector, which is ready after ``tunnel_delay`` seconds (never
 while ``tunnel_registers`` is false); the hub rings the change stream every
-time that verdict flips. ``/s/<id>`` is the recipient page the lab's link
-check opens.
+time that verdict flips. ``/s/<policy id>/<id>`` is the recipient page the
+lab's link check opens - the hub puts the group's policy id before the
+record id.
 
 ``/_control/*`` is the test's own side door: reset the store, change the
 capabilities, the policy, the tunnel (its base, its delay and its ready
@@ -38,6 +40,8 @@ from tornado.iostream import StreamClosedError
 TOKEN = os.environ.get("MOCK_HUB_TOKEN", "test-token")
 PORT = int(os.environ.get("MOCK_HUB_PORT") or "8765")
 BASE = f"http://127.0.0.1:{PORT}"
+# the group's policy id, the first segment of every public link
+POLICY_ID = "mockpolicy"
 
 
 ADD_SECONDS = 0.4
@@ -121,11 +125,13 @@ class Store:
             if "refuse" in title:
                 item["state"] = "refused"
                 item["reason"] = "over_cap"
+                item.pop("progress", None)
                 continue
             paths = self.pending_paths.pop(item["id"], [])
             item["files"] = _files(paths)
             item["bytes"] = 42 * len(item["files"])
             item["state"] = "ready"
+            item.pop("progress", None)
             self.nudge()
 
 
@@ -189,7 +195,7 @@ def _with_url(item: dict) -> dict:
     connector is ready, the hub's own address otherwise."""
     on_tunnel = item.get("tunnel") and STORE.capabilities["tunnel_ready"]
     base = STORE.tunnel_base.rstrip("/") if on_tunnel else BASE
-    return {**item, "url": f"{base}/s/{item['id']}"}
+    return {**item, "url": f"{base}/s/{POLICY_ID}/{item['id']}"}
 
 
 class Items(_Hub):
@@ -228,6 +234,9 @@ class Create(_Hub):
             "created_at": "2026-09-03T20:00:00Z", "expires_at": "2026-09-17T20:00:00Z",
             "has_password": bool(body.get("password")), "tunnel": False,
         })
+        if state == "staging":
+            # the hub carries bytes while it stages, and says how far along
+            STORE.items[-1]["progress"] = {"copied": 21, "total": 42}
         if kind == "share":
             STORE.pending_paths[id_] = list(paths)
         row = _with_url(STORE.items[-1])
@@ -507,7 +516,7 @@ def make_app():
         (rf"{prefix}/stream", Stream),
         (rf"{prefix}/requests/{ID}/uploads", Uploads),
         (rf"{prefix}/requests/{ID}/uploads/{ID}/fetch", Fetch),
-        (rf"/s/{ID}", RecipientPage),
+        (rf"/s/{POLICY_ID}/{ID}", RecipientPage),
         (r"/_control/([a-z]+)", Control),
     ])
 

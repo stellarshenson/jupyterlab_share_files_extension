@@ -15,6 +15,8 @@ const PANEL = '#jupyterlab-share-files-extension-panel';
 const HUB = `http://127.0.0.1:${process.env.MOCK_HUB_PORT || '8765'}`;
 // the mock's tunnel base: a second origin on the same loopback port
 const TUNNEL = `http://localhost:${process.env.MOCK_HUB_PORT || '8765'}`;
+// the group's policy id, the first segment of every public link
+const POLICY = 'mockpolicy';
 const CLOUD = `${PANEL} .jp-ShareFilesPanel-cloudIndicator`;
 
 /** Call the extension API from the page so the request carries the lab's
@@ -184,7 +186,9 @@ test('share rows show staging, ready and refused states from the hub', async ({
   });
   expect(ready.status).toBe(200);
   expect(ready.data.state).toBe('staging');
-  expect(ready.data.link).toMatch(/^http:\/\/localhost:\d+\/s\/MockId_/);
+  expect(ready.data.link).toMatch(
+    new RegExp(`^http://localhost:\\d+/s/${POLICY}/MockId_`)
+  );
   await api(page, 'POST', `${API}/shares`, {
     name: 'stay-staging-one',
     paths: ['a.txt']
@@ -211,6 +215,24 @@ test('share rows show staging, ready and refused states from the hub', async ({
   expect(
     (await item('stay-staging-one').boundingBox())!.height
   ).toBeLessThanOrEqual((await item('ready-one').boundingBox())!.height);
+  // ACC-PROG-172: the staging row wears the fraction the hub reports, as a
+  // layer over the whole row; a row with nothing in flight wears none
+  const fill = item('stay-staging-one').locator(
+    '.jp-ShareFilesPanel-itemProgress'
+  );
+  await expect(fill).toHaveAttribute('aria-valuenow', '50');
+  const staging = item('stay-staging-one').locator(
+    '.jp-ShareFilesPanel-itemHeader'
+  );
+  const fillBox = (await fill.boundingBox())!;
+  const headerBox = (await staging.boundingBox())!;
+  expect(Math.abs(fillBox.width - headerBox.width / 2)).toBeLessThan(2);
+  expect(fillBox.height).toBe(headerBox.height);
+  for (const name of ['ready-one', 'refuse-one']) {
+    await expect(
+      item(name).locator('.jp-ShareFilesPanel-itemProgress')
+    ).toHaveCount(0);
+  }
   // the refused row says why in one line; the hover adds the slug
   const refusedMeta = item('refuse-one').locator(
     '.jp-ShareFilesPanel-itemMeta'
@@ -331,10 +353,14 @@ test('an add the hub refuses shows the hub reason on the row', async ({
   await api(page, 'POST', `${API}/shares/${made.data.id}/items`, {
     paths: ['refuse-add.txt']
   });
-  // while the hub copies, the row carries the percentage the hub reports
+  // while the hub copies, the row says what it is doing and wears how far
   await refreshPanel(page);
   await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
-    /adding 50%/
+    /adding/
+  );
+  await expect(row.locator('.jp-ShareFilesPanel-itemProgress')).toHaveAttribute(
+    'aria-valuenow',
+    '50'
   );
   // the hub rings on a refused add, so the row says it with no click
   await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
@@ -547,7 +573,7 @@ test('the link dialog opens the link itself, whatever the hub serving verdict', 
   const dialog = page.locator('.jp-Dialog');
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('input[readonly]')).toHaveValue(
-    `${tunnel}/s/${created.data.id}`
+    `${tunnel}/s/${POLICY}/${created.data.id}`
   );
   await expect(dialog).not.toContainText("hub's network only");
   // the recipient page answers, so the link is reachable while the hub's
@@ -582,7 +608,7 @@ test('the cloud toggle flips every record and the next one, and no row carries a
   });
   expect(first.data.tunnel).toBe(false);
   expect(first.data.link).toMatch(
-    new RegExp(`^http://localhost:\\d+/s/${first.data.id}$`)
+    new RegExp(`^http://localhost:\\d+/s/${POLICY}/${first.data.id}$`)
   );
   const cloud = page.locator(`${PANEL} .jp-ShareFilesPanel-cloudIndicator`);
   await expect(cloud).toHaveAttribute('title', /hub network only/);
@@ -592,12 +618,14 @@ test('the cloud toggle flips every record and the next one, and no row carries a
   await expect(cloud).toHaveClass(/jp-mod-active/);
   const listed = await api(page, 'GET', `${API}/shares`);
   expect(listed.data.shares[0].tunnel).toBe(true);
-  expect(listed.data.shares[0].link).toBe(`${TUNNEL}/s/${first.data.id}`);
+  expect(listed.data.shares[0].link).toBe(
+    `${TUNNEL}/s/${POLICY}/${first.data.id}`
+  );
   const second = await api(page, 'POST', `${API}/requests`, {
     name: 'second-one'
   });
   expect(second.data.tunnel).toBe(true);
-  expect(second.data.link).toBe(`${TUNNEL}/s/${second.data.id}`);
+  expect(second.data.link).toBe(`${TUNNEL}/s/${POLICY}/${second.data.id}`);
   // every record is on, and no row carries a cloud mark - the header icon
   // alone shows Cloudflare on
   await refreshPanel(page);
@@ -836,7 +864,7 @@ test('the hub bringing its tunnel up moves the icon from pending to on, with no 
     await item(p).locator('button[title="Copy link"]').click();
     const dialog = p.locator('.jp-Dialog');
     await expect(dialog.locator('input[readonly]')).toHaveValue(
-      `${TUNNEL}/s/${created.data.id}`
+      `${TUNNEL}/s/${POLICY}/${created.data.id}`
     );
     await dialog.locator('button', { hasText: 'Close' }).click();
   }
@@ -860,7 +888,9 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
   await expect(cloud).toHaveClass(/jp-mod-active/);
   await expect(cloud).toHaveAttribute('aria-pressed', 'true');
   const on = await api(page, 'GET', `${API}/shares`);
-  expect(on.data.shares[0].link).toBe(`${TUNNEL}/s/${created.data.id}`);
+  expect(on.data.shares[0].link).toBe(
+    `${TUNNEL}/s/${POLICY}/${created.data.id}`
+  );
 
   await request.post(`${HUB}/_control/tunnel`, { data: { ready: false } });
   await expect(cloud).toHaveClass(/jp-mod-connecting/);
@@ -871,7 +901,7 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
   const dropped = await api(page, 'GET', `${API}/shares`);
   expect(dropped.data.shares[0].tunnel).toBe(true);
   expect(dropped.data.shares[0].link).toBe(
-    `${new URL(page.url()).origin}/s/${created.data.id}`
+    `${new URL(page.url()).origin}/s/${POLICY}/${created.data.id}`
   );
 
   // the tunnel returns and the icon reads on again, still with no click

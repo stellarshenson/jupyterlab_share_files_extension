@@ -446,8 +446,9 @@ export function hubTunnelLook(
 }
 
 /** Kind and id from a share or request link: the standalone
- * `/public/<kind>/<id>` form, or the hub's `/s/<id>` form where a request id
- * carries the `r_` prefix. Null for anything else. */
+ * `/public/<kind>/<id>` form, or the hub's `/s/<policy id>/<id>` form where a
+ * request id carries the `r_` prefix. The record id is the last segment of
+ * the hub's path. Null for anything else. */
 export function linkRef(
   link: string
 ): { kind: 'share' | 'request'; id: string } | null {
@@ -455,7 +456,7 @@ export function linkRef(
   if (own) {
     return { kind: own[1] as 'share' | 'request', id: own[2] };
   }
-  const hub = link.match(/\/s\/([A-Za-z0-9_-]{6,64})$/);
+  const hub = link.match(/\/s\/[A-Za-z0-9_-]+\/([A-Za-z0-9_-]{6,64})$/);
   if (hub) {
     return { kind: hub[1].startsWith('r_') ? 'request' : 'share', id: hub[1] };
   }

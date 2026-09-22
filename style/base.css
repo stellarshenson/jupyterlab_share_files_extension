@@ -288,6 +288,24 @@
   user-select: none;
   font-size: var(--jp-ui-font-size1);
   color: var(--jp-ui-font-color1);
+
+  /* holds the transfer overlay below */
+  position: relative;
+}
+
+/* ACC-PROG-172: a row the hub is still copying wears its progress rather
+   than reporting it beside the name - an accent layer over the whole row,
+   as wide as the fraction copied, faint enough to read the row through. It
+   is out of flow, so the row keeps its height and takes no click. */
+.jp-ShareFilesPanel-itemProgress {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--jp-brand-color1);
+  opacity: 0.2;
+  pointer-events: none;
+  transition: width 0.2s ease-out;
 }
 
 .jp-ShareFilesPanel-itemHeader:hover {

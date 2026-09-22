@@ -150,7 +150,8 @@ test('a share of a workspace file is staged by the hub, becomes ready with its f
   const name = `${RUN}-share`;
   const created = await readyShare(page, tmpPath, name);
   expect(created.tunnel).toBe(false);
-  expect(created.link).toMatch(new RegExp(`/s/${created.id}$`));
+  // the hub puts the group's policy id before the record id
+  expect(created.link).toMatch(new RegExp(`/s/[A-Za-z0-9_-]+/${created.id}$`));
   const ready = await row(page, 'shares', created.id);
   expect(ready.entries.map((e: any) => e.name)).toEqual(['report.txt']);
   expect(ready.bytes).toBeGreaterThan(0);
@@ -245,7 +246,9 @@ test('a request is created on the hub and deleted', async ({ page }) => {
   const created = await api(page, 'POST', `${API}/requests`, { name });
   expect(created.status).toBe(200);
   expect(created.data.tunnel).toBe(false);
-  expect(created.data.link).toMatch(new RegExp(`/s/${created.data.id}$`));
+  expect(created.data.link).toMatch(
+    new RegExp(`/s/[A-Za-z0-9_-]+/${created.data.id}$`)
+  );
   await openPanel(page);
   await refreshPanel(page);
   await expect(item(page, name)).toBeVisible();

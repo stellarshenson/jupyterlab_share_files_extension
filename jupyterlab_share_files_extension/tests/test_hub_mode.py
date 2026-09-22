@@ -310,14 +310,14 @@ LIVE_SHARE = {
     "files": [{"name": "fileshare-probe.txt", "size": 42, "sha256": "219b64e7"}],
     "bytes": 42, "skipped": 0, "created_at": "2026-09-03T20:43:41Z",
     "expires_at": "2026-09-17T20:43:41Z", "has_password": False,
-    "url": "http://hub:8080/s/9LEqaQ_QZgKxjj0De_u1wA",
+    "url": "http://hub:8080/s/fsmumfbhul/9LEqaQ_QZgKxjj0De_u1wA",
 }
 LIVE_REQUEST = {
     "id": "r_PhcmNOMGM_zLhkr7bsuA", "kind": "request", "owner": "konrad.jelen",
     "title": "live probe request", "state": "ready", "files": [], "bytes": 0,
     "skipped": 0, "created_at": "2026-09-03T20:43:05Z",
     "expires_at": "2026-09-17T20:43:05Z", "has_password": True,
-    "url": "http://hub:8080/s/r_PhcmNOMGM_zLhkr7bsuA",
+    "url": "http://hub:8080/s/fsmumfbhul/r_PhcmNOMGM_zLhkr7bsuA",
 }
 
 
@@ -327,12 +327,14 @@ def _epoch(stamp: str) -> int:
 
 
 def test_share_from_item_maps_the_live_payload():
-    row = hub_routes.share_from_item(LIVE_SHARE, "https://hub.example.com/s/9LEqaQ_QZgKxjj0De_u1wA")
+    row = hub_routes.share_from_item(
+        LIVE_SHARE, "https://hub.example.com/s/fsmumfbhul/9LEqaQ_QZgKxjj0De_u1wA"
+    )
     assert row["id"] == LIVE_SHARE["id"]
     assert row["name"] == "live probe share"
     assert row["kind"] == "share"
     assert row["entries"] == [{"name": "fileshare-probe.txt", "type": "file", "size": 42}]
-    assert row["link"] == "https://hub.example.com/s/9LEqaQ_QZgKxjj0De_u1wA"
+    assert row["link"] == "https://hub.example.com/s/fsmumfbhul/9LEqaQ_QZgKxjj0De_u1wA"
     assert row["state"] == "ready"
     assert row["reason"] == ""
     assert row["has_password"] is False

@@ -121,3 +121,20 @@ def test_non_manifest_public_handlers_keep_default_caching():
     """
     assert not issubclass(_PublicBase, _UncachedPublicMixin)
     assert _PublicBase.compute_etag is tornado.web.RequestHandler.compute_etag
+
+
+def test_the_upload_page_tints_the_row_instead_of_drawing_a_bar():
+    """ACC-PROG-172: the row is the indicator, so no strip is left beside it.
+
+    The page used to append a `.progress-bar` strip under the file name. It
+    now drives one `.progress-fill` layer lying over the row, and states the
+    fraction as a progressbar so a screen reader still hears it.
+    """
+    page = Path(__file__).resolve().parents[1] / "static" / "standalone.html"
+    source = page.read_text(encoding="utf-8")
+    assert "progress-bar" not in source, "the strip beside the row must be gone"
+    assert 'class="progress-fill"' in source
+    assert 'role="progressbar"' in source
+    # every width change goes through the one setter, which also moves aria
+    assert source.count("fill.style.width") == 1
+    assert "aria-valuenow" in source

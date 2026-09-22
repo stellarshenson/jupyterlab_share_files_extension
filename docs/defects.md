@@ -729,6 +729,13 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - log: 2026-09-21T10:39:04Z @kj the watch now continues only on 409 with the reason busy, ends on a 409 with no reason, and ends after 660 probes; tests test_a_share_that_stopped_being_editable_ends_the_watch and test_the_idle_probe_name_is_never_sent_as_an_entry; pytest 404 passed 8 skipped
   - log: 2026-09-21T10:55:15Z @kj residual, accepted: a watch that reaches a bound ends with the spinner gone and no sentence; it needs 30 s of 429 or 5xx on the content route together with a later hub refusal, and the watcher is deleted when the hub reports a refused add itself (hub DEF-FSHR-561, built in hub 4.4.150 as last_add)
   - log: 2026-09-21T13:10:35Z @kj 2026-09-21: the watcher is deleted. The updated hub carries last_add and progress on the share row (probed live), so the lab relays them and holds no add state; the idle probe, its bounds and the probe-name guard are gone with it
+- [x] `DEF-HUB-98` **a hub link no longer parses, so the link dialog loses the password and the reachability line** - MEDIUM; the hub's public address gained a segment: a record's url is now /s/<policy id>/<id>, where the policy id names the group's file-sharing policy. linkRef in src/api.ts matched /s/<id> at the end of the address and returns null for every hub link. The link dialog reads kind and id off the link whenever the caller passes none, so the password line and the reachability line disappear on that path; `src/api.ts`
+  - evidence: linkRef reads the record id as the last segment of /s/<policy id>/<id>; jest 'reads kind and id off a hub link' green on both forms and the one-segment form now answers null; the mock hub composes and routes the policy segment, galata mock hub 30 of 30 (logs/hub-mock-linkshape-r2.log); real hub 6 of 6 including the tunnel test, where the hub composed https://share.stellars-tech.com/s/fsmumfbhul/<id> (logs/livehub-linkshape.log); standalone 31 of 31, pytest 402 passed 8 skipped, jest 43, jlpm build and lint:check clean
+  - repro: on a hub-managed lab, create a share and call linkRef on its link: it returns null although the link is a hub share link
+  - test-tags: UNIT, E2E
+  - root-cause: 2026-09-22T08:54:29Z @kj the hub composes the public address and changed its shape; the lab held the old shape in one regular expression
+  - log: 2026-09-22T08:54:29Z @kj added
+  - log: 2026-09-22T09:46:09Z @kj closed
 
 ## Test suites `TESTS`
 

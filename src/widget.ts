@@ -1144,15 +1144,12 @@ export class ShareFilesPanel extends Widget {
       share.adding
     ) {
       meta.appendChild(this._spinnerNode());
-      // the hub reports bytes only while it carries them
-      const done = share.progress?.total
-        ? ` ${Math.floor((100 * share.progress.copied) / share.progress.total)}%`
-        : '';
+      // what is happening, in one word; how far along is the row's own tint
       if (share.state === 'staging') {
-        meta.appendChild(document.createTextNode(` staging${done}`));
+        meta.appendChild(document.createTextNode(' staging'));
         meta.title = 'The hub is copying the files';
       } else if (share.adding) {
-        meta.appendChild(document.createTextNode(` adding${done}`));
+        meta.appendChild(document.createTextNode(' adding'));
         meta.title = 'The hub is copying the new files';
       }
     } else if (share.state === 'refused') {
@@ -1200,6 +1197,20 @@ export class ShareFilesPanel extends Widget {
     );
     trashBtn.classList.add('jp-mod-danger');
     header.appendChild(trashBtn);
+
+    // ACC-PROG-172: a transfer in flight tints its own row instead of
+    // carrying a bar beside it. The row must be transferring, not merely
+    // carry the hub's numbers: a row the hub has settled keeps no tint even
+    // if its `progress` is left behind. Appended last so the layer paints
+    // over the name, the meta and the buttons.
+    if ((share.state === 'staging' || share.adding) && share.progress?.total) {
+      header.appendChild(
+        this._progressOverlay(
+          share.progress.copied / share.progress.total,
+          `Copying ${share.name}`
+        )
+      );
+    }
 
     header.addEventListener('click', () => {
       const key = `share:${share.id}`;
@@ -4257,6 +4268,25 @@ export class ShareFilesPanel extends Widget {
     const s = document.createElement('span');
     s.className = 'jp-ShareFilesPanel-spinner';
     return s;
+  }
+
+  /**
+   * The layer a row in transfer wears: an accent tint lying over the row
+   * from its left edge to `fraction`, transparent enough to read the row
+   * through (ACC-PROG-172). It is the only place the fraction is stated, so
+   * it says it as a progressbar for a screen reader too.
+   */
+  private _progressOverlay(fraction: number, label: string): HTMLElement {
+    const pct = Math.max(0, Math.min(100, Math.floor(100 * fraction)));
+    const fill = document.createElement('div');
+    fill.className = 'jp-ShareFilesPanel-itemProgress';
+    fill.style.width = `${pct}%`;
+    fill.setAttribute('role', 'progressbar');
+    fill.setAttribute('aria-valuemin', '0');
+    fill.setAttribute('aria-valuemax', '100');
+    fill.setAttribute('aria-valuenow', String(pct));
+    fill.setAttribute('aria-label', label);
+    return fill;
   }
 
   // ------------------------------------------------------------------ //
