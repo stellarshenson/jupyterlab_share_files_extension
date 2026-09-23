@@ -45,6 +45,7 @@ import {
   renameShareItem,
   resetTunnel,
   saveFromConnection,
+  saveRecord,
   setPassword,
   setTunnel,
   streamUrl,
@@ -356,7 +357,7 @@ export class ShareFilesPanel extends Widget {
         id: pending,
         message: `Could not create share: ${err.message || err}`,
         type: 'error',
-        autoClose: 5000
+        autoClose: 8000
       });
     } finally {
       this._state.busyKeys.delete(tempKey);
@@ -395,7 +396,7 @@ export class ShareFilesPanel extends Widget {
       this._noteCloudRefusal(req.tunnel_reason);
     } catch (err: any) {
       Notification.error(`Could not create request: ${err.message || err}`, {
-        autoClose: 5000
+        autoClose: 8000
       });
     } finally {
       await this.refresh();
@@ -432,9 +433,21 @@ export class ShareFilesPanel extends Widget {
     this._render();
     try {
       await uploadToConnection(this._serverSettings, connectionKey, paths, '');
-      Notification.success(`${paths.length} item(s) uploaded`, {
-        autoClose: 5000
-      });
+      // on a hub the copy runs after the answer: the row carries it, and its
+      // landing is announced by _refreshConnection. The copy may settle
+      // before the next read, so the row reads it as running until then.
+      const cached = this._state.connectionData.get(connectionKey);
+      if (!this._hubMode) {
+        Notification.success(`${paths.length} item(s) uploaded`, {
+          autoClose: 5000
+        });
+      } else if (cached?.kind === 'request') {
+        this._uploadAcceptedAt.set(connectionKey, ++this._reads);
+        this._state.connectionData.set(connectionKey, {
+          ...cached,
+          uploading: true
+        });
+      }
     } catch (err: any) {
       Notification.error(`Upload failed: ${err.message || err}`, {
         autoClose: 8000
@@ -473,10 +486,7 @@ export class ShareFilesPanel extends Widget {
         const [s, r, c] = await Promise.all([
           listShares(this._serverSettings),
           listRequests(this._serverSettings),
-          // peer connections have no hub equivalent - the route is not mounted
-          this._hubMode
-            ? Promise.resolve({ connections: [] as IConnection[] })
-            : listConnections(this._serverSettings)
+          listConnections(this._serverSettings)
         ]);
         this._state.shares = s.shares || [];
         this._state.requests = r.requests || [];
@@ -484,7 +494,11 @@ export class ShareFilesPanel extends Widget {
         // Drop per-connection bookkeeping for connections that no longer
         // exist, so a re-added peer never shows the previous one's failure.
         const liveKeys = new Set(this._state.connections.map(x => x.key));
-        for (const m of [this._state.offlineReasons, this._loggedOfflineKeys]) {
+        for (const m of [
+          this._state.offlineReasons,
+          this._loggedOfflineKeys,
+          this._uploadAcceptedAt
+        ]) {
           for (const k of Array.from(m.keys())) {
             if (!liveKeys.has(k)) {
               m.delete(k);
@@ -598,9 +612,10 @@ export class ShareFilesPanel extends Widget {
     // and retry with the password. A wrong password comes back as another
     // 401 so the prompt repeats until cancel (rate limited server-side).
     let password = '';
+    let added: IConnection;
     for (;;) {
       try {
-        await addConnection(this._serverSettings, link, password);
+        added = await addConnection(this._serverSettings, link, password);
         break;
       } catch (err: any) {
         const status = err?.response?.status;
@@ -623,6 +638,10 @@ export class ShareFilesPanel extends Widget {
       }
     }
     await this.refresh();
+    // the new row may sit in a collapsed section or below the fold
+    this._state.expanded.connected = true;
+    this._render();
+    this._byFocusKey(`conn:${added.key}`)?.scrollIntoView({ block: 'nearest' });
     return true;
   }
 
@@ -903,17 +922,22 @@ export class ShareFilesPanel extends Widget {
       ? active?.dataset.rowKey || active?.dataset.focusKey
       : undefined;
     const byKeyboard = !!active?.matches(':focus-visible');
-    // the focused row's place in the list, so a row the rebuild drops (a
-    // confirmed delete) can hand the focus to its neighbour
-    let focusedIndex = -1;
+    // the focused row's neighbours, by key, so a row the rebuild drops (a
+    // confirmed delete) can hand the focus to the one that took its place -
+    // a position would move when rows above it came or went meanwhile
+    let neighbourKeys: string[] = [];
     // and the section it sits in, for a delete that leaves no row at all
     let focusedSection = '';
     if (focusedKey) {
       const row = active?.closest<HTMLElement>('[data-row-key]');
       if (row) {
-        focusedIndex = Array.from(
+        const rows = Array.from(
           this._body.querySelectorAll<HTMLElement>('[data-row-key]')
-        ).indexOf(row);
+        );
+        const at = rows.indexOf(row);
+        neighbourKeys = [rows[at + 1], rows[at - 1]]
+          .map(r => r?.dataset.rowKey || '')
+          .filter(Boolean);
       }
       focusedSection =
         active
@@ -938,28 +962,25 @@ export class ShareFilesPanel extends Widget {
         () => this._renderRequests(visibleRequests)
       );
     }
-    const hub = this._hubMode;
-    if (!hub) {
-      this._renderSection(
-        'connected',
-        'Connected',
-        visibleConnections.length,
-        () => this._renderConnections(visibleConnections)
-      );
-    }
+    this._renderSection(
+      'connected',
+      'Connected',
+      visibleConnections.length,
+      () => this._renderConnections(visibleConnections)
+    );
     // The drop zone is for creating a new share - hide it if shares are off.
     if (this._dropZone) {
       this._dropZone.style.display = this._settings.enableShares ? '' : 'none';
-      this._dropZone.textContent = hub
-        ? 'Drag files here to share'
-        : 'Drag files here to share, or paste a link below';
     }
-    // Peer links cannot be connected on a hub-managed lab.
-    if (this._connectRow) {
-      this._connectRow.style.display = hub ? 'none' : '';
+    // a hub record is named by its id alone as well as by its link
+    const connectInput = this._connectRow?.querySelector('input');
+    if (connectInput) {
+      connectInput.placeholder = this._hubMode
+        ? 'Paste a share or request link, or its id'
+        : 'Paste a share or request link';
     }
     if (focusedKey) {
-      this._restoreFocus(focusedKey, byKeyboard, focusedIndex, focusedSection);
+      this._restoreFocus(focusedKey, byKeyboard, neighbourKeys, focusedSection);
     }
   }
 
@@ -986,15 +1007,14 @@ export class ShareFilesPanel extends Widget {
   private _restoreFocus(
     key: string,
     byKeyboard: boolean,
-    fallbackIndex = -1,
+    neighbourKeys: string[] = [],
     fallbackSection = ''
   ): void {
     let el = this._byFocusKey(key);
-    if (!el && fallbackIndex >= 0) {
-      // the named row is gone (deleted) - the one that took its place
-      const rows =
-        this._body?.querySelectorAll<HTMLElement>('[data-row-key]') || [];
-      el = rows[Math.min(fallbackIndex, rows.length - 1)] || null;
+    for (const neighbour of neighbourKeys) {
+      // the named row is gone (deleted) - the one that took its place, else
+      // the one above it
+      el = el || this._byFocusKey(neighbour);
     }
     if (!el && fallbackSection) {
       // no row at all - the section header, by its own focus key
@@ -1389,6 +1409,18 @@ export class ShareFilesPanel extends Widget {
     return `The hub refused the last add - ${hubReasonText(reason)}`;
   }
 
+  /** Why an upload into another user's request was refused. Its size limit
+   * is the request's, not the uploader's group policy hubReasonText names. */
+  private _uploadReasonText(reason: string): string {
+    return reason === 'over_cap'
+      ? 'The files are larger than this request accepts.'
+      : hubReasonText(reason);
+  }
+
+  private _uploadRefusedText(reason: string): string {
+    return `The hub refused the last upload - ${this._uploadReasonText(reason)}`;
+  }
+
   /** One file or folder of a hub share: remove, rename (F2 and the menu),
    * open a folder, and move by dragging a row onto a folder row. */
   private _renderHubEntryRow(
@@ -1398,14 +1430,13 @@ export class ShareFilesPanel extends Widget {
   ): HTMLElement {
     const key = `share:${shareId}/${fullName}`;
     const remove = () => void this._removeHubEntry(shareId, fullName);
-    const row = this._renderEntryRow(
-      entry,
-      remove,
-      0,
-      undefined,
-      undefined,
-      key
-    );
+    // a hub entry carries no workspace path, so its context menu has no file
+    // to reach and the row's own button is the save (ACC-SAVE-170)
+    const save =
+      entry.type === 'directory'
+        ? undefined
+        : () => void this.saveHubEntryFlow(shareId, fullName);
+    const row = this._renderEntryRow(entry, remove, 0, undefined, save, key);
     row.classList.add('jp-mod-clickable');
     const menu = (evt: MouseEvent): Menu => {
       const m = new Menu({ commands: this._commands });
@@ -1983,13 +2014,20 @@ export class ShareFilesPanel extends Widget {
     if (this._state.offlineKeys.has(conn.key)) {
       const offline = document.createElement('span');
       offline.className = 'jp-ShareFilesPanel-offline';
-      offline.textContent = 'offline';
       const reason = this._state.offlineReasons.get(conn.key);
+      // a changed password is a step for the user, not an outage to wait out
+      offline.textContent =
+        this._hubMode && reason === hubReasonText('password_changed')
+          ? 'password changed'
+          : 'offline';
       // "unavailable", not "could not reach" - a 401 or 404 means the peer
       // answered fine and the fault is the password or a deleted resource.
-      offline.title = reason
-        ? `Peer unavailable: ${reason}`
-        : 'Peer unavailable';
+      // A hub record has an owner, not a peer, and its reason says it all.
+      offline.title = this._hubMode
+        ? reason || 'Unavailable'
+        : reason
+          ? `Peer unavailable: ${reason}`
+          : 'Peer unavailable';
       header.appendChild(offline);
     }
 
@@ -2001,7 +2039,18 @@ export class ShareFilesPanel extends Widget {
       const shareData = data as IRemoteShare;
       meta.textContent = `${shareData.entries.length} item${shareData.entries.length === 1 ? '' : 's'}`;
     } else if (conn.kind === 'request') {
-      meta.textContent = 'request';
+      const requestData = data as IRemoteRequest | undefined;
+      const reason = requestData?.upload_reason;
+      if (requestData?.uploading) {
+        meta.textContent = 'uploading';
+      } else if (reason) {
+        // a collapsed row must still say the last upload did not happen
+        meta.classList.add('jp-mod-refused');
+        meta.textContent = 'request - upload refused';
+        meta.title = `${this._uploadRefusedText(reason)}\nrefused: ${reason}`;
+      } else {
+        meta.textContent = 'request';
+      }
     }
     header.appendChild(meta);
 
@@ -2015,6 +2064,18 @@ export class ShareFilesPanel extends Widget {
       }
     );
     header.appendChild(disconnectBtn);
+
+    // ACC-HUBM-180: an upload in flight tints the row it goes to, as every
+    // other transfer does (ACC-PROG-172)
+    const upload = data as IRemoteRequest | undefined;
+    if (upload?.uploading && upload.progress?.total) {
+      header.appendChild(
+        this._progressOverlay(
+          upload.progress.copied / upload.progress.total,
+          `Uploading to ${name.textContent}`
+        )
+      );
+    }
 
     header.addEventListener('click', () => {
       const k = `conn:${conn.key}`;
@@ -2040,6 +2101,10 @@ export class ShareFilesPanel extends Widget {
         const shareData = data as IRemoteShare;
         item.appendChild(this._renderConnectedShareEntries(conn, shareData));
       } else if (conn.kind === 'request') {
+        const reason = (data as IRemoteRequest | undefined)?.upload_reason;
+        if (reason && !(data as IRemoteRequest).uploading) {
+          item.appendChild(this._renderEmpty(this._uploadRefusedText(reason)));
+        }
         const hint = document.createElement('div');
         hint.className = 'jp-ShareFilesPanel-empty';
         hint.textContent = 'Drag files here to upload to this request';
@@ -2195,6 +2260,47 @@ export class ShareFilesPanel extends Widget {
    * lands. The download + (folder) zip extraction happens server-side in
    * `ConnectionSaveHandler`, so no peer credentials touch the browser.
    */
+  /** Save every entry of a connected share into the file browser's current
+   * folder (ACC-SAVE-171). `names: null` is the server's "all"; the bytes
+   * come from the peer through this server, never through the browser. */
+  async saveConnectionFlow(
+    connKey: string,
+    name: string,
+    archive: '' | 'zip' = ''
+  ): Promise<void> {
+    const target = this._getCurrentDir();
+    this._state.busyKeys.add(connKey);
+    this._render();
+    const pending = Notification.emit(`Saving ${name}...`, 'in-progress');
+    try {
+      const { saved } = await saveFromConnection(
+        this._serverSettings,
+        connKey,
+        target,
+        null,
+        this._settings.peerDownloadMaxGb,
+        archive
+      );
+      Notification.update({
+        id: pending,
+        message: `Saved ${name} to ./${saved[0]}`,
+        type: 'success',
+        autoClose: 5000
+      });
+      await this._revealInFileBrowser(target);
+    } catch (err: any) {
+      Notification.update({
+        id: pending,
+        message: `Could not save ${name}: ${err?.message || err}`,
+        type: 'error',
+        autoClose: 8000
+      });
+    } finally {
+      this._state.busyKeys.delete(connKey);
+      this._render();
+    }
+  }
+
   async saveRemoteEntryTo(
     connKey: string,
     name: string,
@@ -2268,13 +2374,17 @@ export class ShareFilesPanel extends Widget {
     downloadUrl: string
   ): Menu {
     const menu = new Menu({ commands: this._commands });
-    menu.addItem({
-      command: 'share-files-panel:download-remote-entry',
-      args: {
-        url: downloadUrl,
-        filename: entry.name + (entry.type === 'directory' ? '.zip' : '')
-      }
-    });
+    // on a hub the bytes go from the hub into the workspace, never through
+    // the lab to the browser (ACC-HUBM-175)
+    if (!this._hubMode) {
+      menu.addItem({
+        command: 'share-files-panel:download-remote-entry',
+        args: {
+          url: downloadUrl,
+          filename: entry.name + (entry.type === 'directory' ? '.zip' : '')
+        }
+      });
+    }
     menu.addItem({
       command: 'share-files-panel:save-remote-entry',
       args: { key: conn.key, name: entry.name }
@@ -2699,6 +2809,53 @@ export class ShareFilesPanel extends Widget {
           void this._copyEntryToCurrentDir(path, name);
         }
       });
+      c.addCommand('share-files-panel:save-connection', {
+        label: 'Save Record to Current Folder',
+        execute: args => {
+          void this.saveConnectionFlow(
+            String(args.key || ''),
+            String(args.name || '')
+          );
+        }
+      });
+      c.addCommand('share-files-panel:connect-again', {
+        label: 'Connect Again...',
+        execute: args => {
+          void this.connectToLink(String(args.link || ''));
+        }
+      });
+      c.addCommand('share-files-panel:save-connection-zip', {
+        label: 'Save Record as Zip',
+        execute: args => {
+          void this.saveConnectionFlow(
+            String(args.key || ''),
+            String(args.name || ''),
+            'zip'
+          );
+        }
+      });
+      c.addCommand('share-files-panel:save-record', {
+        label: 'Save Record to Current Folder',
+        execute: args => {
+          void this.saveRecordFlow(
+            args.kind === 'requests' ? 'requests' : 'shares',
+            String(args.id || ''),
+            String(args.name || ''),
+            ''
+          );
+        }
+      });
+      c.addCommand('share-files-panel:save-record-zip', {
+        label: 'Save Record as Zip',
+        execute: args => {
+          void this.saveRecordFlow(
+            args.kind === 'requests' ? 'requests' : 'shares',
+            String(args.id || ''),
+            String(args.name || ''),
+            'zip'
+          );
+        }
+      });
       c.addCommand('share-files-panel:show-entry-in-browser', {
         label: 'Show in File Browser',
         execute: args => {
@@ -2770,7 +2927,19 @@ export class ShareFilesPanel extends Widget {
         label: 'Paste',
         execute: args => {
           const key = String(args.key || '');
-          if (key) {
+          const clip = getClip();
+          if (key && this._hubMode && clip?.kind === 'local') {
+            // as a paste into a hub share: the hub copies after its answer,
+            // so nothing is deleted on the strength of a 202
+            void this.uploadToConnectionFlow(key, clip.paths);
+            if (clip.mode === 'cut') {
+              clearClip();
+              Notification.info(
+                'A cut is pasted as a copy - the originals stay in your workspace',
+                { autoClose: 8000 }
+              );
+            }
+          } else if (key) {
             void this._pasteIntoConnectedRequest(key);
           }
         }
@@ -2840,6 +3009,71 @@ export class ShareFilesPanel extends Widget {
     } finally {
       this._state.busyKeys.delete(connKey);
       await this.refresh();
+    }
+  }
+
+  /** Save one entry of a hub share into the file browser's current folder
+   * (ACC-SAVE-170). The hub reads no single entry, so the server fetches the
+   * record and moves this one out of it. */
+  async saveHubEntryFlow(shareId: string, name: string): Promise<void> {
+    const pending = Notification.emit(`Saving ${name}...`, 'in-progress');
+    try {
+      const { path } = await saveRecord(
+        this._serverSettings,
+        'shares',
+        shareId,
+        this._getCurrentDir(),
+        '',
+        name
+      );
+      Notification.update({
+        id: pending,
+        message: `Saved ${name} to ./${path}`,
+        type: 'success',
+        autoClose: 5000
+      });
+    } catch (err: any) {
+      Notification.update({
+        id: pending,
+        message: `Could not save ${name}: ${err?.message || err}`,
+        type: 'error',
+        autoClose: 8000
+      });
+    }
+  }
+
+  /** Write a whole share or request into the file browser's current folder
+   * (ACC-SAVE-171). `archive` empty puts the files in a folder named after
+   * the record, 'zip' puts one archive of that name there instead. */
+  async saveRecordFlow(
+    kind: 'shares' | 'requests',
+    id: string,
+    name: string,
+    archive: '' | 'zip'
+  ): Promise<void> {
+    const target = this._getCurrentDir();
+    const pending = Notification.emit(`Saving ${name}...`, 'in-progress');
+    try {
+      const { path } = await saveRecord(
+        this._serverSettings,
+        kind,
+        id,
+        target,
+        archive
+      );
+      Notification.update({
+        id: pending,
+        message: `Saved ${name} to ./${path}`,
+        type: 'success',
+        autoClose: 5000
+      });
+    } catch (err: any) {
+      Notification.update({
+        id: pending,
+        message: `Could not save ${name}: ${err?.message || err}`,
+        type: 'error',
+        autoClose: 8000
+      });
     }
   }
 
@@ -2941,6 +3175,15 @@ export class ShareFilesPanel extends Widget {
     }
     menu.addItem({ type: 'separator' });
     menu.addItem({
+      command: 'share-files-panel:save-record',
+      args: { kind: 'shares', id: share.id, name: share.name }
+    });
+    menu.addItem({
+      command: 'share-files-panel:save-record-zip',
+      args: { kind: 'shares', id: share.id, name: share.name }
+    });
+    menu.addItem({ type: 'separator' });
+    menu.addItem({
       command: 'share-files-panel:set-password',
       args: { kind: 'share', id: share.id, hasPassword: !!share.has_password }
     });
@@ -2971,6 +3214,15 @@ export class ShareFilesPanel extends Widget {
     }
     menu.addItem({ type: 'separator' });
     menu.addItem({
+      command: 'share-files-panel:save-record',
+      args: { kind: 'requests', id: req.id, name: req.name }
+    });
+    menu.addItem({
+      command: 'share-files-panel:save-record-zip',
+      args: { kind: 'requests', id: req.id, name: req.name }
+    });
+    menu.addItem({ type: 'separator' });
+    menu.addItem({
       command: 'share-files-panel:set-password',
       args: { kind: 'request', id: req.id, hasPassword: !!req.has_password }
     });
@@ -2986,7 +3238,8 @@ export class ShareFilesPanel extends Widget {
   private _openConnectionContextMenu(evt: MouseEvent, conn: IConnection): Menu {
     const menu = new Menu({ commands: this._commands });
     const data = this._state.connectionData.get(conn.key);
-    const link = (data && data.link) || '';
+    // the stored link when no read has succeeded since the page loaded
+    const link = (data && data.link) || conn.link || '';
     menu.addItem({
       command: 'share-files-panel:open-link',
       args: { link }
@@ -2999,7 +3252,27 @@ export class ShareFilesPanel extends Widget {
         args: { key: conn.key }
       });
     }
+    // only a share holds entries to save; a connected request is an inbox
+    // this user uploads to
+    if (conn.kind === 'share') {
+      menu.addItem({ type: 'separator' });
+      menu.addItem({
+        command: 'share-files-panel:save-connection',
+        args: { key: conn.key, name: conn.name }
+      });
+      menu.addItem({
+        command: 'share-files-panel:save-connection-zip',
+        args: { key: conn.key, name: conn.name }
+      });
+    }
     menu.addItem({ type: 'separator' });
+    if (this._state.offlineKeys.has(conn.key)) {
+      // a password the owner set or changed since: the prompt asks for it
+      menu.addItem({
+        command: 'share-files-panel:connect-again',
+        args: { link: conn.link || conn.id }
+      });
+    }
     menu.addItem({
       command: 'share-files-panel:disconnect',
       args: { key: conn.key }
@@ -3176,13 +3449,21 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     const link = conn.link || this._linkFor(conn);
+    const sent = ++this._reads;
     try {
       // read by our own server - same-origin, whatever policy the page carries
       const data = await fetchConnectionManifest(
         this._serverSettings,
         conn.key
       );
+      if (sent < (this._uploadAcceptedAt.get(conn.key) || 0)) {
+        // sent before an upload was accepted, so it describes the record
+        // without that upload: the reads sent after it replace it
+        return;
+      }
+      const before = this._state.connectionData.get(conn.key);
       this._state.connectionData.set(conn.key, data);
+      this._noteUploadLanded(before, data);
       this._state.offlineKeys.delete(conn.key);
       this._state.offlineReasons.delete(conn.key);
       this._loggedOfflineKeys.delete(conn.key);
@@ -3207,6 +3488,33 @@ export class ShareFilesPanel extends Widget {
           err
         );
       }
+    }
+  }
+
+  /** On a hub an upload into a connected request lands after its answer:
+   * say so once, when the manifest stops reporting it running. */
+  private _noteUploadLanded(
+    before: IRemoteShare | IRemoteRequest | null | undefined,
+    now: IRemoteShare | IRemoteRequest
+  ): void {
+    if (
+      before?.kind !== 'request' ||
+      !before.uploading ||
+      now.kind !== 'request' ||
+      now.uploading
+    ) {
+      return;
+    }
+    if (now.upload_reason) {
+      Notification.error(
+        `The upload to ${now.name} was refused: ${this._uploadReasonText(now.upload_reason)}`,
+        { autoClose: 8000 }
+      );
+    } else {
+      Notification.success(
+        `${now.uploaded || 0} item(s) uploaded to ${now.name}`,
+        { autoClose: 5000 }
+      );
     }
   }
 
@@ -4054,6 +4362,28 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     el.style.display = 'flex';
+    // The wait for a hub tunnel runs about 90 seconds, and until now the only
+    // signal at the end of it was the breathing stopping and the glyph
+    // changing shape - an owner who looked away had nothing to look back at
+    // (DEF-PANEL-104). One ring expands and fades when the tunnel lands.
+    // Keyed on the arrival itself, `pending` to `on`, and on nothing else: a
+    // panel opened with the tunnel already up has no arrival to mark, and a
+    // Refresh redraws the icon through whatever look the rebuilt rows give
+    // it, so a wider rule fires the cue on a click that changed nothing.
+    // `animationend` takes the class off so the next arrival plays again.
+    if (look.look === 'on' && this._cloudLook === 'pending') {
+      el.classList.add('jp-mod-arrived');
+      el.addEventListener(
+        'animationend',
+        () => el.classList.remove('jp-mod-arrived'),
+        { once: true }
+      );
+    } else if (look.look !== 'on') {
+      // a tunnel that drops inside the envelope leaves the icon connecting,
+      // and the cue has nothing left to mark
+      el.classList.remove('jp-mod-arrived');
+    }
+    this._cloudLook = look.look;
     el.classList.toggle('jp-mod-active', look.look === 'on');
     el.classList.toggle('jp-mod-connecting', look.look === 'pending');
     el.classList.toggle('jp-mod-armed', look.look === 'armed');
@@ -4311,6 +4641,10 @@ export class ShareFilesPanel extends Widget {
   private _filterBtn: HTMLElement | null = null;
   private _cloudIndicator: HTMLElement | null = null;
   private _tunnelToggling = false;
+  /** Hub mode: the look the cloud icon was last drawn in. The arrival cue
+   * marks the moment the tunnel lands, so it fires on a change and not on
+   * the first draw of a panel opened with the tunnel already up. */
+  private _cloudLook = '';
   private _filterBox: HTMLElement | null = null;
   private _filterInput: HTMLInputElement | null = null;
   private _filterText = '';
@@ -4326,4 +4660,9 @@ export class ShareFilesPanel extends Widget {
   /** Last (link, reason) logged per connection, so a 15s poll does not flood
    * the console while a changed failure still gets its own line. */
   private _loggedOfflineKeys = new Map<string, string>();
+  /** Manifest reads of connected records sent so far, and per connection the
+   * count when its last upload was accepted - a read sent before that
+   * describes the record without the upload. */
+  private _reads = 0;
+  private _uploadAcceptedAt = new Map<string, number>();
 }

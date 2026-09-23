@@ -8,16 +8,22 @@ changes: paths are sent to the hub, which copies the bytes with its own
 transfer job, and recipients are served by the hub's fileshare app.
 
 What has no hub equivalent is simply not mounted: removing a single upload,
-peer connections, and the per-user Cloudflare tunnel. The tunnel toggle survives with a new
-meaning - every hub record carries its own tunnel switch, and the toggle
-flips them all and sets the default for the next one.
+downloading a connected entry through the lab, and the per-user Cloudflare
+tunnel. The tunnel toggle survives with a new meaning - every hub record
+carries its own tunnel switch, and the toggle flips them all and sets the
+default for the next one. A connection is another user's record on the same
+hub, read and written through the hub's ``records/<id>`` routes.
 """
 
 from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import os
 import re
+import secrets
+import shutil
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -29,6 +35,7 @@ from tornado.iostream import StreamClosedError
 from .hub import HubClient, HubUnavailable, hub_api_origin
 from .hub_stream import CLOSE, KEEPALIVE_SECONDS, RELAY, RETRY_SECONDS
 from .routes import (
+    GB,
     GeneratePasswordHandler,
     _Base,
     _request_origin,
@@ -38,6 +45,7 @@ from .storage import (
     _is_safe_relative,
     _resolve_unique_target,
     _safe_name,
+    _zip_tree,
     all_excluded_message,
     is_excluded,
 )
@@ -49,6 +57,31 @@ from .tunnel import _load_config, _save_config
 HUB_ID = r"([A-Za-z0-9_-]{6,64})"
 UPLOAD_ID = r"([A-Za-z0-9_.-]{1,128})"
 _HUB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
+
+# a fetch answers once the hub has copied what it names, so it may take this
+# many seconds for every GB it copies and at least for one, as a download
+# from a connected peer may (routes.PEER_DOWNLOAD_SECONDS_PER_GB)
+FETCH_SECONDS_PER_GB = 300
+
+
+def fetch_timeout(nbytes: Any) -> float:
+    """Seconds a fetch of ``nbytes`` may take before the lab stops waiting."""
+    size = nbytes if isinstance(nbytes, (int, float)) else 0
+    return FETCH_SECONDS_PER_GB * max(1.0, size / GB)
+
+
+def _staging(parent: Path, name: str) -> Path:
+    """A folder for the hub to write a save into that no other save picks.
+    The hub refuses a dest that exists and a failed save removes its staging,
+    so two saves of one record into one folder must never share a name."""
+    return parent / f".{name}-part-{secrets.token_hex(4)}"
+
+
+def _land(staging: Path, parent: Path, name: str) -> Path:
+    """Move a finished staging folder to the free name ``name`` in ``parent``."""
+    dest = _resolve_unique_target(parent, name)
+    staging.rename(dest)
+    return dest
 
 # Passwords set through THIS server process, by id. The hub stores only a
 # hash and never returns the value; the link dialog shows what the owner
@@ -221,11 +254,13 @@ class _HubBase(_Base):
         self.set_status(status)
         self.finish(body)
 
-    async def _hub(self, method: str, path: str, body: dict | None = None):
+    async def _hub(
+        self, method: str, path: str, body: dict | None = None, headers: dict | None = None, timeout: float | None = None
+    ):
         """One hub call. Returns ``(status, data)``; a hub that cannot be
         reached answers the panel 502 and returns ``None``."""
         try:
-            return await HubClient().request(method, path, body)
+            return await HubClient().request(method, path, body, headers, timeout=timeout)
         except HubUnavailable as exc:
             self._refuse(502, str(exc), HubUnavailable.reason)
             return None
@@ -328,15 +363,59 @@ class _HubBase(_Base):
         if not isinstance(paths, list):
             self.write_error_json(400, "'paths' must be a list")
             return None
+        root = Path(self.workspace_root).resolve()
         for rel in paths:
-            if not isinstance(rel, str) or not _is_safe_relative(rel):
+            if not isinstance(rel, str) or "\x00" in rel or not _is_safe_relative(rel):
                 self.write_error_json(400, f"Unsafe path: {rel}")
+                return None
+            # `_is_safe_relative` stops `..` and absolute paths; a link passes
+            # both and still resolves outside the notebook root. The hub reads
+            # the same volume through its own mount, so the notebook root is
+            # the boundary it can read: a path resolving outside it is accepted
+            # by the hub, then refused whole with `bad_filename`, and the share
+            # row holds no files (DEF-HUB-105). `os.path.realpath`, not
+            # `Path.resolve`: resolve raises RuntimeError on a link loop up to
+            # Python 3.12, and this package supports 3.10.
+            if not Path(os.path.realpath(root / rel)).is_relative_to(root):
+                self.write_error_json(
+                    400,
+                    f"{rel} leaves your workspace through a link. The hub reads "
+                    "only what is inside your workspace. Copy it into your "
+                    "workspace and share the copy.",
+                )
                 return None
         kept = [rel for rel in paths if not is_excluded(Path(rel).name, self.excluded_names)]
         if paths and not kept:
             self.write_error_json(400, all_excluded_message([Path(rel).name for rel in paths]))
             return None
         return kept
+
+    def _workspace_dir(self, target_dir: str) -> Path | None:
+        """The folder the hub is asked to write into, or ``None`` with the
+        refusal already written.
+
+        The hub creates it on its own mount of the volume, so a folder
+        reached through a link out of the workspace is one it cannot write
+        to - it answers 502 and copies nothing (DEF-HUB-106). `is_dir`
+        follows the link, so the lab sees a folder and the escape shows only
+        in the real locations.
+        """
+        if target_dir and not _is_safe_relative(target_dir):
+            self.write_error_json(400, f"Unsafe target_dir: {target_dir}")
+            return None
+        root = Path(self.workspace_root)
+        parent = root / target_dir if target_dir else root
+        if not parent.is_dir():
+            self.write_error_json(404, f"Not a folder: {target_dir or '.'}")
+            return None
+        if not Path(os.path.realpath(parent)).is_relative_to(os.path.realpath(root)):
+            self.write_error_json(
+                400,
+                f"{target_dir} leaves your workspace through a link. The hub writes "
+                "only inside your workspace. Choose a folder inside it.",
+            )
+            return None
+        return parent
 
     def _hub_exclude(self) -> list[str]:
         """The catalogue entries the hub can apply below the sent paths: it
@@ -855,16 +934,20 @@ class HubUploadFetchHandler(_HubBase):
         body = self.get_json_body() or {}
         target_dir = str(body.get("target_dir") or "").strip("/")
         base = _safe_name(str(body.get("name") or "upload"))
-        if target_dir and not _is_safe_relative(target_dir):
-            return self.write_error_json(400, f"Unsafe target_dir: {target_dir}")
-        root = Path(self.workspace_root)
-        parent = root / target_dir if target_dir else root
-        if not parent.is_dir():
-            return self.write_error_json(404, f"Not a folder: {target_dir or '.'}")
+        parent = self._workspace_dir(target_dir)
+        if parent is None:
+            return
+        # the upload's size is what its fetch is given time by
+        uploads = await self._uploads(id_)
+        if uploads is None:
+            return
+        size = next((u.get("size") for u in uploads if u.get("upload_id") == upload_id), 0)
+        # `rel` stays the path as the lab names it, which is what the hub
+        # resolves against its own mount
         dest = _resolve_unique_target(parent, base)
-        rel = dest.relative_to(root).as_posix()
+        rel = dest.relative_to(Path(self.workspace_root)).as_posix()
         answer = await self._hub(
-            "POST", f"requests/{id_}/uploads/{upload_id}/fetch", {"dest": rel}
+            "POST", f"requests/{id_}/uploads/{upload_id}/fetch", {"dest": rel}, timeout=fetch_timeout(size)
         )
         if answer is None:
             return
@@ -873,6 +956,455 @@ class HubUploadFetchHandler(_HubBase):
             return self._relay(code, data)
         path = data.get("path") if isinstance(data, dict) else ""
         self.write_json({"ok": True, "path": path or rel})
+
+
+class HubRecordSaveHandler(_HubBase):
+    """api/<shares|requests>/<id>/save - a whole record written into the
+    workspace, as its files or as one zip (ACC-SAVE-171).
+
+    The hub owns the bytes, so it does the writing. Two things it does not do,
+    measured against it on 2026-09-23: it packs no archive, and it carries no
+    route that takes a request's uploads as a set. So a zip is built here from
+    what the hub wrote, and a request's uploads are fetched one at a time into
+    a folder this lab makes first - each `fetch` creates the name it is given
+    and refuses one that exists, so the names are picked here.
+    """
+
+    def _rel(self, path: Path) -> str:
+        return path.relative_to(Path(self.workspace_root)).as_posix()
+
+    async def _fetch_into(self, kind: str, id_: str, staging: Path, size: Any) -> bool:
+        """Ask the hub to write the record, ``size`` bytes, into ``staging``.
+        False means the refusal is already written and ``staging`` is gone."""
+        if kind == "shares":
+            answer = await self._hub(
+                "POST", f"shares/{id_}/fetch", {"dest": self._rel(staging)}, timeout=fetch_timeout(size)
+            )
+            if answer is None or answer[0] != 200:
+                # the hub may have written part of the record before it failed
+                shutil.rmtree(staging, ignore_errors=True)
+                if answer is not None:
+                    self._relay(*answer)
+                return False
+            return True
+        uploads = await self._uploads(id_)
+        if uploads is None:
+            return False
+        staging.mkdir(parents=True)
+        for upload in uploads:
+            name = _safe_name(str(upload.get("filename") or "upload"))
+            answer = await self._hub(
+                "POST",
+                f"requests/{id_}/uploads/{upload.get('upload_id')}/fetch",
+                {"dest": self._rel(_resolve_unique_target(staging, name))},
+                timeout=fetch_timeout(upload.get("size")),
+            )
+            if answer is None or answer[0] != 200:
+                # a record half fetched says nothing about which uploads are
+                # missing, so what landed goes with the refusal
+                shutil.rmtree(staging, ignore_errors=True)
+                if answer is not None:
+                    self._relay(*answer)
+                return False
+        return True
+
+    @tornado.web.authenticated
+    async def post(self, kind, id_):
+        body = self.get_json_body() or {}
+        archive = str(body.get("archive") or "")
+        if archive not in ("", "zip"):
+            return self.write_error_json(400, "'archive' must be 'zip' or absent")
+        # one named entry out of the record. The hub reads no single entry -
+        # `fetch` takes a `name` and ignores it, measured on 2026-09-23 - so
+        # the record is fetched whole and the entry is moved out of it
+        # (ACC-SAVE-170). A record is fetched to save one file of it, which
+        # is the hub's shape, not a choice made here.
+        entry = str(body.get("name") or "")
+        if entry and (archive or not _is_safe_relative(entry)):
+            return self.write_error_json(400, f"Cannot save {entry or 'an entry'} that way")
+        parent = self._workspace_dir(str(body.get("target_dir") or "").strip("/"))
+        if parent is None:
+            return
+        items = await self._items("share" if kind == "shares" else "request")
+        if items is None:
+            return
+        row = next((i for i in items if i.get("id") == id_), None)
+        if row is None:
+            return self.write_error_json(404, "not found")
+        name = _safe_name(str(row.get("title") or "record"))
+        # a zip is packed from what the hub wrote, so the files land first in
+        # a folder beside the archive and go once it is written; that folder
+        # is the record's own size on disk while it runs
+        keep = not archive and not entry
+        staging = _staging(parent, name)
+        if not await self._fetch_into(kind, id_, staging, row.get("bytes")):
+            return
+        if keep:
+            return self.write_json({"ok": True, "path": self._rel(_land(staging, parent, name))})
+        if entry:
+            source = staging / entry
+            try:
+                if not source.exists():
+                    return self.write_error_json(404, f"The record holds no {entry}")
+                dest = _resolve_unique_target(parent, Path(entry).name)
+                shutil.move(str(source), str(dest))
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+            return self.write_json({"ok": True, "path": self._rel(dest)})
+        dest = _resolve_unique_target(parent, f"{name}.zip")
+        try:
+            _zip_tree(staging, dest)
+        except OSError as exc:
+            dest.unlink(missing_ok=True)
+            return self.write_error_json(500, f"Could not pack the record: {exc}")
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        self.write_json({"ok": True, "path": self._rel(dest)})
+
+
+# --------------------------------------------------------------------------- #
+# Connections: records another user owns (ACC-HUBM-173 to ACC-HUBM-180)
+# --------------------------------------------------------------------------- #
+
+# Config-file key for the connected records, in the same 0600 file as the
+# tunnel toggle: the entry carries the password the owner gave, as a
+# standalone connection does.
+CONNECTIONS_KEY = "hub_connections"
+
+# a hub record link ends in the recipient page `/s/<policy id>/<record id>`,
+# on the hub's own address, its Cloudflare hostname or under its `/hub` prefix
+_HUB_LINK_RE = re.compile(r"/s/[^/]+/([A-Za-z0-9_-]{6,64})/?$")
+
+# the grant each unlock earned, by record id: short-lived on the hub and lost
+# on restart here, and earned again from the stored password either way
+_GRANTS: dict[str, str] = {}
+
+
+def parse_hub_link(text: str) -> str:
+    """The record id a pasted hub link, or a bare id, names."""
+    text = text.strip()
+    if _HUB_ID_RE.match(text):
+        return text
+    parsed = urlparse(text)
+    match = _HUB_LINK_RE.search(parsed.path)
+    if parsed.scheme not in ("http", "https") or not match:
+        raise ValueError("Paste a share or request link from the hub, or its id")
+    return match.group(1)
+
+
+def remote_entries(files: list[dict]) -> list[dict]:
+    """A record's files -> its top-level entries. The hub lists files only; a
+    name holding ``/`` sits in a folder, which is one entry of their size."""
+    entries: dict[str, dict] = {}
+    for f in files:
+        top, sep, _ = str(f.get("name") or "").partition("/")
+        if not top:
+            continue
+        entry = entries.setdefault(top, {"name": top, "type": "directory" if sep else "file", "size": 0})
+        entry["size"] += int(f.get("size") or 0)
+    return list(entries.values())
+
+
+def manifest_from_record(record: dict, link: str) -> dict:
+    """One ``records/<id>`` answer -> the manifest a connected row draws. The
+    upload fields are this user's own upload into a request."""
+    last_upload = record.get("last_upload") or {}
+    manifest = {
+        "id": record.get("id", ""),
+        "name": record.get("title") or record.get("id", ""),
+        "slug": record.get("id", ""),
+        "kind": record.get("kind", ""),
+        "created_at": _ts(record.get("created_at")),
+        "link": link,
+        "uploading": last_upload.get("state") == "running",
+        "uploaded": int(last_upload.get("count") or 0) if last_upload.get("state") == "done" else 0,
+        "upload_reason": str(last_upload.get("reason") or "") if last_upload.get("state") == "refused" else "",
+        "progress": record.get("progress") or None,
+    }
+    if manifest["kind"] == "share":
+        manifest["entries"] = remote_entries(record.get("files") or [])
+    return manifest
+
+
+def _hub_connections() -> list[dict]:
+    items = _load_config().get(CONNECTIONS_KEY)
+    return items if isinstance(items, list) else []
+
+
+def _save_hub_connections(items: list[dict]) -> None:
+    cfg = _load_config()
+    cfg[CONNECTIONS_KEY] = items
+    _save_config(cfg)
+
+
+class _HubConnectionBase(_HubBase):
+    """A record another user owns, reached through the hub with the grant its
+    password earned (ACC-HUBM-175): the lab never fetches a recipient page."""
+
+    def _connection(self, key: str) -> dict | None:
+        """The stored connection, or ``None`` with the 404 written."""
+        for conn in _hub_connections():
+            if conn.get("key") == key:
+                return conn
+        self.write_error_json(404, f"Connection not found: {key}")
+        return None
+
+    async def _unlock(self, id_: str, password: str):
+        answer = await self._hub("POST", f"records/{id_}/unlock", {"password": password})
+        if answer is not None and answer[0] == 200 and isinstance(answer[1], dict) and answer[1].get("grant"):
+            _GRANTS[id_] = str(answer[1]["grant"])
+        return answer
+
+    async def _record(
+        self,
+        method: str,
+        id_: str,
+        suffix: str = "",
+        body: dict | None = None,
+        password: str = "",
+        timeout: float | None = None,
+    ):
+        """One call on a record, as ``_hub``. A 401 while a password is held
+        unlocks once and asks again: the grant lapses and dies on restart.
+        A password the owner set or changed after the connect answers 401
+        ``password_changed``: the hub's own slugs name its group policy and a
+        wrong guess, neither of which is what happened."""
+        path = f"records/{id_}" + (f"/{suffix}" if suffix else "")
+        grant = lambda: {"X-Fileshare-Grant": _GRANTS[id_]} if id_ in _GRANTS else {}  # noqa: E731
+        answer = await self._hub(method, path, body, grant(), timeout)
+        if answer is None or answer[0] != 401:
+            return answer
+        if password:
+            unlocked = await self._unlock(id_, password)
+            if unlocked is None or unlocked[0] not in (200, 403):
+                return unlocked
+            if unlocked[0] == 403:
+                # the hub counts each unlock toward its 429 limit: sent again
+                # at every read, the stale password would use up the attempts
+                # a connect with the new one needs
+                # only the refused one: a connect with the new password may
+                # have stored it while this call waited
+                _save_hub_connections(
+                    [{k: v for k, v in c.items() if k != "password"}
+                     if c.get("id") == id_ and c.get("password") == password else c
+                     for c in _hub_connections()]
+                )
+            if unlocked[0] == 200:
+                answer = await self._hub(method, path, body, grant(), timeout)
+                if answer is None or answer[0] != 401:
+                    return answer
+        return 401, {"reason": "password_changed", "message": "The owner set or changed this record's password"}
+
+    def _rel(self, path: Path) -> str:
+        return path.relative_to(Path(self.workspace_root)).as_posix()
+
+    async def _fetch(self, conn: dict, staging: Path, timeout: float, name: str = "") -> bool:
+        """Ask the hub to write the record, or its entry ``name``, into
+        ``staging``. False means the refusal is already written."""
+        body = {"dest": self._rel(staging)}
+        if name:
+            body["name"] = name
+        answer = await self._record("POST", conn["id"], "fetch", body, conn.get("password", ""), timeout)
+        if answer is None:
+            return False
+        if answer[0] != 200:
+            self._relay(*answer)
+            return False
+        return True
+
+
+class HubConnectionsHandler(_HubConnectionBase):
+    """api/connections - the records this user connected to, and connecting
+    one by its hub link or its id."""
+
+    @tornado.web.authenticated
+    def get(self):
+        self.write_json({"connections": _hub_connections()})
+
+    @tornado.web.authenticated
+    async def post(self):
+        body = self.get_json_body() or {}
+        password = str(body.get("password") or "")
+        try:
+            id_ = parse_hub_link(str(body.get("link") or ""))
+        except ValueError as exc:
+            return self.write_error_json(400, str(exc))
+        if password:
+            unlocked = await self._unlock(id_, password)
+            if unlocked is None:
+                return
+            if unlocked[0] == 429:
+                return self.write_error_json(429, "too many password attempts - wait before retrying")
+            if unlocked[0] != 200:
+                self.set_status(401)
+                return self.write_json({"error": "wrong password", "password_required": True})
+        answer = await self._record("GET", id_)
+        if answer is None:
+            return
+        code, record = answer
+        if code == 401:
+            self.set_status(401)
+            return self.write_json({"error": "password required", "password_required": True})
+        if code != 200:
+            return self._relay(code, record)
+        kind = record.get("kind") if record.get("kind") in ("share", "request") else "share"
+        # the hub names the owner; the lab is spawned for its user
+        if record.get("owner") and record.get("owner") == os.environ.get("JUPYTERHUB_USER"):
+            return self.write_error_json(
+                400, f"That {kind} is your own - it is already in your panel under My {kind.title()}s."
+            )
+        entry = {
+            "key": f"{kind}:hub:{id_}",
+            "kind": kind,
+            "id": id_,
+            "host": "hub",
+            "name": record.get("title") or id_,
+            "owner": record.get("owner") or "",
+            "link": self._link(record.get("url", "")),
+            "added_at": int(time.time()),
+        }
+        if password:
+            entry["password"] = password
+        # connecting again replaces the entry, with the password given now
+        items = [c for c in _hub_connections() if c.get("key") != entry["key"]]
+        _save_hub_connections(items + [entry])
+        self.write_json(entry)
+
+
+class HubConnectionItemHandler(_HubConnectionBase):
+    """api/connections/<key> - disconnect: the row goes, the record stays."""
+
+    @tornado.web.authenticated
+    def delete(self, key):
+        items = _hub_connections()
+        kept = [c for c in items if c.get("key") != key]
+        if len(kept) != len(items):
+            _save_hub_connections(kept)
+        self.write_json({"ok": True})
+
+
+class HubConnectionManifestHandler(_HubConnectionBase):
+    """api/connections/<key>/manifest - the record as the hub reads it now."""
+
+    @tornado.web.authenticated
+    async def get(self, key):
+        conn = self._connection(key)
+        if conn is None:
+            return
+        answer = await self._record("GET", conn["id"], password=conn.get("password", ""))
+        if answer is None:
+            return
+        code, record = answer
+        if code != 200:
+            return self._relay(code, record)
+        self.set_header("Cache-Control", "no-store")
+        self.write_json(manifest_from_record(record, self._link(record.get("url", ""))))
+
+
+class HubConnectionSaveHandler(_HubConnectionBase):
+    """api/connections/<key>/save - entries of a connected share, or the
+    whole of it as its files or one zip, written by the hub into the current
+    folder. As for the owner's records, the hub creates the folder it is
+    given, so each lands in a staging folder picked here and is moved out;
+    a zip is packed here from what the hub wrote."""
+
+    @tornado.web.authenticated
+    async def post(self, key):
+        conn = self._connection(key)
+        if conn is None:
+            return
+        if conn.get("kind") != "share":
+            return self.write_error_json(400, "Connection is not a share")
+        body = self.get_json_body() or {}
+        archive = str(body.get("archive") or "")
+        names = body.get("names")
+        if archive not in ("", "zip") or (archive and names is not None):
+            return self.write_error_json(400, "'archive' must be 'zip' and only for the whole share")
+        if names is not None and (
+            not isinstance(names, list) or not names
+            or not all(isinstance(n, str) and n and _is_safe_relative(n) for n in names)
+        ):
+            return self.write_error_json(400, "'names' must be a non-empty list of entry names")
+        parent = self._workspace_dir(str(body.get("target_dir") or "").strip("/"))
+        if parent is None:
+            return
+        # the record's size now is what its fetches are given time by
+        answer = await self._record("GET", conn["id"], password=conn.get("password", ""))
+        if answer is None:
+            return
+        if answer[0] != 200:
+            return self._relay(*answer)
+        timeout = fetch_timeout(answer[1].get("bytes"))
+        if names is None:
+            name = _safe_name(str(conn.get("name") or "share"))
+            staging = _staging(parent, name)
+            if not await self._fetch(conn, staging, timeout):
+                shutil.rmtree(staging, ignore_errors=True)
+                return
+            if not archive:
+                return self.write_json({"ok": True, "saved": [self._rel(_land(staging, parent, name))]})
+            dest = _resolve_unique_target(parent, f"{name}.zip")
+            try:
+                _zip_tree(staging, dest)
+            except OSError as exc:
+                dest.unlink(missing_ok=True)
+                return self.write_error_json(500, f"Could not pack the share: {exc}")
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+            return self.write_json({"ok": True, "saved": [self._rel(dest)]})
+        saved: list[Path] = []
+        for entry in names:
+            staging = _staging(parent, Path(entry).name)
+            try:
+                if not await self._fetch(conn, staging, timeout, entry):
+                    self._remove(saved)
+                    return
+                source = staging / entry
+                if not source.exists():
+                    self._remove(saved)
+                    return self.write_error_json(404, f"The share holds no {entry}")
+                dest = _resolve_unique_target(parent, Path(entry).name)
+                shutil.move(str(source), str(dest))
+                saved.append(dest)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+        self.write_json({"ok": True, "saved": [self._rel(p) for p in saved]})
+
+    def _remove(self, saved: list[Path]) -> None:
+        """A save that answers an error leaves nothing behind (DEF-PEER-53)."""
+        for path in saved:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+
+
+class HubConnectionUploadHandler(_HubConnectionBase):
+    """api/connections/<key>/upload - files and folders from the workspace
+    into a connected request. The hub reads them from its own mount, answers
+    at once and copies after; the row follows the copy from the manifest."""
+
+    @tornado.web.authenticated
+    async def post(self, key):
+        conn = self._connection(key)
+        if conn is None:
+            return
+        if conn.get("kind") != "request":
+            return self.write_error_json(400, "Connection is not a request")
+        paths = self._kept_paths((self.get_json_body() or {}).get("paths") or [])
+        if paths is None:
+            return
+        if not paths:
+            return self.write_error_json(400, "'paths' must be a non-empty list")
+        answer = await self._record(
+            "POST", conn["id"], "upload", {"paths": paths, "exclude": self._hub_exclude()},
+            conn.get("password", ""),
+        )
+        if answer is None:
+            return
+        if answer[0] != 202:
+            return self._relay(*answer)
+        self.write_json({"ok": True, "uploaded": [Path(p).name for p in paths]})
 
 
 def hub_handlers(base_url: str, ns: str) -> list:
@@ -886,10 +1418,16 @@ def hub_handlers(base_url: str, ns: str) -> list:
         (api("generate-password"), GeneratePasswordHandler),
         (api(r"(shares|requests)", HUB_ID, "password"), HubPasswordHandler),
         (api(r"(shares|requests)", HUB_ID, "tunnel"), HubItemTunnelHandler),
+        (api(r"(shares|requests)", HUB_ID, "save"), HubRecordSaveHandler),
         (api("shares"), HubSharesListHandler),
         (api("shares", HUB_ID), HubShareItemHandler),
         (api("shares", HUB_ID, "items"), HubShareItemsHandler),
         (api("requests"), HubRequestsListHandler),
         (api("requests", HUB_ID), HubRequestItemHandler),
         (api("requests", HUB_ID, "uploads", UPLOAD_ID, "fetch"), HubUploadFetchHandler),
+        (api("connections"), HubConnectionsHandler),
+        (api("connections", r"([^/]+)", "save"), HubConnectionSaveHandler),
+        (api("connections", r"([^/]+)", "upload"), HubConnectionUploadHandler),
+        (api("connections", r"([^/]+)", "manifest"), HubConnectionManifestHandler),
+        (api("connections", r"([^/]+)"), HubConnectionItemHandler),
     ]

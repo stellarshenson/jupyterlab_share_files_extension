@@ -120,7 +120,7 @@ test.afterEach(async ({ page }) => {
   await sweep(page, RUN);
 });
 
-test('api/info reports hub mode against the real hub and mounts no recipient or peer route', async ({
+test('api/info reports hub mode against the real hub and mounts no recipient or peer download route', async ({
   page
 }) => {
   const info = await api(page, 'GET', `${API}/info`);
@@ -136,7 +136,9 @@ test('api/info reports hub mode against the real hub and mounts no recipient or 
   for (const path of [
     '/jupyterlab-share-files-extension/public/share/AAAAAAAA',
     '/jupyterlab-share-files-extension/public/request/AAAAAAAA',
-    `${API}/connections`
+    // a connected entry goes from the hub into the workspace, never through
+    // the lab to the browser (ACC-HUBM-175)
+    `${API}/connections/share:hub:AAAAAAAA/download`
   ]) {
     expect((await api(page, 'GET', path)).status).toBe(404);
   }

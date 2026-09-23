@@ -344,8 +344,11 @@ export function hubReasonText(slug: string): string {
     bad_filename: 'A file name was rejected by the hub.',
     name_taken: 'The share already holds an entry with that name.',
     unknown_entry: 'The share no longer holds that entry.',
+    closed: 'The owner closed this share or request, or it expired.',
     password_required:
       'Your group requires a password on every share and request.',
+    password_changed:
+      "The owner set or changed this record's password - choose Connect Again in its row menu to enter the new one.",
     tunnel_not_available:
       'Your group policy has Cloudflare turned off - links work on the hub network only.',
     tunnel_not_switched_on:
@@ -540,15 +543,18 @@ export function removeConnection(
  *   the remote share's top level.
  * @param maxGb - GB the save may carry, unpacked (the peerDownloadMaxGb
  *   setting); the server stops past it and leaves nothing behind.
+ * @param archive - 'zip' saves the whole share as one archive named after it;
+ *   only with `names` null.
  */
 export function saveFromConnection(
   s: ServerConnection.ISettings,
   key: string,
   targetDir: string,
   names: string[] | null,
-  maxGb: number
+  maxGb: number,
+  archive: '' | 'zip' = ''
 ): Promise<{ ok: boolean; saved: string[] }> {
-  const body: any = { target_dir: targetDir, max_gb: maxGb };
+  const body: any = { target_dir: targetDir, max_gb: maxGb, archive };
   if (names !== null) {
     body.names = names;
   }
@@ -556,6 +562,28 @@ export function saveFromConnection(
     `api/connections/${encodeURIComponent(key)}/save`,
     s,
     jsonBody(body)
+  );
+}
+
+/**
+ * Write a whole share or request into the file browser's current folder.
+ * `archive` empty puts the files in a folder named after the record, 'zip'
+ * puts one archive of that name there instead. `name` takes one entry out of
+ * the record rather than the whole of it. On a hub the bytes never pass
+ * through the lab - the hub writes them itself.
+ */
+export function saveRecord(
+  s: ServerConnection.ISettings,
+  kind: 'shares' | 'requests',
+  id: string,
+  targetDir: string,
+  archive: '' | 'zip' = '',
+  name = ''
+): Promise<{ ok: boolean; path: string }> {
+  return requestAPI(
+    `api/${kind}/${id}/save`,
+    s,
+    jsonBody({ target_dir: targetDir, archive, name })
   );
 }
 

@@ -592,6 +592,10 @@ test('a confirmed Delete hands the focus to the neighbouring row', async ({
   await page.keyboard.press('Tab'); // Delete share
   await page.keyboard.press('Enter');
   const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toBeVisible();
+  // a share another test creates meanwhile sorts above these rows and shifts
+  // every position below it (DEF-TESTS-107)
+  await createShare(page, `${prefix}-alpha`);
   await dialog.locator('button', { hasText: 'Delete' }).click();
   await expect(dialog).toBeHidden();
   await expect(one).toHaveCount(0);

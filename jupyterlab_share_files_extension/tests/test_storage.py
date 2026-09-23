@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -1158,3 +1159,98 @@ class TestExcludedNames:
         assert is_excluded(".trashed-1234-old.txt")
         assert is_excluded("$RECYCLE.BIN")
         assert not is_excluded("trash-talk.md")
+
+
+class TestSaveOut:
+    """ACC-SAVE-171: a whole record written back into the workspace, as a
+    folder of its files or as one zip beside them."""
+
+    def _share(self, tmp_path):
+        src = tmp_path / "src"
+        (src / "sub").mkdir(parents=True)
+        (src / "top.txt").write_text("top")
+        (src / "sub" / "deep.txt").write_text("deep")
+        store = ShareStore(str(tmp_path))
+        return store, store.create("Quarter Report", ["src"])["id"]
+
+    def test_unpacked_lands_in_a_folder_named_after_the_record(self, tmp_path):
+        store, id_ = self._share(tmp_path)
+        target = tmp_path / "out"
+        target.mkdir()
+        rel = store.save_out(id_, target)
+        landed = tmp_path / rel
+        assert landed.is_dir()
+        assert landed.name == "Quarter-Report"
+        assert (landed / "src" / "top.txt").read_text() == "top"
+        assert (landed / "src" / "sub" / "deep.txt").read_text() == "deep"
+
+    def test_zip_holds_every_file_under_paths_relative_to_the_record(self, tmp_path):
+        store, id_ = self._share(tmp_path)
+        target = tmp_path / "out"
+        target.mkdir()
+        rel = store.save_out(id_, target, "zip")
+        landed = tmp_path / rel
+        assert landed.is_file() and landed.name.endswith(".zip")
+        with zipfile.ZipFile(landed) as bundle:
+            assert sorted(bundle.namelist()) == ["src/sub/deep.txt", "src/top.txt"]
+            assert bundle.read("src/top.txt") == b"top"
+
+    def test_a_second_save_never_writes_over_the_first(self, tmp_path):
+        store, id_ = self._share(tmp_path)
+        target = tmp_path / "out"
+        target.mkdir()
+        first, second = store.save_out(id_, target), store.save_out(id_, target)
+        assert first != second
+        assert (tmp_path / first).is_dir() and (tmp_path / second).is_dir()
+        first_zip, second_zip = store.save_out(id_, target, "zip"), store.save_out(id_, target, "zip")
+        assert first_zip != second_zip
+        # the counter goes before the suffix, so both stay openable archives
+        assert first_zip.endswith(".zip") and second_zip.endswith(".zip")
+
+    def test_a_record_that_is_not_there_is_refused_by_name(self, tmp_path):
+        store, _ = self._share(tmp_path)
+        target = tmp_path / "out"
+        target.mkdir()
+        with pytest.raises(NotFoundError):
+            store.save_out("AAAAAAAA", target)
+
+    def test_a_save_that_fails_part_way_leaves_nothing_behind(self, tmp_path, monkeypatch):
+        store, id_ = self._share(tmp_path)
+        target = tmp_path / "out"
+        target.mkdir()
+        # a half-filled folder and a half-written archive are both worse than
+        # nothing: neither says which files are missing
+        monkeypatch.setattr(storage_mod.shutil, "copytree", _raise_oserror)
+        with pytest.raises(OSError):
+            store.save_out(id_, target)
+        assert list(target.iterdir()) == []
+        monkeypatch.setattr(storage_mod, "_zip_tree", _raise_oserror)
+        with pytest.raises(OSError):
+            store.save_out(id_, target, "zip")
+        assert list(target.iterdir()) == []
+
+    def test_a_file_dated_before_1980_still_zips(self, tmp_path):
+        # a zip entry cannot carry a date before 1980; the entry takes the
+        # earliest date it can carry instead of refusing the whole archive
+        source = tmp_path / "old"
+        source.mkdir()
+        (source / "old.txt").write_text("old", encoding="utf-8")
+        os.utime(source / "old.txt", (0, 0))
+        storage_mod._zip_tree(source, tmp_path / "old.zip")
+        with zipfile.ZipFile(tmp_path / "old.zip") as bundle:
+            assert bundle.read("old.txt") == b"old"
+
+    def test_a_request_saves_its_uploads_the_same_way(self, tmp_path):
+        store = RequestStore(str(tmp_path))
+        id_ = store.create("Inbox")["id"]
+        store.add_upload(id_, "hash1", "alice", "answer.txt", b"here")
+        target = tmp_path / "out"
+        target.mkdir()
+        rel = store.save_out(id_, target)
+        landed = tmp_path / rel
+        assert landed.is_dir()
+        assert [p.name for p in landed.rglob("answer.txt")] == ["answer.txt"]
+
+
+def _raise_oserror(*_args, **_kwargs):
+    raise OSError("disk went away")

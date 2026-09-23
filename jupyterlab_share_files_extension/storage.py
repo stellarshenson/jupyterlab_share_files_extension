@@ -21,6 +21,7 @@ import secrets
 import shutil
 import tempfile
 import time
+import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -520,6 +521,58 @@ class BaseStore:
         manifest["has_password"] = bool(manifest.get("password"))
         manifest.pop("password", None)
         return manifest
+
+    def save_out(self, id_: str, target_dir: Path, archive: str = "") -> str:
+        """Write this record's whole content into ``target_dir`` and return
+        where it landed, relative to the workspace root.
+
+        ``archive`` empty puts the files in a folder named after the record;
+        ``"zip"`` puts one archive of that name there instead. Both pick a
+        name that is not taken, so a second save never writes over the first,
+        and a failure part way removes what it wrote - a half-filled folder
+        and a half-written archive are both worse than nothing, because
+        neither says which files are missing (ACC-SAVE-171).
+        """
+        content = self._path_for(id_)
+        if not self._manifest_path_for(id_).exists() or not content.is_dir():
+            raise NotFoundError(f"No such record: {id_}")
+        # the record's own name, not the store's `<slug>-<id>` folder: the id
+        # is bookkeeping this side and means nothing to whoever opens the
+        # folder afterwards
+        manifest = self._read_manifest(id_)
+        name = manifest.get("slug") or _safe_name(str(manifest.get("name") or "")) or content.name
+        if archive == "zip":
+            dest = _resolve_unique_target(target_dir, f"{name}.zip")
+            try:
+                _zip_tree(content, dest)
+            except BaseException:
+                dest.unlink(missing_ok=True)
+                raise
+        else:
+            dest = _resolve_unique_target(target_dir, name)
+            try:
+                shutil.copytree(content, dest)
+            except BaseException:
+                shutil.rmtree(dest, ignore_errors=True)
+                raise
+        return str(dest.resolve().relative_to(Path(self.workspace_root).resolve())).replace(os.sep, "/")
+
+
+def _zip_tree(source: Path, dest: Path) -> None:
+    """Zip every file under ``source`` into ``dest``, member by member.
+
+    Written a file at a time rather than through ``shutil.make_archive`` so a
+    record larger than memory is not held in it, and so the archive carries
+    paths relative to ``source`` - the recipient unpacks a folder, not the
+    workspace's directory chain. Links are followed, as a share's own copy
+    already is.
+    """
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False) as bundle:
+        for root, _dirs, files in os.walk(source):
+            base = Path(root)
+            for filename in sorted(files):
+                path = base / filename
+                bundle.write(path, path.relative_to(source).as_posix())
 
 
 class ShareStore(BaseStore):

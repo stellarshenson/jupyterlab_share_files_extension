@@ -287,10 +287,26 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - test-tags: MANUAL
   - log: 2026-09-22T15:31:43Z @kj added
   - log: 2026-09-22T16:08:16Z @kj closed
-- [ ] `DEF-PANEL-104` **The tunnel arriving after the 90 second wait has no cue beyond the motion stopping** - MINOR; When the hub registers the tunnel, _drawHubCloud swaps the dashed silhouette for the filled cloud and jp-mod-active applies a static colour, both in one frame; the breathing simply stops. An owner who looked away during the roughly 90 second wait learns the tunnel is up only by looking back at a 14 px icon that has changed shape. The tooltip and the link dialog still carry the state on demand, so nothing is lost, only unannounced. The remedy is an arrival envelope on jp-mod-active, which is a new animation on the element that produced four of the nine findings in the review round that raised this, so it is recorded rather than applied there.
+- [x] `DEF-PANEL-104` **The tunnel arriving after the 90 second wait has no cue beyond the motion stopping** - MINOR; When the hub registers the tunnel, _drawHubCloud swaps the dashed silhouette for the filled cloud and jp-mod-active applies a static colour, both in one frame; the breathing simply stops. An owner who looked away during the roughly 90 second wait learns the tunnel is up only by looking back at a 14 px icon that has changed shape. The tooltip and the link dialog still carry the state on demand, so nothing is lost, only unannounced. The remedy is an arrival envelope on jp-mod-active, which is a new animation on the element that produced four of the nine findings in the review round that raised this, so it is recorded rather than applied there.
+  - evidence: src/widget.ts _drawHubCloud adds a one-shot jp-mod-arrived class on the pending-to-on transition and drops it on animationend; style/base.css grows one ring out of the icon over 700ms under .jp-mod-active.jp-mod-arrived, suppressed under prefers-reduced-motion. ui-tests/tests/hub/hub-mode.spec.ts counts the class appearing through a MutationObserver and asserts one arrival when the hub's tunnel comes up and no second one on a Refresh; verified failing with the cue excised (Expected 1, Received 0). Green: pytest 414 passed 8 skipped, jest 43, galata standalone 32, mock hub 30, live hub 6, every run's exit code checked.
   - repro: On a hub lab, switch the tunnel on and look away. The only signal at the moment the tunnel establishes is the icon ceasing to breathe and changing glyph.
   - test-tags: MANUAL
   - log: 2026-09-22T15:31:49Z @kj added
+  - log: 2026-09-22T23:39:13Z @kj closed: Keyed on pending-to-on and nothing wider: a first rule that fired on any change back to on also fired on a Refresh, because the panel redraws the icon through whatever look the rebuilt rows give it. The CSS is qualified on jp-mod-active so a tunnel that drops inside the envelope keeps the breath the connecting state draws, which an unqualified rule replaced on source order.
+- [x] `DEF-PANEL-114` **A whole-record or zip save from a connection does not say what landed** - MINOR; Saving a connected share whole or as a zip announces 'Saved 1 item(s) from <name>' and does not name the folder or archive it wrote, where the save of an own record says 'Saved <name> to ./<path>'.
+  - evidence: galata connected share save test asserts 'Saved Their Share to ./<folder>/Their-Share.zip', failed before and passes after; mock hub 42 and standalone 35 passed
+  - repro: Save a connected share as zip: the toast reads 'Saved 1 item(s) from Their Share'
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T11:13:26Z @kj saveConnectionFlow printed the count of saved paths and never the path
+  - log: 2026-09-23T11:13:26Z @kj added
+  - log: 2026-09-23T11:14:26Z @kj closed
+- [x] `DEF-PANEL-115` **A connect that lands in a collapsed or scrolled-away Connected section shows nothing** - MINOR; After a successful connect the new row appears only inside the Connected section; with that section collapsed or below the fold the user sees no sign that the connect worked.
+  - evidence: galata 'a new connection opens the Connected section and shows its row' failed before and passes after; mock hub 42 and standalone 35 passed
+  - repro: Collapse Connected, paste a link and press Enter: the section stays collapsed
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T11:13:26Z @kj connectToLink refreshed the lists and returned; nothing opened the section or brought the row into view
+  - log: 2026-09-23T11:13:26Z @kj added
+  - log: 2026-09-23T11:14:26Z @kj closed
 
 ## Public sharing `PUBLIC`
 
@@ -451,6 +467,13 @@ The on-disk share, request and connection stores under shares_dir
   - log: 2026-09-01T19:50:11Z @kj edited repro (added) and test-tags (added)
   - log: 2026-09-15T21:39:58Z @kj edited test-tags (replaced)
   - log: 2026-09-15T21:39:58Z @kj closed: fixed
+- [x] `DEF-STORE-111` **A file dated before 1980 breaks a zip save** - MINOR; A save as zip of a record holding a file whose modification time is before 1980 answers 500 and leaves a broken archive.
+  - evidence: TestSaveOut.test_a_file_dated_before_1980_still_zips raised ValueError before and passes after
+  - repro: _zip_tree over a folder holding a file with mtime 0 raises ValueError: ZIP does not support timestamps before 1980
+  - test-tags: UNIT
+  - root-cause: 2026-09-23T11:13:26Z @kj storage._zip_tree opened ZipFile without strict_timestamps=False; the public download zip in routes.py already passed it
+  - log: 2026-09-23T11:13:26Z @kj added
+  - log: 2026-09-23T11:14:26Z @kj closed
 
 ## Peer connections `PEER`
 
@@ -760,6 +783,107 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - log: 2026-09-22T14:41:49Z @kj added
   - log: 2026-09-22T14:42:44Z @kj correction: _apply_tunnel_default dropping the switch on tunnel_not_available is NOT part of this defect. That slug is the group policy having no tunnel at all - a permanent condition - so dropping a switch that cannot mean anything is deliberate, and test_the_toggle_on_is_refused_while_the_policy_has_cloudflare_off pins it. What remains is the drift itself: a record can hold tunnel=False while the switch is on, because a create whose switch-on did not land (the hub did not answer, code 0) leaves the row off and the switch on, and nothing reconciles them afterwards
   - log: 2026-09-22T15:05:08Z @kj closed
+- [x] `DEF-HUB-105` **A folder reached through a link out of the workspace is sent to the hub and comes back refused** - MAJOR; In hub mode the panel sends the chosen paths to the hub, which reads them from its own mount of the workspace volume. A path that resolves outside that volume - `@shared/kolomolo-skills/my-gpu`, where `kolomolo-skills` is a link to `/mnt/kolomolo-skills`, a mount only the lab container has - is accepted by the panel, creates a hub record, and the record lands in state `refused` with the slug `bad_filename`. The panel renders that slug as "A file name was rejected by the hub.", which names neither the item nor anything the owner can do. The owner is left with a dead share row to delete. The same happens for `@cache` (a link to `/home/lab/.cache`) and for `@shared` itself, whose only child is the escaping link.
+  - evidence: hub_routes.py `_kept_paths` resolves each chosen path under the notebook root with `os.path.realpath` and refuses a path that leaves it, by name, before the hub is called. Pinned by test_a_path_that_leaves_the_workspace_through_a_link_never_reaches_the_hub, test_an_add_of_a_path_outside_the_workspace_is_refused_by_name (both verified failing with the guard excised) and test_a_link_that_stays_inside_the_workspace_is_still_sent. pytest 412 passed 8 skipped, jest 43, galata standalone 32, mock hub 30, live hub 6 against the real hub.
+  - repro: In hub mode, add `@shared/kolomolo-skills/my-gpu` to a new share, where `@shared/kolomolo-skills` is a symbolic link to a path outside the notebook root. Measured against the live hub: `POST shares` answers 202, and the record reads `state: refused`, `reason: bad_filename`, `files: []`.
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-09-22T22:11:04Z @kj `_kept_paths` in `hub_routes.py` validates a path with `_is_safe_relative`, which only rejects `..` and absolute paths. A relative path that leaves the notebook root through a symbolic link passes, and the lab has no other check before the hub is asked to copy it. The hub refuses the whole record when any link below a chosen path resolves outside its mount; a link that resolves inside is skipped and the rest is copied.
+  - log: 2026-09-22T22:11:04Z @kj added
+  - log: 2026-09-22T23:00:37Z @kj The guard closes the reported repro - the chosen path no longer reaches the hub and no dead record is created. The slug wording is deferred: the hub answers `bad_filename` on create, rename and remove with three different meanings, so one sentence cannot be true on all three, and per-route text is a new mechanism this change set does not carry. That overload is the hub's to resolve.
+  - log: 2026-09-22T23:06:10Z @kj closed: Survived a two-round five-lens adversarial review (ux-designer, architect, devops, bug-hunter, slop-hunter): 29 findings and five DO-NOT-SHIP verdicts in round 1, seven MINOR findings and five SHIP verdicts in round 2, adjudicated both rounds.
+- [x] `DEF-HUB-106` **Save to Current Folder sends the hub a destination that leaves the workspace** - MEDIUM; `HubUploadFetchHandler` takes the file browser's current folder as `target_dir` and asks the hub to create the upload's destination under it. It validates with `_is_safe_relative`, which only rejects `..` and absolute paths, and then computes the relative path lexically against an unresolved root, so a current folder reached through a link out of the workspace - `@shared/kolomolo-skills` and the like - produces a destination the hub resolves against its own mount of the volume. This is the same gap as `DEF-HUB-105` in the opposite direction: that one sends the hub a path to read, this one sends it a path to write. What the hub then does has not been measured; the two possibilities are a refusal the panel relays in the hub's words, and a write into the hub's own container answered with `{"ok": true}` for a file the owner cannot open.
+  - evidence: `HubUploadFetchHandler.post` compares the real location of the chosen folder against the real location of the notebook root with `os.path.realpath`, and refuses by name before the hub is called. Pinned by test_a_fetch_into_a_folder_outside_the_workspace_never_reaches_the_hub (verified failing with the guard excised) and test_a_fetch_into_a_link_that_stays_inside_the_workspace_is_still_sent. pytest 414 passed 8 skipped.
+  - related: DEF-HUB-105
+  - repro: In hub mode, open a request that holds an upload, navigate the file browser into a folder reached through a symbolic link that leaves the notebook root, and pick Save to Current Folder on the upload. Not yet run against a live hub.
+  - test-tags: UNIT
+  - root-cause: 2026-09-22T22:40:34Z @kj `hub_routes.py` `HubUploadFetchHandler.post` builds `root = Path(self.workspace_root)` without resolving it, and `dest.relative_to(root)` is a lexical comparison on an unresolved path. `parent.is_dir()` follows the link, so the lab sees a real folder and the escape is never noticed. `_kept_paths` gained the resolved check for the read direction under `DEF-HUB-105`; this handler did not.
+  - log: 2026-09-22T22:40:34Z @kj added
+  - log: 2026-09-22T23:09:53Z @kj closed: The hub's own behaviour on such a destination stays unmeasured: probed against the live hub with a throwaway request, and the hub validates the upload id before it reads `dest`, so a request with no upload answers 404 No such upload and never reaches the destination check. The lab refuses regardless, because it can see the escape and the hub cannot.
+  - log: 2026-09-22T23:40:35Z @kj Measured after the fix: the hub now carries `POST shares/<id>/fetch`, and a `dest` reached through a link out of the workspace answers 502 "The files were not copied (failed)" - the harm this defect predicted, confirmed. A `dest` outside the workspace by path answers 400 "dest must be a directory inside the workspace", so only the link case gets through the hub's own check, which is what the lab-side guard now stops.
+- [x] `DEF-HUB-109` **A connected record whose password the owner set or changed reads as a group-policy refusal** - MEDIUM; After the owner protects an open record or changes its password, the connected row, a save and an upload answer with the hub's password_required sentence ('Your group requires a password on every share and request') or, for a wrong stored password, the unknown-reason sentence that says to ask the administrator. Neither says what happened, and neither names the way back.
+  - evidence: test_a_password_the_owner_set_or_changed_after_the_connect_is_named failed (reason password_required) before and passes after; jest names password_changed; pytest 454 passed 8 skipped
+  - repro: Connect to another user's record, set or change its password on the hub, clear the grant, then read the manifest or save: the answer carries reason password_required
+  - test-tags: UNIT
+  - root-cause: 2026-09-23T11:13:26Z @kj _HubConnectionBase._record returned the hub's 401 and the unlock's 403 as they were, and the panel translates those slugs as the owner's group policy and as a reason it does not know
+  - log: 2026-09-23T11:13:26Z @kj added
+  - log: 2026-09-23T11:14:26Z @kj closed
+- [x] `DEF-HUB-110` **A hub copy longer than 30 s fails the save, and a failed save of an own share leaves the hub's folder** - MEDIUM; records/<id>/fetch, shares/<id>/fetch and the per-upload fetch answer only once the hub has copied the bytes, but ran under the 30 s timeout of an API call: a larger record answered 502 'The hub could not be reached' while the hub kept writing. Separately, a save of an own share whose fetch failed left the folder the hub had part-written.
+  - evidence: test_a_hub_copy_longer_than_an_api_call_still_saves (connected share, own share, own request) answered 502 before and passes after; test_an_own_share_save_the_hub_fails_leaves_nothing_behind (500, unreachable) left out/Mine before and passes after
+  - repro: Route a fetch through a hub that answers after 0.5 s with REQUEST_TIMEOUT_SECONDS at 0.2: the save answers 502; make shares/<id>/fetch write and then answer 500: out/Mine stays
+  - test-tags: UNIT
+  - root-cause: 2026-09-23T11:13:26Z @kj HubClient.request applied REQUEST_TIMEOUT_SECONDS to every call, and HubRecordSaveHandler._fetch_into returned on a failed shares fetch without removing staging
+  - log: 2026-09-23T11:13:26Z @kj added
+  - log: 2026-09-23T11:14:26Z @kj closed
+- [x] `DEF-HUB-112` **A refused upload into a connected request gives no reason on the row, and quotes the uploader's group limit** - MINOR; The expanded connected request shows only the drag hint after a refused upload; the reason is in a hover title only. An over_cap refusal reads 'larger than your group allows for one share', which is the owner's policy sentence, not the request's limit the uploader hit.
+  - evidence: galata 'an upload the hub refuses says why' failed on the expanded reason line before and passes after; mock hub suite 42 passed
+  - repro: Drop refuse-upload.txt on a connected request on the mock hub and expand the row: no line names the refusal
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T11:13:26Z @kj _renderConnectionItem rendered no refusal line in the expanded request branch, and the upload paths used hubReasonText, whose over_cap sentence is written for an owner
+  - log: 2026-09-23T11:13:26Z @kj added
+  - log: 2026-09-23T11:14:26Z @kj closed
+- [x] `DEF-HUB-113` **An upload the hub settles before the panel's next read is never announced** - MINOR; When the hub finishes an upload into a connected request before the panel reads the record after the 202, no success or refusal toast appears.
+  - evidence: galata 'an upload the hub settles before the panel reads it is still announced' failed before and passes after; mock hub suite 42 passed
+  - repro: Set the mock hub's copy to 0.01 s and drop a file on a connected request: no '1 item(s) uploaded' toast
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T11:13:26Z @kj _noteUploadLanded announces only a transition from uploading to settled, and the cached manifest never read uploading when the copy settled first
+  - log: 2026-09-23T11:13:26Z @kj added
+  - log: 2026-09-23T11:14:26Z @kj closed
+- [x] `DEF-HUB-116` **A connected row does not follow the owner's edits until Refresh** - MINOR; In hub mode the panel refreshes on change-stream rings only, and the hub API request asked for no ring to the users who read a record when its owner edits or closes it.
+  - evidence: HUB-API-REQUEST asks the hub to ring every reader of a record when it changes; galata closed-record test passes with no refresh, the mock's ring alone updates the row
+  - repro: Close a connected record on the hub: with no ring the row keeps its last read until Refresh
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T11:13:26Z @kj HUB-API-REQUEST-read-a-record-you-do-not-own.md asked for rings on uploads only
+  - log: 2026-09-23T11:13:26Z @kj added
+  - log: 2026-09-23T11:14:26Z @kj closed
+- [x] `DEF-HUB-118` **A manifest read sent before an upload was accepted announces an upload that has not landed** - MINOR; The upload flow marks a connected request as uploading after the hub's 202. A manifest read that was already in flight then resolves with the record as it was before the upload, and the panel reads the change as a landing: a false '0 item(s) uploaded' toast, or a false refusal, then a second toast when the real upload settles.
+  - evidence: galata 'a read sent before an upload was accepted does not announce it' showed the false '0 item(s) uploaded' toast on the old build and passes now; mock hub 44 passed
+  - repro: Hold a manifest read (page.route) from before the drop until the upload's answer arrives, then release it: '0 item(s) uploaded to Race Inbox' appears
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T11:39:33Z @kj _refreshConnection compared the state it found after its await with what the read returned, whenever the read was sent; the seed written by uploadToConnectionFlow (DEF-HUB-113) made an older read look like a settle
+  - log: 2026-09-23T11:39:33Z @kj added
+  - log: 2026-09-23T11:43:09Z @kj closed
+- [x] `DEF-HUB-119` **The password-changed sentence names a link the connected row does not offer** - MINOR; After the owner sets or changes a password the row says to paste the record's link again, but the connected row's menu offers no way to get that link, so the user has to find it elsewhere.
+  - evidence: galata 'a password the owner changes after the connect is asked for again from the row' failed on the old build and passes now: the badge names Connect Again and the entry prompts for the new password; mock hub 44, standalone 35 passed
+  - repro: Change the password of a connected record on the mock hub: the badge says to paste the link, and the row menu holds Open in Browser, Save and Disconnect only
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T11:39:33Z @kj DEF-HUB-109's sentence pointed at a step the panel did not provide
+  - log: 2026-09-23T11:39:33Z @kj added
+  - log: 2026-09-23T11:43:09Z @kj closed
+- [x] `DEF-HUB-120` **Saving one upload of an own request still gives up after 30 s** - MINOR; api/requests/<id>/uploads/<upload_id>/fetch asks the hub for requests/<id>/uploads/<u>/fetch with the 30 s API timeout, so a large upload answers 502 while the hub keeps copying; DEF-HUB-110 gave every other fetch a size-based timeout.
+  - evidence: test_a_hub_copy_longer_than_an_api_call_still_saves[own upload] answered 502 before and passes after; pytest 458 passed 8 skipped
+  - repro: Route the fetch through a hub that answers after 0.5 s with REQUEST_TIMEOUT_SECONDS 0.2: the save answers 502
+  - test-tags: UNIT
+  - root-cause: 2026-09-23T11:39:33Z @kj HubUploadFetchHandler is a second call site of the per-upload fetch, and DEF-HUB-110 changed only the one in HubRecordSaveHandler._fetch_into
+  - log: 2026-09-23T11:39:33Z @kj added
+  - log: 2026-09-23T11:43:10Z @kj closed
+- [x] `DEF-HUB-121` **A stored password the hub refused is sent again at every read and uses up the unlock limit** - MINOR; After the owner changes a password, each manifest read, save and upload of the connected record unlocks again with the old one. The hub counts every unlock toward its 429 rate limit, so the connect with the new password can be refused as too many attempts.
+  - evidence: test_a_password_the_hub_refused_is_not_tried_again counted 4 unlocks before and 2 after; pytest 458 passed 8 skipped
+  - repro: Change a connected record's password, clear the grant and read the manifest three times: four unlock calls reach the hub
+  - test-tags: UNIT
+  - root-cause: 2026-09-23T11:39:33Z @kj _HubConnectionBase._record retried with the stored password whenever the hub answered 401 and kept that password after the unlock answered 403
+  - log: 2026-09-23T11:39:33Z @kj added
+  - log: 2026-09-23T11:43:10Z @kj closed
+- [x] `DEF-HUB-122` **Two saves of one record into one folder at once can delete what the first one wrote** - MINOR; Both saves pick the same free folder name before either lands. The hub writes the first and refuses the second because the folder exists; the second save then removes that folder as its own partial write, and the first save's answer names a folder that is gone.
+  - evidence: test_two_saves_of_one_record_at_once_both_land (connected share, own share) answered 400 before and lands both after; pytest 458 passed, mock hub 44 passed
+  - repro: Delay the hub's fetch 0.2 s and send two saves of one share into one folder at once: the second answers 400 and the first save's folder is removed
+  - test-tags: UNIT
+  - root-cause: 2026-09-23T11:39:33Z @kj The staging folder was the free name picked by _resolve_unique_target, which two concurrent saves share; the cleanup added for a failed save (round 1, DEF-HUB-110) removes whatever holds that name
+  - log: 2026-09-23T11:39:33Z @kj added
+  - log: 2026-09-23T11:43:10Z @kj closed
+- [x] `DEF-HUB-123` **A connected row whose password changed reads 'offline', and the step to take is only in its hover** - MINOR; After the owner sets or changes the password, the row's visible badge says 'offline', which reads as an outage that clears by itself. The sentence naming Connect Again is only the badge's title, which cannot take focus, and in hub mode it starts with the standalone word 'Peer unavailable:'.
+  - evidence: galata 'a password the owner changes after the connect is asked for again from the row' asserts the badge text 'password changed' and a title that starts with the reason; mock hub 44, standalone 35 passed
+  - repro: Change a connected record's password on the mock hub: the badge reads offline and its title starts 'Peer unavailable:'
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T12:08:00Z @kj _renderConnectionItem wrote the same badge word and the standalone title prefix for every failed read, whatever the reason
+  - log: 2026-09-23T12:08:00Z @kj added
+  - log: 2026-09-23T12:12:16Z @kj closed
+- [x] `DEF-HUB-124` **A refused unlock can erase the password a connect has just stored** - MINOR; A read sent with the old password that is refused after the user connected again with the new one dropped the stored password by record id, so the new one was lost and the row asked for it again once the grant lapsed.
+  - evidence: test_a_refused_password_never_drops_the_one_a_connect_just_stored erased the new password before (assert [None] == ['second']) and passes after; pytest 459 passed 8 skipped
+  - repro: Refuse an unlock with the old password after the stored entry was replaced with the new one: the stored password is gone
+  - test-tags: UNIT
+  - root-cause: 2026-09-23T12:08:00Z @kj DEF-HUB-121's drop matched the record id only, not the password that was refused
+  - log: 2026-09-23T12:08:00Z @kj added
+  - log: 2026-09-23T12:12:16Z @kj closed
 
 ## Test suites `TESTS`
 
@@ -793,3 +917,35 @@ Galata and pytest suites - isolation from the developer's machine and from real 
   - log: 2026-09-22T14:55:57Z @kj added
   - log: 2026-09-22T14:56:12Z @kj edited repro (replaced)
   - log: 2026-09-22T15:05:05Z @kj closed
+- [x] `DEF-TESTS-107` **The keyboard focus-after-delete test flakes under the standalone suite's load** - MINOR; `a confirmed Delete hands the focus to the neighbouring row` (ui-tests/tests/keyboard.spec.ts) failed its `toBeFocused` assertion once in four full runs of the standalone suite on 2026-09-23, and passed three times in three when run alone and twice in two on full re-runs. The panel moves the focus to the neighbouring row after the confirm dialog closes; under the suite's two workers that move and the assertion can cross.
+  - evidence: keyboard.spec.ts 'a confirmed Delete hands the focus to the neighbouring row' with a share created above mid-dialog: 3 of 3 failed on the index handover, 6 of 6 passed with both delete tests on the key handover
+  - repro: Run the standalone galata suite repeatedly: `cd ui-tests && JUPYTER_TEST_PORT=8899 jlpm playwright test`. One run in four failed at keyboard.spec.ts:599.
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T09:43:04Z @kj The panel handed a deleted row's focus to whatever row stood at the deleted row's old position in the rebuilt list (src/widget.ts _render/_restoreFocus). A share created or deleted above that row between two renders - here by the other galata worker, which shares the server - shifts every position below it by one, so the focus went to a different row and stayed there. The earlier timing theory was wrong: the failure log shows the neighbour never focused in the whole 5 s wait.
+  - root-cause: 2026-09-23T00:23:37Z @kj Not established. The focus is handed over after the dialog hides, and the assertion has no wait tied to that handover, so a slow re-render under load can land after the check.
+  - log: 2026-09-23T00:23:37Z @kj added
+  - log: 2026-09-23T00:27:36Z @kj One mechanism tried and ruled out. The panel reads `document.activeElement` at each render and hands a deleted row's focus to its neighbour, so a render landing while the confirm dialog holds the focus looked like the cause. A galata case that forces a render inside that window, and a build with the remembered-focus fix removed, both PASS - so the test does not discriminate and the mechanism is not that. The attempted fix and its test were reverted rather than shipped unproven. Still open with the cause unestablished.
+  - log: 2026-09-23T00:32:14Z @kj Frequency bounded, cause still unknown. A probe running the exact sequence - focus the row, Tab to Delete, Enter, confirm, assert the neighbour holds the focus - twenty times in a row missed zero times alone and zero times inside a full two-worker run of the standalone suite, while the original failed once in four full runs. So the trigger is not this sequence under load on its own; it depends on what another worker is doing at that moment. The probe was removed rather than committed, since a test that never fails pins nothing.
+  - log: 2026-09-23T09:43:10Z @kj Reproduced on demand: the test now creates a share that sorts above its two rows while the confirm dialog is open. On the old build that put the focus on the new row in 3 of 3 runs. The panel now remembers the neighbouring rows by key (the row below, else the row above), so a position change no longer moves the focus.
+  - log: 2026-09-23T09:43:11Z @kj closed
+- [x] `DEF-TESTS-108` **The hub cloud toggle test reads the records before the switch-off reaches them** - MINOR; 'the cloud toggle flips every record and the next one' in ui-tests/tests/hub/hub-mode.spec.ts presses the cloud icon off, waits for the icon to read off, and reads the shares at once. It failed once in two full mock-hub runs on 2026-09-23 with the share still on the tunnel.
+  - evidence: with the switch-off delayed 1.5 s the immediate read failed 2 of 2 and the polled read passed 2 of 2; mock hub suite 40 passed after the change
+  - repro: Delay the lab's POST api/tunnel by 1.5 s with page.route, press the icon off, and read api/shares as soon as the icon reads off: the share reports tunnel true, 2 of 2 runs
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T10:05:34Z @kj The panel draws the icon off before it sends the switch-off (src/widget.ts _toggleTunnel draws the pressed look first so the click answers at once). The test took the icon as the end of the switch-off, so its read raced the request that switches the records off. The panel is right; the test waited on the wrong signal.
+  - log: 2026-09-23T10:05:34Z @kj added
+  - log: 2026-09-23T10:16:01Z @kj closed
+- [x] `DEF-TESTS-117` **No test proves the upload tint moves** - MINOR; The mock hub's records/<id>/upload fixed progress at 21/42 and rang only when the upload settled, so the galata test saw one width and could not tell a moving tint from a frozen one.
+  - evidence: mock RecordUpload moves progress 10/40 to 30/40 and rings half way; galata upload test asserts aria-valuenow 25 then 75 and passes
+  - repro: Read ui-tests/mock_hub.py RecordUpload: one progress value, no ring while running
+  - test-tags: FUNCTIONAL
+  - root-cause: 2026-09-23T11:13:26Z @kj The mock served one progress value for the whole copy
+  - log: 2026-09-23T11:13:26Z @kj added
+  - log: 2026-09-23T11:14:26Z @kj closed
+- [x] `DEF-TESTS-125` **The concurrent save test passes with a shared staging name** - MINOR; test_two_saves_of_one_record_at_once_both_land delayed the fake hub before it wrote, so each save landed before the other reached the hub; a staging name shared by both saves still passed, and only the dest-name pins caught it.
+  - evidence: with a second delay after the fake hub writes, test_two_saves_of_one_record_at_once_both_land fails 2 of 2 against a shared staging name and passes 2 of 2 on the shipped code
+  - repro: Make _staging return _resolve_unique_target(parent, f'.{name}-part'): the race test passes 2 of 2
+  - test-tags: UNIT
+  - root-cause: 2026-09-23T12:08:00Z @kj The fake hub answered at once after its delay, so the two copies never overlapped
+  - log: 2026-09-23T12:08:00Z @kj added
+  - log: 2026-09-23T12:12:16Z @kj closed

@@ -151,6 +151,51 @@ test('a peer on another origin lists, saves and downloads its files under a defa
     expect(download.suggestedFilename()).toBe('peer.txt');
     // the event fires for a 4xx answer too: only a finished file proves it
     expect(await download.failure()).toBeNull();
+
+    // ACC-SAVE-171: the whole connected record, from the row's own menu.
+    // `names` absent is the server's "all" - the peer's bytes still travel
+    // through this server, never through the browser
+    await item.locator('.jp-ShareFilesPanel-itemHeader').click({
+      button: 'right'
+    });
+    const savingAll = page.waitForResponse((r: any) =>
+      /\/connections\/[^/]+\/save(\?|$)/.test(r.url())
+    );
+    await page
+      .locator('.lm-Menu .lm-Menu-item', {
+        hasText: 'Save Record to Current Folder'
+      })
+      .click();
+    const allResponse = await savingAll;
+    expect(allResponse.request().postDataJSON().names).toBeUndefined();
+    expect(allResponse.status()).toBe(200);
+    // the record lands as a folder named after it, holding its own files
+    const savedAll = (await allResponse.json()).saved;
+    expect(savedAll).toHaveLength(1);
+    expect(await page.contents.fileExists(`${savedAll[0]}/peer.txt`)).toBe(
+      true
+    );
+    await page.contents.deleteDirectory(savedAll[0]);
+
+    // ACC-HUBM-178 standalone: the whole connected share as the one zip the
+    // peer sends, named after it
+    await item.locator('.jp-ShareFilesPanel-itemHeader').click({
+      button: 'right'
+    });
+    const savingZip = page.waitForResponse((r: any) =>
+      /\/connections\/[^/]+\/save(\?|$)/.test(r.url())
+    );
+    await page
+      .locator('.lm-Menu .lm-Menu-item', { hasText: 'Save Record as Zip' })
+      .click();
+    const zipResponse = await savingZip;
+    expect(zipResponse.request().postDataJSON().archive).toBe('zip');
+    expect(zipResponse.status()).toBe(200);
+    const savedZip = (await zipResponse.json()).saved;
+    expect(savedZip).toHaveLength(1);
+    expect(savedZip[0]).toMatch(/\.zip$/);
+    expect(await page.contents.fileExists(savedZip[0])).toBe(true);
+    await page.contents.deleteFile(savedZip[0]);
   } finally {
     await api(
       page,

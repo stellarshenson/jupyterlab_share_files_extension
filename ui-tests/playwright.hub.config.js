@@ -11,6 +11,7 @@
  * are taken. PYTHONPATH points at the repository so the server extension
  * under test is the working tree, not an installed copy.
  */
+const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const baseConfig = require('@jupyterlab/galata/lib/playwright-config');
@@ -20,6 +21,18 @@ const HUB_PORT = process.env.MOCK_HUB_PORT || '8765';
 const BASE_URL = `http://localhost:${PORT}`;
 const HUB_URL = `http://127.0.0.1:${HUB_PORT}`;
 const REPO = path.resolve(__dirname, '..');
+
+// One root for the lab and the mock hub: the hub writes into a workspace
+// through its own mount of the volume, and the mock writes through this
+// folder, so a test finds what the hub saved. Made once, in the runner; the
+// workers inherit it. Beside jupyter_server_test_config.py's own, ignored by git.
+if (!process.env.JUPYTERLAB_GALATA_ROOT_DIR) {
+  const parent = path.join(__dirname, '.galata-root');
+  fs.mkdirSync(parent, { recursive: true });
+  process.env.JUPYTERLAB_GALATA_ROOT_DIR = fs.mkdtempSync(
+    path.join(parent, 'hub-')
+  );
+}
 
 module.exports = {
   ...baseConfig,
@@ -40,7 +53,10 @@ module.exports = {
       url: `${HUB_URL}/_control/health`,
       timeout: 30 * 1000,
       reuseExistingServer: !process.env.CI,
-      env: { MOCK_HUB_PORT: HUB_PORT }
+      env: {
+        MOCK_HUB_PORT: HUB_PORT,
+        MOCK_HUB_ROOT: process.env.JUPYTERLAB_GALATA_ROOT_DIR
+      }
     },
     {
       command: 'jupyter lab --config jupyter_server_test_config.py',
@@ -52,6 +68,9 @@ module.exports = {
         SHARE_FILES_HUB_API: `${HUB_URL}/hub/api/fileshare`,
         JUPYTERHUB_API_TOKEN: 'test-token',
         JUPYTERHUB_BASE_URL: '/',
+        // the user the hub spawned this lab for - the mock hub's own records
+        // are alice's
+        JUPYTERHUB_USER: 'alice',
         PYTHONPATH: REPO,
         // the cloud toggle persists to the CLI config file - keep it out of
         // the developer's real one

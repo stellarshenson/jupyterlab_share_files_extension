@@ -106,7 +106,9 @@ export interface IRemoteShare {
   link: string;
 }
 
-/** Remote request manifest as returned by /public/request/<id>/manifest */
+/** Remote request manifest as returned by /public/request/<id>/manifest.
+ * On a hub the manifest also follows this user's own upload into the
+ * request: running with the hub's progress, then landed or refused. */
 export interface IRemoteRequest {
   id: string;
   name: string;
@@ -114,4 +116,8 @@ export interface IRemoteRequest {
   kind: 'request';
   created_at: number;
   link: string;
+  uploading?: boolean;
+  uploaded?: number;
+  upload_reason?: string;
+  progress?: { copied: number; total: number } | null;
 }

@@ -55,6 +55,33 @@ async function openPanel(page: any): Promise<void> {
   await expect(page.locator(PANEL)).toBeVisible();
 }
 
+/** Count each time the cloud icon's one-shot arrival class APPEARS. Counting
+ * appearances, not presence: the class stays on for its 700 ms envelope, so a
+ * check that only asks whether it is there now reports one arrival again on
+ * any later DOM change (DEF-PANEL-104). */
+function watchArrivals(page: any): Promise<void> {
+  return page.evaluate((sel: string) => {
+    const w = window as any;
+    w.__arrivals = 0;
+    w.__wasOn = false;
+    new MutationObserver(() => {
+      const on = !!document.querySelector(`${sel}.jp-mod-arrived`);
+      if (on && !w.__wasOn) {
+        w.__arrivals += 1;
+      }
+      w.__wasOn = on;
+    }).observe(document.documentElement, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class']
+    });
+  }, CLOUD);
+}
+
+function arrivals(page: any): Promise<number> {
+  return page.evaluate(() => (window as any).__arrivals as number);
+}
+
 /** Click Refresh and wait for that refresh to land - the button spins
  * while the fetch is in flight. */
 async function refreshPanel(page: any): Promise<void> {
@@ -124,6 +151,11 @@ test.beforeEach(async ({ request }) => {
   // the lab keeps the cloud default in its config file from test to test;
   // with no record on the hub this stores the default alone
   await request.post(`${API}/tunnel`, { data: { active: false } });
+  // and its connections, which the reset hub no longer knows
+  const listed = await (await request.get(`${API}/connections`)).json();
+  for (const conn of listed.connections || []) {
+    await request.delete(`${API}/connections/${encodeURIComponent(conn.key)}`);
+  }
 });
 
 test('api/info reports hub mode and the hub capabilities', async ({ page }) => {
@@ -143,37 +175,46 @@ test('api/info reports hub mode and the hub capabilities', async ({ page }) => {
   expect(data.tunnel_reason).toBeUndefined();
 });
 
-test('recipient, static and peer routes are not mounted', async ({ page }) => {
+test('recipient, static and peer download routes are not mounted', async ({
+  page
+}) => {
   for (const path of [
     '/jupyterlab-share-files-extension/public/share/AAAAAAAA',
     '/jupyterlab-share-files-extension/public/share/AAAAAAAA/manifest',
     '/jupyterlab-share-files-extension/public/request/AAAAAAAA',
     '/jupyterlab-share-files-extension/static/standalone.html',
-    `${API}/connections`
+    // a connected entry goes from the hub into the workspace, never through
+    // the lab to the browser (ACC-HUBM-175)
+    `${API}/connections/share:hub:AAAAAAAA/download`
   ]) {
     const { status } = await api(page, 'GET', path);
     expect(status, path).toBe(404);
   }
 });
 
-test('the panel hides the peer controls', async ({ page }) => {
+test('the panel offers the connect row and the Connected section', async ({
+  page
+}) => {
+  // ACC-HUBM-173: another user's record connects on a hub as a peer does
+  // standalone
   await openPanel(page);
-  await expect(
-    page.locator(`${PANEL} .jp-ShareFilesPanel-sectionTitle`, {
-      hasText: 'My Shares'
-    })
-  ).toBeVisible();
   await expect(
     page.locator(`${PANEL} .jp-ShareFilesPanel-sectionTitle`, {
       hasText: 'Connected'
     })
-  ).toHaveCount(0);
+  ).toBeVisible();
+  const input = page.locator(`${PANEL} .jp-ShareFilesPanel-connectInput`);
+  await expect(input).toBeVisible();
+  await expect(input).toHaveAttribute(
+    'placeholder',
+    'Paste a share or request link, or its id'
+  );
   await expect(
-    page.locator(`${PANEL} .jp-ShareFilesPanel-connectInput`)
-  ).toBeHidden();
+    page.locator(`${PANEL} .jp-ShareFilesPanel-connectButton`)
+  ).toBeVisible();
   await expect(
     page.locator(`${PANEL} .jp-ShareFilesPanel-dropZone`)
-  ).toHaveText('Drag files here to share');
+  ).toHaveText('Drag files here to share, or paste a link below');
 });
 
 test('share rows show staging, ready and refused states from the hub', async ({
@@ -654,11 +695,18 @@ test('the cloud toggle flips every record and the next one, and no row carries a
   ).toHaveCount(0);
   await page.keyboard.press('Escape');
 
-  // the header toggle off takes every record back to the hub network
+  // the header toggle off takes every record back to the hub network. The
+  // icon reads off the moment it is pressed, before the switch-off reaches
+  // the records, so the records are read until they report it
+  // (DEF-TESTS-108)
   await cloud.click();
   await expect(cloud).not.toHaveClass(/jp-mod-active/);
-  const after = await api(page, 'GET', `${API}/shares`);
-  expect(after.data.shares[0].tunnel).toBe(false);
+  await expect
+    .poll(
+      async () =>
+        (await api(page, 'GET', `${API}/shares`)).data.shares[0].tunnel
+    )
+    .toBe(false);
   const requests = await api(page, 'GET', `${API}/requests`);
   expect(requests.data.requests[0].tunnel).toBe(false);
   expect(requests.data.requests[0].link).toMatch(
@@ -847,6 +895,8 @@ test('the hub bringing its tunnel up moves the icon from pending to on, with no 
   await expect(item(other)).toBeVisible();
   const cloud = page.locator(CLOUD);
   const otherCloud = other.locator(CLOUD);
+  // DEF-PANEL-104: the moment the tunnel lands is marked once
+  await watchArrivals(page);
   await cloud.click();
   // switched on while the hub's tunnel is still coming up: the pending look,
   // and an aria state that says on but not yet reaching Cloudflare
@@ -859,6 +909,9 @@ test('the hub bringing its tunnel up moves the icon from pending to on, with no 
   await expect(cloud).toHaveAttribute('aria-pressed', 'true');
   await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
   await expect(otherCloud).toHaveClass(/jp-mod-active/);
+  await expect
+    .poll(() => arrivals(page), { message: 'the arrival is marked once' })
+    .toBe(1);
   // and both hand out the tunnel link
   for (const p of [page, other]) {
     await item(p).locator('button[title="Copy link"]').click();
@@ -869,6 +922,13 @@ test('the hub bringing its tunnel up moves the icon from pending to on, with no 
     await dialog.locator('button', { hasText: 'Close' }).click();
   }
   await other.close();
+  // and a redraw of an icon already on marks nothing: the cue is keyed on
+  // the change, so Refresh leaves it still
+  // and a redraw of an icon already on marks nothing: the cue is keyed on the
+  // arrival itself, so Refresh adds no second one
+  await refreshPanel(page);
+  await expect(cloud).toHaveClass(/jp-mod-active/);
+  expect(await arrivals(page)).toBe(1);
 });
 
 test('the hub dropping its tunnel moves the icon from on to pending, with no click', async ({
@@ -929,19 +989,32 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
   await expect(cloud).toHaveAttribute('aria-pressed', 'true');
   await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
   // established is a still, solid glyph in the panel's own accent - the
-  // colour its other header icons take when active, never one of its own
-  const [iconColor, accentColor, settled] = await page.evaluate(() => {
+  // colour its other header icons take when active, never one of its own.
+  // The arrival cue runs once over 700 ms as the tunnel lands
+  // (DEF-PANEL-104), so what is asserted is that the icon comes to rest, not
+  // that it never moved
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            getComputedStyle(
+              document.querySelector('.jp-ShareFilesPanel-cloudIndicator')!
+            ).animationName
+        ),
+      { message: 'the icon settles once the arrival cue has run' }
+    )
+    .toBe('none');
+  const [iconColor, accentColor] = await page.evaluate(() => {
     const probe = document.createElement('span');
     probe.style.color = 'var(--jp-brand-color1)';
     document.body.appendChild(probe);
     const accent = getComputedStyle(probe).color;
     probe.remove();
     const el = document.querySelector('.jp-ShareFilesPanel-cloudIndicator')!;
-    const cs = getComputedStyle(el);
-    return [cs.color, accent, cs.animationName];
+    return [getComputedStyle(el).color, accent];
   });
   expect(iconColor).toBe(accentColor);
-  expect(settled).toBe('none');
 });
 
 test('the icon does not wait for a tunnel no record asked for', async ({
@@ -1303,4 +1376,558 @@ test('a record without a password shows the rule and keeps Save disabled', async
   await expect(dialog).toBeHidden();
   const listed = await api(page, 'GET', `${API}/requests`);
   expect(listed.data.requests[0].has_password).toBe(false);
+});
+
+test('a whole hub share is saved by the hub, as files or as a zip', async ({
+  page,
+  request
+}) => {
+  // ACC-SAVE-171 on a hub: the hub owns the bytes and writes them itself. It
+  // packs no archive, so the lab zips what the hub wrote - both entries are
+  // offered, and both reach the hub's own fetch route. What lands on disk is
+  // pinned in the python suite, where the fake hub shares this lab's root.
+  await api(page, 'POST', `${API}/shares`, { name: 'Whole Record', paths: [] });
+  await openPanel(page);
+  await refreshPanel(page);
+  const row = () =>
+    page
+      .locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: 'Whole Record' })
+      .locator('.jp-ShareFilesPanel-itemHeader');
+  await row().click({ button: 'right' });
+  const menu = page.locator('.lm-Menu');
+  await expect(
+    menu.locator('.lm-Menu-item', { hasText: 'Save Record to Current Folder' })
+  ).toBeVisible();
+  await expect(
+    menu.locator('.lm-Menu-item', { hasText: 'Save Record as Zip' })
+  ).toBeVisible();
+  await menu
+    .locator('.lm-Menu-item', { hasText: 'Save Record to Current Folder' })
+    .click();
+
+  const fetches = async () =>
+    (await (await request.get(`${HUB}/_control/calls`)).json()).calls.filter(
+      (c: any) => c.path.endsWith('/fetch')
+    );
+  await expect
+    .poll(async () => (await fetches()).length, {
+      message: 'the lab asks the hub to write the record'
+    })
+    .toBe(1);
+  // the hub writes into a folder only this save names, which then takes the
+  // free name
+  expect(JSON.parse((await fetches())[0].body).dest).toMatch(
+    /\.Whole-Record-part-[0-9a-f]{8}$/
+  );
+
+  // the zip goes through the same route, into a staging folder the lab packs
+  // from and then removes
+  await row().click({ button: 'right' });
+  await menu
+    .locator('.lm-Menu-item', { hasText: 'Save Record as Zip' })
+    .click();
+  await expect
+    .poll(async () => (await fetches()).length, {
+      message: 'the zip is packed from a second fetch'
+    })
+    .toBe(2);
+  expect(JSON.parse((await fetches())[1].body).dest).toMatch(
+    /\.Whole-Record-part-[0-9a-f]{8}$/
+  );
+});
+
+test('a file of a hub share saves to the current folder from its own row', async ({
+  page,
+  request
+}) => {
+  // ACC-SAVE-170: a hub entry has no workspace path, so the row's own button
+  // is the save. The hub reads no single entry, so the server fetches the
+  // record and moves this one out - the call the hub sees is a record fetch.
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'Has Files',
+    paths: []
+  });
+  await request.post(`${HUB}/_control/files`, {
+    data: { id: made.data.id, names: ['picked.csv'] }
+  });
+  await openPanel(page);
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Has Files'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const entry = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'picked.csv'
+  });
+  await expect(entry).toBeVisible();
+  const save = entry.locator('button[title="Save to Current Folder"]');
+  await expect(save).toHaveCount(1);
+  await save.click();
+
+  await expect
+    .poll(
+      async () =>
+        (
+          await (await request.get(`${HUB}/_control/calls`)).json()
+        ).calls.filter((c: any) => c.path.endsWith('/fetch')).length,
+      { message: 'the record is fetched so the entry can be moved out' }
+    )
+    .toBe(1);
+});
+
+// --------------------------------------------------------------------------- //
+// Records another user owns (ACC-HUBM-173 to ACC-HUBM-180)
+// --------------------------------------------------------------------------- //
+
+/** A record another user owns, on the mock hub; returns its id and link. */
+async function foreign(
+  request: any,
+  data: {
+    kind?: 'share' | 'request';
+    title: string;
+    names?: string[];
+    password?: string;
+  }
+): Promise<{ id: string; url: string }> {
+  return (await request.post(`${HUB}/_control/foreign`, { data })).json();
+}
+
+/** Paste `text` into the connect row and connect with Enter. */
+async function connect(page: any, text: string): Promise<void> {
+  const input = page.locator(`${PANEL} .jp-ShareFilesPanel-connectInput`);
+  await input.fill(text);
+  await input.press('Enter');
+}
+
+function connected(page: any, title: string): any {
+  return page
+    .locator(`${PANEL} .jp-ShareFilesPanel-section`, { hasText: 'Connected' })
+    .locator('.jp-ShareFilesPanel-item', { hasText: title });
+}
+
+/** The menu entries a right-click on `target` opens, closed again. */
+async function menuOf(page: any, target: any): Promise<string[]> {
+  await target.click({ button: 'right' });
+  const items = page.locator('.lm-Menu .lm-Menu-itemLabel');
+  await expect(items.first()).toBeVisible();
+  const labels = (await items.allTextContents()).filter((t: string) => t);
+  await page.keyboard.press('Escape');
+  return labels;
+}
+
+test('a hub link in each form, or the id alone, connects', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-174: the hub's own address, the /hub/s/ form, the Cloudflare
+  // hostname, and the bare id
+  const forms: [string, (r: { id: string; url: string }) => string][] = [
+    ['Form Hub', r => r.url],
+    ['Form Prefix', r => `${HUB}/hub/s/${POLICY}/${r.id}`],
+    ['Form Tunnel', r => `${TUNNEL}/s/${POLICY}/${r.id}`],
+    ['Form Id', r => r.id]
+  ];
+  await openPanel(page);
+  for (const [title, text] of forms) {
+    const made = await foreign(request, { title, names: ['a.csv'] });
+    await connect(page, text(made));
+    await expect(connected(page, title)).toHaveCount(1);
+  }
+  // a workspace path is none of them
+  await connect(page, 'notes/report.csv');
+  await expect
+    .poll(() =>
+      notes(
+        page,
+        'error',
+        'Paste a share or request link from the hub, or its id'
+      )
+    )
+    .toBe(1);
+  await expect(
+    page.locator(`${PANEL} .jp-ShareFilesPanel-connectInput`)
+  ).toHaveValue('notes/report.csv');
+});
+
+test('a connected record is read by the hub with the token, never from its page', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-175
+  const made = await foreign(request, {
+    title: 'Read By Hub',
+    names: ['a.csv']
+  });
+  await openPanel(page);
+  await connect(page, made.url);
+  const row = connected(page, 'Read By Hub');
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await expect(row.locator('.jp-ShareFilesPanel-entry')).toHaveCount(1);
+  const calls = (await (await request.get(`${HUB}/_control/calls`)).json())
+    .calls;
+  const reads = calls.filter((c: any) =>
+    c.path.includes(`/records/${made.id}`)
+  );
+  expect(reads.length).toBeGreaterThan(0);
+  expect(reads.every((c: any) => c.auth === 'token test-token')).toBe(true);
+  // the recipient page was never opened
+  expect(calls.filter((c: any) => c.path.startsWith('/s/'))).toEqual([]);
+});
+
+test('a protected record asks for its password once and retries', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-176
+  const made = await foreign(request, {
+    title: 'Locked Record',
+    names: ['a.csv'],
+    password: 'pw'
+  });
+  await openPanel(page);
+  const dialog = page.locator('.jp-Dialog');
+  await connect(page, made.id);
+  await expect(dialog).toContainText('This link is password protected');
+  await dialog.locator('button', { hasText: 'Cancel' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(connected(page, 'Locked Record')).toHaveCount(0);
+
+  await connect(page, made.id);
+  await dialog.locator('input[type="password"]').fill('nope');
+  await dialog.locator('button', { hasText: 'Connect' }).click();
+  await expect(dialog).toContainText('Wrong password - try again');
+  await dialog.locator('input[type="password"]').fill('pw');
+  await dialog.locator('button', { hasText: 'Connect' }).click();
+  await expect(dialog).toBeHidden();
+  const row = connected(page, 'Locked Record');
+  await expect(row).toHaveCount(1);
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await expect(row.locator('.jp-ShareFilesPanel-entryName')).toHaveText(
+    'a.csv'
+  );
+});
+
+test('your own record is refused by name and listed once', async ({ page }) => {
+  // ACC-HUBM-177: the hub names the owner; the lab is spawned for alice
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'Mine Already',
+    paths: []
+  });
+  await openPanel(page);
+  await refreshPanel(page);
+  await connect(page, made.data.link);
+  await expect
+    .poll(() => notes(page, 'error', 'That share is your own'))
+    .toBe(1);
+  await expect(
+    page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+      hasText: 'Mine Already'
+    })
+  ).toHaveCount(1);
+  await expect(connected(page, 'Mine Already')).toHaveCount(0);
+});
+
+test('a connected share saves a file, a folder, the whole and a zip into the current folder', async ({
+  page,
+  request,
+  tmpPath
+}) => {
+  // ACC-HUBM-178: the hub writes the bytes into the workspace
+  const made = await foreign(request, {
+    title: 'Their Share',
+    names: ['a.csv', 'd/x.txt']
+  });
+  await openPanel(page);
+  await connect(page, made.id);
+  const row = connected(page, 'Their Share');
+  const header = row.locator('.jp-ShareFilesPanel-itemHeader');
+  await header.click();
+  const entry = (name: string) =>
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: name });
+  await expect(row.locator('.jp-ShareFilesPanel-entryName')).toHaveText([
+    'a.csv',
+    'd/'
+  ]);
+  // the owner's controls are not the connecting user's; the lab downloads
+  // nothing to the browser
+  expect(await menuOf(page, header)).toEqual([
+    'Open in Browser',
+    'Save Record to Current Folder',
+    'Save Record as Zip',
+    'Disconnect'
+  ]);
+  expect(await menuOf(page, entry('a.csv'))).toEqual([
+    'Save to Current Folder',
+    'Copy'
+  ]);
+
+  const pick = async (target: any, label: string) => {
+    await target.click({ button: 'right' });
+    await page.locator('.lm-Menu .lm-Menu-item', { hasText: label }).click();
+  };
+  const lands = (path: string) =>
+    expect
+      .poll(() => page.contents.fileExists(`${tmpPath}/${path}`), {
+        timeout: 15000,
+        message: `${path} lands in the current folder`
+      })
+      .toBe(true);
+  await pick(entry('a.csv'), 'Save to Current Folder');
+  await lands('a.csv');
+  await pick(entry('d/'), 'Save to Current Folder');
+  await lands('d/x.txt');
+  await pick(header, 'Save Record to Current Folder');
+  await lands('Their-Share/d/x.txt');
+  await pick(header, 'Save Record as Zip');
+  await lands('Their-Share.zip');
+  // the message names what landed, as the save of an own record does
+  await expect
+    .poll(() =>
+      notes(
+        page,
+        'success',
+        `Saved Their Share to ./${tmpPath}/Their-Share.zip`
+      )
+    )
+    .toBe(1);
+  // the staging folders the hub wrote into are gone
+  const listing = await page.contents.getContentMetadata(tmpPath, 'directory');
+  expect(
+    (listing?.content || [])
+      .map((c: any) => c.name)
+      .filter((n: string) => n.startsWith('.'))
+  ).toEqual([]);
+});
+
+test('a connected request takes a dropped file and folder and tints its row while they upload', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-180, and ACC-PROG-172 for the tint
+  await request.post(`${HUB}/_control/add`, { data: { seconds: 3 } });
+  await page.contents.uploadContent('a', 'text', 'conn-up.txt');
+  await page.contents.uploadContent('b', 'text', 'conn-updir/in.txt');
+  const made = await foreign(request, {
+    kind: 'request',
+    title: 'Their Inbox'
+  });
+  await openPanel(page);
+  await connect(page, made.id);
+  const row = connected(page, 'Their Inbox');
+  await expect(row).toHaveCount(1);
+
+  await dragOnto(page, 'conn-up.txt', row, ['conn-updir']);
+
+  const header = row.locator('.jp-ShareFilesPanel-itemHeader');
+  const layer = header.locator('.jp-ShareFilesPanel-itemProgress');
+  await expect(layer).toHaveAttribute('aria-valuenow', '25');
+  // the hub rings while it copies, and the tint follows
+  await expect(layer).toHaveAttribute('aria-valuenow', '75');
+  await expect(header.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    'uploading'
+  );
+  const calls = (await (await request.get(`${HUB}/_control/calls`)).json())
+    .calls;
+  const upload = calls.find((c: any) => c.path.endsWith('/upload'));
+  expect(JSON.parse(upload.body).paths).toEqual(['conn-up.txt', 'conn-updir']);
+
+  // the hub lands the upload and rings: the tint goes and the count is said
+  await expect(layer).toHaveCount(0, { timeout: 15000 });
+  await expect
+    .poll(() => notes(page, 'success', '2 item(s) uploaded to Their Inbox'))
+    .toBe(1);
+  await expect(header.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    'request'
+  );
+  await page.contents.deleteFile('conn-up.txt');
+  await page.contents.deleteDirectory('conn-updir');
+});
+
+test('an upload the hub refuses says why', async ({ page, request }) => {
+  // ACC-HUBM-180
+  await page.contents.uploadContent('x', 'text', 'refuse-upload.txt');
+  const made = await foreign(request, { kind: 'request', title: 'Full Inbox' });
+  await openPanel(page);
+  await connect(page, made.id);
+  const row = connected(page, 'Full Inbox');
+  await expect(row).toHaveCount(1);
+
+  await dragOnto(page, 'refuse-upload.txt', row);
+
+  await expect
+    .poll(() => notes(page, 'error', 'The upload to Full Inbox was refused'))
+    .toBe(1);
+  // the row says it too
+  const meta = row.locator('.jp-ShareFilesPanel-itemMeta');
+  await expect(meta).toHaveText('request - upload refused');
+  await expect(meta).toHaveClass(/jp-mod-refused/);
+  // expanded, it says why - the limit is the request's, not the uploader's
+  // group policy
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await expect(row.locator('.jp-ShareFilesPanel-empty').first()).toHaveText(
+    'The hub refused the last upload - The files are larger than this request accepts.'
+  );
+  await page.contents.deleteFile('refuse-upload.txt');
+});
+
+test('an upload the hub settles before the panel reads it is still announced', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-180: the copy lands before the first read after the 202
+  await request.post(`${HUB}/_control/add`, { data: { seconds: 0.01 } });
+  await page.contents.uploadContent('q', 'text', 'quick-up.txt');
+  const made = await foreign(request, {
+    kind: 'request',
+    title: 'Quick Inbox'
+  });
+  await openPanel(page);
+  await connect(page, made.id);
+  const row = connected(page, 'Quick Inbox');
+  await expect(row).toHaveCount(1);
+
+  await dragOnto(page, 'quick-up.txt', row);
+
+  await expect
+    .poll(() => notes(page, 'success', '1 item(s) uploaded to Quick Inbox'))
+    .toBe(1);
+  await page.contents.deleteFile('quick-up.txt');
+});
+
+test('a password the owner changes after the connect is asked for again from the row', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-176: the connection works again once the new password is given
+  const made = await foreign(request, {
+    title: 'Guarded',
+    names: ['a.csv'],
+    password: 'first'
+  });
+  await openPanel(page);
+  const dialog = page.locator('.jp-Dialog');
+  await connect(page, made.id);
+  await dialog.locator('input[type="password"]').fill('first');
+  await dialog.locator('button', { hasText: 'Connect' }).click();
+  const row = connected(page, 'Guarded');
+  await expect(row).toHaveCount(1);
+
+  await request.post(`${HUB}/_control/password`, {
+    data: { id: made.id, password: 'second' }
+  });
+  // the row itself names the state, and its hover names the step
+  const badge = row.locator('.jp-ShareFilesPanel-offline');
+  await expect(badge).toHaveText('password changed');
+  await expect(badge).toHaveAttribute(
+    'title',
+    /^The owner set or changed this record's password - choose Connect Again/
+  );
+  await row
+    .locator('.jp-ShareFilesPanel-itemHeader')
+    .click({ button: 'right' });
+  await page
+    .locator('.lm-Menu .lm-Menu-item', { hasText: 'Connect Again...' })
+    .click();
+  await expect(dialog).toContainText('This link is password protected');
+  await dialog.locator('input[type="password"]').fill('second');
+  await dialog.locator('button', { hasText: 'Connect' }).click();
+  await expect(badge).toHaveCount(0);
+});
+
+test('a read sent before an upload was accepted does not announce it', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-180: a read already on its way when the hub takes the upload
+  // describes the record without it
+  await request.post(`${HUB}/_control/add`, { data: { seconds: 3 } });
+  await page.contents.uploadContent('r', 'text', 'race-up.txt');
+  const made = await foreign(request, { kind: 'request', title: 'Race Inbox' });
+  await openPanel(page);
+  await connect(page, made.id);
+  const row = connected(page, 'Race Inbox');
+  await expect(row).toHaveCount(1);
+
+  // hold the next manifest read until the upload has been accepted
+  let accepted: () => void = () => undefined;
+  const upload = new Promise<void>(resolve => (accepted = resolve));
+  let held = false;
+  await page.route('**/api/connections/*/manifest*', async (route: any) => {
+    if (held) {
+      return route.continue();
+    }
+    held = true;
+    const response = await route.fetch();
+    await upload;
+    await route.fulfill({ response });
+  });
+  await page.locator(`${PANEL} button[title="Refresh"]`).click();
+  await expect.poll(() => held).toBe(true);
+  const answered = page.waitForResponse((r: any) =>
+    r.url().includes('/upload')
+  );
+  await dragOnto(page, 'race-up.txt', row);
+  await answered;
+  accepted();
+
+  await expect
+    .poll(() => notes(page, 'success', '1 item(s) uploaded to Race Inbox'), {
+      timeout: 15000
+    })
+    .toBe(1);
+  expect(await notes(page, 'success', '0 item(s) uploaded')).toBe(0);
+  await page.unroute('**/api/connections/*/manifest*');
+  await page.contents.deleteFile('race-up.txt');
+});
+
+test('a new connection opens the Connected section and shows its row', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-173: a connect that lands out of sight says so on screen
+  const made = await foreign(request, {
+    title: 'Out Of Sight',
+    names: ['a.csv']
+  });
+  await openPanel(page);
+  const section = page.locator(`${PANEL} .jp-ShareFilesPanel-section`, {
+    hasText: 'Connected'
+  });
+  const sectionHeader = section.locator('.jp-ShareFilesPanel-sectionHeader');
+  await sectionHeader.click();
+  await expect(sectionHeader).toHaveAttribute('aria-expanded', 'false');
+
+  await connect(page, made.id);
+
+  await expect(sectionHeader).toHaveAttribute('aria-expanded', 'true');
+  await expect(connected(page, 'Out Of Sight')).toBeInViewport();
+});
+
+test('disconnecting leaves the record, and a closed record says why', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-179
+  const made = await foreign(request, {
+    title: 'Comes And Goes',
+    names: ['a.csv']
+  });
+  await openPanel(page);
+  await connect(page, made.id);
+  const row = connected(page, 'Comes And Goes');
+  await expect(row).toHaveCount(1);
+  await row.locator('button[title="Disconnect"]').click();
+  await expect(row).toHaveCount(0);
+  // the record is still on the hub: it connects again
+  await connect(page, made.id);
+  await expect(row).toHaveCount(1);
+
+  // the hub rings the reader's stream on the close: no refresh
+  await request.post(`${HUB}/_control/close`, { data: { id: made.id } });
+  const badge = row.locator('.jp-ShareFilesPanel-offline');
+  await expect(badge).toBeVisible();
+  await expect(badge).toHaveAttribute(
+    'title',
+    /The owner closed this share or request, or it expired/
+  );
 });

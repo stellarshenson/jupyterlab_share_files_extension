@@ -1181,6 +1181,39 @@ class RequestItemHandler(_Base):
         self.write_json({"ok": True})
 
 
+class RecordSaveHandler(_Base):
+    """api/<shares|requests>/<id>/save - write a whole record into the
+    workspace, as a folder of its files or as one zip beside them.
+
+    The bytes are already on this disk in standalone mode, so this is a copy
+    out of the store rather than a transfer; the hub-mode table answers the
+    same route by asking the hub, which owns the bytes there.
+    """
+
+    @tornado.web.authenticated
+    def post(self, kind, id_):
+        body = self.get_json_body() or {}
+        archive = str(body.get("archive") or "")
+        if archive not in ("", "zip"):
+            return self.write_error_json(400, "'archive' must be 'zip' or absent")
+        try:
+            target = _resolve_workspace_target_dir(
+                self.workspace_root, str(body.get("target_dir") or ""), self.shares_dir
+            )
+        except StorageError as exc:
+            return self.write_error_json(400, str(exc))
+        if not target.is_dir():
+            return self.write_error_json(404, f"Not a folder: {body.get('target_dir') or '.'}")
+        store = self.share_store if kind == "shares" else self.request_store
+        try:
+            path = store.save_out(id_, target, archive)
+        except NotFoundError as exc:
+            return self.write_error_json(404, str(exc))
+        except (OSError, StorageError) as exc:
+            return self.write_error_json(500, f"Could not save the record: {exc}")
+        self.write_json({"ok": True, "path": path})
+
+
 class RequestUploadsHandler(_Base):
     @tornado.web.authenticated
     def delete(self, id_):
@@ -1429,6 +1462,10 @@ class ConnectionSaveHandler(_Base):
         body = self.get_json_body() or {}
         target_dir = body.get("target_dir") or ""
         names = body.get("names")  # None or list[str] - None means "all"
+        # "zip" keeps the whole share as the one archive the peer sends
+        archive = str(body.get("archive") or "")
+        if archive not in ("", "zip") or (archive and names is not None):
+            return self.write_error_json(400, "'archive' must be 'zip' and only for the whole share")
         try:
             dest_root = _resolve_workspace_target_dir(self.workspace_root, target_dir, self.shares_dir)
         except StorageError as exc:
@@ -1480,6 +1517,17 @@ class ConnectionSaveHandler(_Base):
                     )
                     if zip_resp.code != 200:
                         return self._failed(saved, 502, f"Could not download share ({zip_resp.code})")
+                    if archive:
+                        # closed first: the check reads the file from disk,
+                        # and Windows refuses to move a name still open
+                        spool.close()
+                        if not zipfile.is_zipfile(spool.name):
+                            return self._failed(saved, 502, "The peer did not send a readable zip archive")
+                        target = _resolve_unique_target(dest_root, f"{share_slug}.zip")
+                        saved.append(str(target.relative_to(self.workspace_root)))
+                        shutil.move(spool.name, target)
+                        settle_mode(target)
+                        return self.write_json({"ok": True, "saved": saved})
                     wrap_dir = _resolve_unique_target(dest_root, share_slug)
                     # `.` and `..` pass _safe_name - check where the folder
                     # really lands after resolve(), not how its path reads
@@ -2226,6 +2274,8 @@ def setup_route_handlers(web_app, config: ShareFilesConfig | None = None):
         (url_path_join(base_url, ns, "api", "generate-password"), GeneratePasswordHandler),
         # api/<shares|requests>/<id>/password
         (url_path_join(base_url, ns, "api", r"(shares|requests)", r"([A-Z2-7]{6,16})", "password"), PasswordHandler),
+        # api/<shares|requests>/<id>/save
+        (url_path_join(base_url, ns, "api", r"(shares|requests)", r"([A-Z2-7]{6,16})", "save"), RecordSaveHandler),
         # api/shares
         (url_path_join(base_url, ns, "api", "shares"), SharesListHandler),
         (url_path_join(base_url, ns, "api", "shares", r"([A-Z2-7]{6,16})"), ShareItemHandler),

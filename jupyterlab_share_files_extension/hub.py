@@ -105,9 +105,16 @@ class HubClient:
         return headers
 
     async def request(
-        self, method: str, path: str, body: dict | None = None
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        headers: dict | None = None,
+        timeout: float | None = None,
     ) -> tuple[int, Any]:
-        """Send one request; return ``(status, parsed JSON body or {})``."""
+        """Send one request; return ``(status, parsed JSON body or {})``.
+        ``headers`` ride beside the token, never in place of it; ``timeout``
+        replaces REQUEST_TIMEOUT_SECONDS for a call that copies bytes."""
         url = self.base + "/" + path.lstrip("/")
         payload = json.dumps(body) if body is not None else None
         client = tornado.httpclient.AsyncHTTPClient()
@@ -115,10 +122,10 @@ class HubClient:
             resp = await client.fetch(
                 url,
                 method=method,
-                headers=self.headers(payload is not None),
+                headers={**(headers or {}), **self.headers(payload is not None)},
                 body=payload,
                 raise_error=False,
-                request_timeout=REQUEST_TIMEOUT_SECONDS,
+                request_timeout=timeout or REQUEST_TIMEOUT_SECONDS,
                 allow_nonstandard_methods=True,
             )
         except (OSError, ConnectionError) as exc:

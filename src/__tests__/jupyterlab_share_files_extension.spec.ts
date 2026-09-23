@@ -85,6 +85,12 @@ describe('hub refusal slugs', () => {
     expect(hubReasonText('policy_conflict')).toMatch(/administrator/);
   });
 
+  it("names a connected record's password change and the way back", () => {
+    expect(hubReasonText('password_changed')).toMatch(
+      /set or changed .* Connect Again in its row menu/
+    );
+  });
+
   it('answers an unknown slug with a sentence, never the slug itself', () => {
     const text = hubReasonText('something_new');
     expect(text).not.toContain('something_new');

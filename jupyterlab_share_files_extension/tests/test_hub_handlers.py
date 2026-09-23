@@ -12,6 +12,8 @@ import errno
 import json
 import re
 import socket
+import zipfile
+from pathlib import Path
 
 import pytest
 import tornado.httpserver
@@ -62,6 +64,14 @@ class FakeHub:
         self.counter = 0
         # one add in flight: (share id, names); ``land_add`` settles it
         self.pending_add: tuple[str, list[str]] | None = None
+        # where a fetch writes, set by the fixture to the server's root
+        self.workspace_root = ""
+        # records another user owns, their passwords, the grants an unlock
+        # minted, and the headers each call carried
+        self.foreign: list[dict] = []
+        self.passwords: dict[str, str] = {}
+        self.grants: dict[str, str] = {}
+        self.headers: list[dict] = []
 
     def land_add(self, reason: str = "") -> None:
         """Settle the add in flight the way the hub's row reports it."""
@@ -117,8 +127,56 @@ class FakeHub:
         base = self.tunnel_base if switched_on else self.own_base
         return {**item, "url": f"{base}/s/{item['id']}"}
 
-    async def request(self, method, path, body=None):
+    def add_foreign(self, kind="share", names=(), password="", owner="bob"):
+        """A record another user owns; returns its id."""
+        id_ = self._new_id("r_" if kind == "request" else "")
+        self.foreign.append({
+            "id": id_, "kind": kind, "owner": owner, "title": "Their Record", "state": "ready",
+            "files": [{"name": n, "size": 3, "sha256": "0" * 64} for n in names],
+            "created_at": "2026-09-03T20:00:00Z", "has_password": bool(password),
+        })
+        if password:
+            self.passwords[id_] = password
+        return id_
+
+    def _record(self, id_, action, body, headers):
+        """``records/<id>``, as HUB-API-REQUEST-read-a-record-you-do-not-own.md
+        asks for it."""
+        item = next((i for i in self.items + self.foreign if i["id"] == id_), None)
+        if item is None:
+            return 404, {"status": 404, "message": "No such record"}
+        if item.get("closed"):
+            return 410, {"reason": "closed", "message": "The owner closed this record"}
+        if action == "unlock":
+            if self.passwords.get(id_) != body.get("password"):
+                return 403, {"reason": "password_wrong", "message": "Wrong password"}
+            grant = f"g-{self._new_id()}"
+            self.grants[grant] = id_
+            return 200, {"grant": grant, "expires_at": "2026-09-03T21:00:00Z"}
+        if id_ in self.passwords and self.grants.get(headers.get("X-Fileshare-Grant", "")) != id_:
+            return 401, {"reason": "password_required", "message": "This record needs its password"}
+        if not action:
+            return 200, self._with_url(item)
+        if action == "upload":
+            item["last_upload"] = {"state": "running"}
+            item["progress"] = {"copied": 1, "total": 4}
+            return 202, {}
+        name = str(body.get("name") or "")
+        files = [f for f in item["files"] if not name or f["name"] == name or f["name"].startswith(name + "/")]
+        if name and not files:
+            return 404, {"reason": "unknown_entry", "message": f"No entry {name}"}
+        dest = Path(self.workspace_root) / str(body.get("dest") or "")
+        if dest.exists():
+            return 400, {"status": 400, "message": "The files were not copied (bad_path)"}
+        dest.mkdir(parents=True)
+        for f in files:
+            (dest / f["name"]).parent.mkdir(parents=True, exist_ok=True)
+            (dest / f["name"]).write_text("from the hub\n", encoding="utf-8")
+        return 200, {"path": str(dest)}
+
+    async def request(self, method, path, body=None, headers=None, timeout=None):
         self.calls.append((method, path, body))
+        self.headers.append(dict(headers or {}))
         if self.unavailable or path in self.raise_for:
             raise HubUnavailable("could not reach the hub: refused")
         if (method, path) in self.overrides:
@@ -146,6 +204,18 @@ class FakeHub:
         m = re.fullmatch(r"shares/([^/]+)/content", path)
         if m and method == "POST":
             return self._content(m.group(1), body)
+        m = re.fullmatch(r"shares/([^/]+)/fetch", path)
+        if m and method == "POST":
+            # the hub creates `dest` and refuses one that exists, measured
+            # against the real hub on 2026-09-23 (bad_path)
+            if not any(i["id"] == m.group(1) for i in self.items):
+                return 404, {"status": 404, "message": "No such share"}
+            dest = Path(self.workspace_root or ".") / str(body.get("dest") or "")
+            if dest.exists():
+                return 400, {"status": 400, "message": "The files were not copied (bad_path)"}
+            dest.mkdir(parents=True)
+            (dest / "report.csv").write_text("from the hub\n", encoding="utf-8")
+            return 200, {"path": str(dest)}
         m = re.fullmatch(r"(shares|requests)/([^/]+)", path)
         if m and method == "DELETE":
             before = len(self.items)
@@ -173,17 +243,25 @@ class FakeHub:
         m = re.fullmatch(r"requests/([^/]+)/uploads/([^/]+)/fetch", path)
         if m and method == "POST":
             return 200, {"path": body["dest"] + "/report.csv"}
+        m = re.fullmatch(r"records/([^/]+)(?:/(unlock|fetch|upload))?", path)
+        if m:
+            return self._record(m.group(1), m.group(2) or "", body or {}, headers or {})
         return 404, {"status": 404, "message": None}
 
 
 @pytest.fixture
-def fake_hub(monkeypatch, tmp_path):
+def fake_hub(monkeypatch, tmp_path, jp_root_dir):
     for key, value in HUB_ENV.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    # the user the hub spawned this lab for, who owns the fake hub's items
+    monkeypatch.setenv("JUPYTERHUB_USER", "alice")
     hub = FakeHub()
+    # a fetch writes into the workspace, as the hub does on its own mount
+    hub.workspace_root = str(jp_root_dir)
     monkeypatch.setattr(hub_routes, "HubClient", lambda: hub)
     hub_routes._PASSWORDS.clear()
+    hub_routes._GRANTS.clear()
     return hub
 
 
@@ -209,7 +287,9 @@ async def test_public_and_static_paths_are_404_in_hub_mode(jp_fetch, fake_hub):
         ("public", "share", "AAAAAAAA", "manifest"),
         ("public", "request", "AAAAAAAA"),
         ("static", "standalone.html"),
-        ("api", "connections"),
+        # a connected entry goes from the hub into the workspace, never
+        # through the lab to the browser (ACC-HUBM-175)
+        ("api", "connections", "share:hub:AAAAAAAA", "download"),
     ):
         with pytest.raises(HTTPClientError) as err:
             await jp_fetch(NS, *parts)
@@ -419,10 +499,10 @@ def _stall(fake_hub, monkeypatch, path):
     stalled = HubClient(base=f"http://127.0.0.1:{port}/hub/api/fileshare", token="t0k3n")
     answer = fake_hub.request
 
-    async def request(method, path_, body=None):
+    async def request(method, path_, body=None, headers=None, timeout=None):
         if (method, path_) == ("GET", path):
-            return await stalled.request(method, path_, body)
-        return await answer(method, path_, body)
+            return await stalled.request(method, path_, body, headers, timeout)
+        return await answer(method, path_, body, headers, timeout)
 
     monkeypatch.setattr(fake_hub, "request", request)
     return sock
@@ -843,10 +923,10 @@ async def test_a_switch_off_writes_its_intent_before_it_reads_the_records(jp_fet
     inner = fake_hub.request
     seen: list[tuple[str, bool]] = []
 
-    async def record(method, path, body=None):
+    async def record(method, path, body=None, headers=None, timeout=None):
         # what a listing arriving at this moment would read
         seen.append((path, hub_routes.tunnel_default()))
-        return await inner(method, path, body)
+        return await inner(method, path, body, headers, timeout)
 
     fake_hub.request = record
     assert _json(await _post(jp_fetch, "api", "tunnel", body={"active": False}))["tunnel_active"] is False
@@ -872,13 +952,13 @@ async def test_a_switch_off_under_a_reconciliation_leaves_no_record_published(jp
     release = asyncio.Event()
     gate = True
 
-    async def gated(method, path, body=None):
+    async def gated(method, path, body=None, headers=None, timeout=None):
         nonlocal gate
         if gate and method == "PUT" and path.endswith("/tunnel") and body.get("tunnel"):
             gate = False
             in_flight.set()
             await release.wait()
-        return await inner(method, path, body)
+        return await inner(method, path, body, headers, timeout)
 
     fake_hub.request = gated
 
@@ -936,3 +1016,528 @@ async def test_a_switch_off_that_fails_partway_keeps_the_records_it_closed(jp_fe
     rows = _json(await jp_fetch(NS, "api", "shares"))["shares"]
     # a stays closed; b is the one the hub refused and reports itself on
     assert {r["id"]: r["tunnel"] for r in rows} == {a["id"]: False, b["id"]: True}
+
+
+async def test_a_path_that_leaves_the_workspace_through_a_link_never_reaches_the_hub(
+    jp_fetch, fake_hub, jp_root_dir, tmp_path
+):
+    """DEF-HUB-105: a path that resolves outside the notebook root is accepted
+    by the hub and then refused whole with `bad_filename`, so the lab refuses
+    it first."""
+    outside = tmp_path / "outside"
+    (outside / "my-gpu").mkdir(parents=True)
+    (jp_root_dir / "@shared").mkdir()
+    (jp_root_dir / "@shared" / "skills").symlink_to(outside)
+
+    for body in (
+        {"name": "x", "paths": ["@shared/skills/my-gpu"]},
+        {"name": "x", "paths": ["@shared/skills"]},
+    ):
+        with pytest.raises(HTTPClientError) as err:
+            await _post(jp_fetch, "api", "shares", body=body)
+        assert err.value.code == 400
+        assert "leaves your workspace through a link" in err.value.response.body.decode()
+    assert not any(c[0] == "POST" for c in fake_hub.calls)
+
+
+async def test_an_add_of_a_path_outside_the_workspace_is_refused_by_name(
+    jp_fetch, fake_hub, jp_root_dir, tmp_path
+):
+    """The same guard on the other way in: adding to a share that already
+    exists. The refusal names the path, because the panel shows the sentence
+    and the owner has to know which of the chosen items to leave out."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (jp_root_dir / "elsewhere").symlink_to(outside)
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["elsewhere"]})
+    assert err.value.code == 400
+    assert "elsewhere leaves your workspace" in err.value.response.body.decode()
+    assert not any(c[1] == f"shares/{id_}/content" for c in fake_hub.calls)
+
+
+async def test_a_link_that_stays_inside_the_workspace_is_still_sent(
+    jp_fetch, fake_hub, jp_root_dir
+):
+    """The guard is about leaving the volume, not about links: the hub reads
+    a link whose target is inside the workspace, and skips it in the copy."""
+    (jp_root_dir / "data").mkdir()
+    (jp_root_dir / "shortcut").symlink_to(jp_root_dir / "data")
+    await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["shortcut"]})
+    assert any(c[:2] == ("POST", "shares") and c[2]["paths"] == ["shortcut"] for c in fake_hub.calls)
+
+
+async def test_a_fetch_into_a_folder_outside_the_workspace_never_reaches_the_hub(
+    jp_fetch, fake_hub, jp_root_dir, tmp_path
+):
+    """DEF-HUB-106: the write direction of DEF-HUB-105. The hub creates the
+    destination on its own mount of the volume, so a folder reached through a
+    link out of the workspace is one it cannot write to. `is_dir` follows the
+    link, so the lab sees a folder and only the real locations show it."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (jp_root_dir / "elsewhere").symlink_to(outside)
+    row = _json(await _post(jp_fetch, "api", "requests", body={"name": "Inbox"}))
+
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "requests", row["id"], "uploads", "u1", "fetch",
+                    body={"target_dir": "elsewhere", "name": "Inbox"})
+    assert err.value.code == 400
+    assert "elsewhere leaves your workspace" in err.value.response.body.decode()
+    assert not any(c[1].endswith("/fetch") for c in fake_hub.calls)
+
+
+async def test_a_fetch_into_a_link_that_stays_inside_the_workspace_is_still_sent(
+    jp_fetch, fake_hub, jp_root_dir
+):
+    """The guard is about leaving the workspace, not about links: a folder
+    the lab reaches through a link that stays inside is one the hub writes."""
+    (jp_root_dir / "inbox").mkdir()
+    (jp_root_dir / "shortcut").symlink_to(jp_root_dir / "inbox")
+    row = _json(await _post(jp_fetch, "api", "requests", body={"name": "Inbox"}))
+    await _post(jp_fetch, "api", "requests", row["id"], "uploads", "u1", "fetch",
+                body={"target_dir": "shortcut", "name": "Inbox"})
+    assert any(c[1] == f"requests/{row['id']}/uploads/u1/fetch" and c[2]["dest"] == "shortcut/Inbox"
+               for c in fake_hub.calls)
+
+
+async def test_a_whole_hub_share_is_saved_into_the_chosen_folder(jp_fetch, fake_hub, jp_root_dir):
+    """ACC-SAVE-171: the hub owns the bytes, so the lab names a folder that is
+    free and the hub writes the record into it."""
+    (jp_root_dir / "out").mkdir()
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "Quarter Report", "paths": []}))
+    answer = _json(await _post(jp_fetch, "api", "shares", row["id"], "save", body={"target_dir": "out"}))
+    assert answer == {"ok": True, "path": "out/Quarter-Report"}
+    assert (jp_root_dir / "out" / "Quarter-Report" / "report.csv").exists()
+    dest = next(c[2]["dest"] for c in fake_hub.calls if c[1] == f"shares/{row['id']}/fetch")
+    assert re.fullmatch(r"out/\.Quarter-Report-part-[0-9a-f]{8}", dest)
+    # a second save lands beside the first, because the hub refuses a folder
+    # that exists and the lab picks the free name
+    again = _json(await _post(jp_fetch, "api", "shares", row["id"], "save", body={"target_dir": "out"}))
+    assert again["path"] == "out/Quarter-Report-2"
+
+
+async def test_a_hub_share_is_packed_into_a_zip_from_what_the_hub_wrote(
+    jp_fetch, fake_hub, jp_root_dir
+):
+    """The hub packs no archive, so the lab zips what the hub wrote and the
+    staging folder goes - the archive is what is left."""
+    (jp_root_dir / "out").mkdir()
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "Packed", "paths": []}))
+    answer = _json(await _post(jp_fetch, "api", "shares", row["id"], "save",
+                               body={"target_dir": "out", "archive": "zip"}))
+    assert answer["path"] == "out/Packed.zip"
+    landed = jp_root_dir / "out" / "Packed.zip"
+    with zipfile.ZipFile(landed) as bundle:
+        assert bundle.namelist() == ["report.csv"]
+    assert [p.name for p in (jp_root_dir / "out").iterdir()] == ["Packed.zip"]
+
+
+async def test_a_hub_request_saves_its_uploads_into_one_folder(
+    jp_fetch, fake_hub, jp_root_dir
+):
+    """The hub carries no route that takes a request's uploads as a set, so
+    the lab makes the folder and fetches them into it one at a time."""
+    (jp_root_dir / "out").mkdir()
+    row = _json(await _post(jp_fetch, "api", "requests", body={"name": "Inbox"}))
+    fake_hub.uploads[row["id"]] = [
+        {"upload_id": "u1", "filename": "one.txt", "size": 3, "sha256": "x", "uploaded_at": "2026-09-03T21:00:00Z"},
+        {"upload_id": "u2", "filename": "two.txt", "size": 3, "sha256": "x", "uploaded_at": "2026-09-03T21:00:00Z"},
+    ]
+    answer = _json(await _post(jp_fetch, "api", "requests", row["id"], "save", body={"target_dir": "out"}))
+    assert answer["path"] == "out/Inbox"
+    sent = [c for c in fake_hub.calls if c[1].startswith(f"requests/{row['id']}/uploads/")]
+    # fetched into a folder only this save names, then moved to the free name
+    staging = sent[0][2]["dest"].rsplit("/", 1)[0]
+    assert re.fullmatch(r"out/\.Inbox-part-[0-9a-f]{8}", staging)
+    assert [c[2]["dest"] for c in sent] == [f"{staging}/one.txt", f"{staging}/two.txt"]
+    assert [p.name for p in (jp_root_dir / "out").iterdir()] == ["Inbox"]
+
+
+async def test_a_hub_save_refuses_an_archive_it_does_not_know(jp_fetch, fake_hub, jp_root_dir):
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", row["id"], "save", body={"archive": "tar"})
+    assert err.value.code == 400
+    assert not any(c[1].endswith("/fetch") for c in fake_hub.calls)
+
+
+async def test_a_hub_save_into_a_folder_outside_the_workspace_never_reaches_the_hub(
+    jp_fetch, fake_hub, jp_root_dir, tmp_path
+):
+    """The same guard the upload fetch carries, on the other route that hands
+    the hub a folder to write into (DEF-HUB-106)."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (jp_root_dir / "elsewhere").symlink_to(outside)
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", row["id"], "save", body={"target_dir": "elsewhere"})
+    assert err.value.code == 400
+    assert "elsewhere leaves your workspace" in err.value.response.body.decode()
+    assert not any(c[1].endswith("/fetch") for c in fake_hub.calls)
+
+
+async def test_one_entry_of_a_hub_share_is_moved_out_of_a_fetched_record(
+    jp_fetch, fake_hub, jp_root_dir
+):
+    """ACC-SAVE-170: the hub reads no single entry, so the record is fetched
+    and the named entry is moved out of it; the rest goes."""
+    (jp_root_dir / "out").mkdir()
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "Picked", "paths": []}))
+    answer = _json(await _post(jp_fetch, "api", "shares", row["id"], "save",
+                               body={"target_dir": "out", "name": "report.csv"}))
+    assert answer["path"] == "out/report.csv"
+    assert (jp_root_dir / "out" / "report.csv").read_text() == "from the hub\n"
+    assert [p.name for p in (jp_root_dir / "out").iterdir()] == ["report.csv"]
+
+
+async def test_an_entry_the_record_does_not_hold_leaves_nothing_behind(
+    jp_fetch, fake_hub, jp_root_dir
+):
+    (jp_root_dir / "out").mkdir()
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "Picked", "paths": []}))
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", row["id"], "save",
+                    body={"target_dir": "out", "name": "nosuch.csv"})
+    assert err.value.code == 404
+    assert list((jp_root_dir / "out").iterdir()) == []
+
+
+# --------------------------------------------------------------------------- #
+# Connections: records another user owns (ACC-HUBM-173 to ACC-HUBM-180)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_hub_link_or_a_bare_id_names_the_record():
+    parse = hub_routes.parse_hub_link
+    assert parse("Abc_123-xyz") == "Abc_123-xyz"
+    assert parse("http://hub:8080/s/policy1/Abc_123-xyz") == "Abc_123-xyz"
+    assert parse("https://share.example.com/s/policy1/Abc_123-xyz/") == "Abc_123-xyz"
+    assert parse("https://lab.example.com/hub/s/policy1/r_Abc_123") == "r_Abc_123"
+    for text in ("notes/report.csv", "https://example.com/other/Abc_123-xyz", "ftp://hub/s/p/Abc_123-xyz", ""):
+        with pytest.raises(ValueError):
+            parse(text)
+
+
+def test_a_records_files_become_its_top_level_entries():
+    files = [{"name": "a.csv", "size": 3}, {"name": "d/x.txt", "size": 2}, {"name": "d/e/y.txt", "size": 5}]
+    assert hub_routes.remote_entries(files) == [
+        {"name": "a.csv", "type": "file", "size": 3},
+        {"name": "d", "type": "directory", "size": 7},
+    ]
+
+
+async def _connect(jp_fetch, link, password=""):
+    return _json(await _post(jp_fetch, "api", "connections", body={"link": link, "password": password}))
+
+
+async def test_connecting_by_link_lists_the_record_and_its_entries(jp_fetch, fake_hub):
+    id_ = fake_hub.add_foreign(names=["a.csv", "d/x.txt"])
+    entry = await _connect(jp_fetch, f"http://hub:8080/s/policy1/{id_}")
+    assert (entry["kind"], entry["id"], entry["owner"]) == ("share", id_, "bob")
+    listed = _json(await jp_fetch(NS, "api", "connections"))["connections"]
+    assert [c["key"] for c in listed] == [entry["key"]]
+    manifest = _json(await jp_fetch(NS, "api", "connections", entry["key"], "manifest"))
+    assert manifest["entries"] == [
+        {"name": "a.csv", "type": "file", "size": 3},
+        {"name": "d", "type": "directory", "size": 3},
+    ]
+    # every call went to the hub; the lab fetched no recipient page
+    assert all(path.startswith("records/") for _, path, _ in fake_hub.calls)
+
+
+async def test_connecting_to_your_own_record_is_refused(jp_fetch, fake_hub):
+    own = _json(await _post(jp_fetch, "api", "shares", body={"name": "Mine", "paths": []}))
+    with pytest.raises(HTTPClientError) as err:
+        await _connect(jp_fetch, own["id"])
+    assert err.value.code == 400
+    assert "your own" in json.loads(err.value.response.body)["error"]
+    assert _json(await jp_fetch(NS, "api", "connections"))["connections"] == []
+
+
+async def test_a_protected_record_asks_for_its_password_and_keeps_it(jp_fetch, fake_hub):
+    id_ = fake_hub.add_foreign(names=["a.csv"], password="pw")
+    for password, error in (("", "password required"), ("nope", "wrong password")):
+        with pytest.raises(HTTPClientError) as err:
+            await _connect(jp_fetch, id_, password)
+        assert err.value.code == 401
+        assert json.loads(err.value.response.body) == {"error": error, "password_required": True}
+    entry = await _connect(jp_fetch, id_, "pw")
+    # a grant lost on restart is earned again from the stored password
+    hub_routes._GRANTS.clear()
+    manifest = _json(await jp_fetch(NS, "api", "connections", entry["key"], "manifest"))
+    assert [e["name"] for e in manifest["entries"]] == ["a.csv"]
+    assert fake_hub.headers[-1]["X-Fileshare-Grant"].startswith("g-")
+
+
+async def test_a_password_the_owner_set_or_changed_after_the_connect_is_named(jp_fetch, fake_hub, jp_root_dir):
+    """The hub's password_required is its group-policy sentence and its
+    password_wrong is a slug the panel does not know: neither says what
+    happened to a connection, so the lab answers with its own reason."""
+    open_id = fake_hub.add_foreign(names=["a.csv"])
+    locked_id = fake_hub.add_foreign(names=["a.csv"], password="pw")
+    open_key = (await _connect(jp_fetch, open_id))["key"]
+    locked_key = (await _connect(jp_fetch, locked_id, "pw"))["key"]
+    fake_hub.passwords[open_id] = "set-later"
+    fake_hub.passwords[locked_id] = "changed"
+    hub_routes._GRANTS.clear()
+    (jp_root_dir / "out").mkdir()
+    for key in (open_key, locked_key):
+        for call in (
+            lambda: jp_fetch(NS, "api", "connections", key, "manifest"),
+            lambda: _post(jp_fetch, "api", "connections", key, "save", body={"target_dir": "out"}),
+        ):
+            with pytest.raises(HTTPClientError) as err:
+                await call()
+            assert err.value.code == 401
+            assert json.loads(err.value.response.body)["reason"] == "password_changed"
+    assert list((jp_root_dir / "out").iterdir()) == []
+
+
+async def test_a_connected_share_saves_an_entry_the_whole_and_a_zip(jp_fetch, fake_hub, jp_root_dir):
+    id_ = fake_hub.add_foreign(names=["a.csv", "d/x.txt"])
+    key = (await _connect(jp_fetch, id_))["key"]
+    (jp_root_dir / "out").mkdir()
+    save = lambda **body: _post(jp_fetch, "api", "connections", key, "save", body={"target_dir": "out", **body})  # noqa: E731
+    assert _json(await save(names=["a.csv"]))["saved"] == ["out/a.csv"]
+    assert _json(await save(names=["d"]))["saved"] == ["out/d"]
+    assert (jp_root_dir / "out/d/x.txt").is_file()
+    assert _json(await save())["saved"] == ["out/Their-Record"]
+    assert (jp_root_dir / "out/Their-Record/d/x.txt").is_file()
+    assert _json(await save(archive="zip"))["saved"] == ["out/Their-Record.zip"]
+    with zipfile.ZipFile(jp_root_dir / "out/Their-Record.zip") as zf:
+        assert sorted(zf.namelist()) == ["a.csv", "d/x.txt"]
+    # the staging folders the hub wrote into are gone
+    assert sorted(p.name for p in (jp_root_dir / "out").iterdir()) == [
+        "Their-Record", "Their-Record.zip", "a.csv", "d"]
+
+
+@pytest.mark.parametrize("failure", ["500", "unreachable"])
+@pytest.mark.parametrize("body", [{}, {"archive": "zip"}, {"names": ["a.csv"]}])
+async def test_a_connected_save_the_hub_fails_leaves_nothing_behind(
+    jp_fetch, fake_hub, jp_root_dir, monkeypatch, failure, body
+):
+    """The hub writes part of the record and then fails: the save answers
+    the error and the folder holds nothing it did not hold before."""
+    key = (await _connect(jp_fetch, fake_hub.add_foreign(names=["a.csv", "d/x.txt"])))["key"]
+    (jp_root_dir / "out").mkdir()
+    answer = fake_hub.request
+
+    async def request(method, path, body=None, headers=None, timeout=None):
+        code, data = await answer(method, path, body, headers, timeout)
+        if path.endswith("/fetch"):
+            if failure == "unreachable":
+                raise HubUnavailable("could not reach the hub: reset")
+            return 500, {"status": 500, "message": "copy failed"}
+        return code, data
+
+    monkeypatch.setattr(fake_hub, "request", request)
+    with pytest.raises(HTTPClientError):
+        await _post(jp_fetch, "api", "connections", key, "save", body={"target_dir": "out", **body})
+    assert list((jp_root_dir / "out").iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", ["500", "unreachable"])
+async def test_an_own_share_save_the_hub_fails_leaves_nothing_behind(
+    jp_fetch, fake_hub, jp_root_dir, monkeypatch, failure
+):
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "Mine", "paths": []}))
+    (jp_root_dir / "out").mkdir()
+    answer = fake_hub.request
+
+    async def request(method, path, body=None, headers=None, timeout=None):
+        code, data = await answer(method, path, body, headers, timeout)
+        if path.endswith("/fetch"):
+            if failure == "unreachable":
+                raise HubUnavailable("could not reach the hub: reset")
+            return 500, {"status": 500, "message": "copy failed"}
+        return code, data
+
+    monkeypatch.setattr(fake_hub, "request", request)
+    with pytest.raises(HTTPClientError):
+        await _post(jp_fetch, "api", "shares", row["id"], "save", body={"target_dir": "out"})
+    assert list((jp_root_dir / "out").iterdir()) == []
+
+
+def _slow_hub(seconds):
+    """A hub that answers after ``seconds``, as one still copying does."""
+
+    class Slow(tornado.web.RequestHandler):
+        async def get(self, path):
+            await asyncio.sleep(seconds)
+            self.finish("{}")
+
+    sock, port = bind_unused_port()
+    server = tornado.httpserver.HTTPServer(tornado.web.Application([(r"/(.*)", Slow)]))
+    server.add_socket(sock)
+    return server, HubClient(base=f"http://127.0.0.1:{port}/hub/api/fileshare", token="t0k3n")
+
+
+@pytest.mark.parametrize("record", ["connected share", "own share", "own request", "own upload"])
+async def test_a_hub_copy_longer_than_an_api_call_still_saves(
+    jp_fetch, fake_hub, jp_root_dir, monkeypatch, record
+):
+    """A fetch answers once the hub has copied the record, so it waits as
+    long as the record's size asks for, not the seconds of an API call."""
+    monkeypatch.setattr("jupyterlab_share_files_extension.hub.REQUEST_TIMEOUT_SECONDS", 0.2)
+    (jp_root_dir / "out").mkdir()
+    if record == "connected share":
+        key = (await _connect(jp_fetch, fake_hub.add_foreign(names=["a.csv"])))["key"]
+        route = ("api", "connections", key, "save")
+    else:
+        kind = "shares" if record == "own share" else "requests"
+        row = _json(await _post(jp_fetch, "api", kind, body={"name": "Mine", "paths": []}))
+        fake_hub.uploads[row["id"]] = [
+            {"upload_id": "u1", "filename": "one.txt", "size": 3, "sha256": "x", "uploaded_at": "2026-09-03T21:00:00Z"}
+        ]
+        route = ("api", kind, row["id"], "save")
+        if record == "own upload":
+            route = ("api", kind, row["id"], "uploads", "u1", "fetch")
+    server, copying = _slow_hub(0.5)
+    answer = fake_hub.request
+
+    async def request(method, path, body=None, headers=None, **kw):
+        if path.endswith("/fetch"):
+            await copying.request("GET", "copying", None, None, **kw)
+        return await answer(method, path, body, headers, **kw)
+
+    monkeypatch.setattr(fake_hub, "request", request)
+    try:
+        saved = _json(await _post(jp_fetch, *route, body={"target_dir": "out"}))
+    finally:
+        server.stop()
+    assert saved.get("saved") or saved.get("path")
+
+
+@pytest.mark.parametrize("record", ["connected share", "own share"])
+async def test_two_saves_of_one_record_at_once_both_land(jp_fetch, fake_hub, jp_root_dir, monkeypatch, record):
+    """Both saves pick the free name before either lands. The hub refuses a
+    dest that exists and a refused save removes its staging, so a shared name
+    would let the second save remove what the first one wrote."""
+    (jp_root_dir / "out").mkdir()
+    if record == "connected share":
+        key = (await _connect(jp_fetch, fake_hub.add_foreign(names=["a.csv"])))["key"]
+        route = ("api", "connections", key, "save")
+    else:
+        row = _json(await _post(jp_fetch, "api", "shares", body={"name": "Their Record", "paths": []}))
+        route = ("api", "shares", row["id"], "save")
+    answer = fake_hub.request
+
+    async def request(method, path, body=None, headers=None, timeout=None):
+        if not path.endswith("/fetch"):
+            return await answer(method, path, body, headers, timeout)
+        await asyncio.sleep(0.2)  # both saves have picked a name by now
+        result = await answer(method, path, body, headers, timeout)
+        await asyncio.sleep(0.2)  # the hub is still copying when the other save arrives
+        return result
+
+    monkeypatch.setattr(fake_hub, "request", request)
+    results = await asyncio.gather(
+        *(_post(jp_fetch, *route, body={"target_dir": "out"}) for _ in range(2)), return_exceptions=True
+    )
+    landed = []
+    for res in results:
+        assert not isinstance(res, Exception), res
+        body = _json(res)
+        landed += body.get("saved") or [body["path"]]
+    assert sorted(landed) == ["out/Their-Record", "out/Their-Record-2"]
+    assert all((jp_root_dir / path).is_dir() for path in landed)
+
+
+async def test_a_password_the_hub_refused_is_not_tried_again(jp_fetch, fake_hub):
+    """The hub rate-limits unlocks (429). A stored password it refused would
+    otherwise be sent at every read and use up the attempts the user needs
+    to connect again with the new one."""
+    id_ = fake_hub.add_foreign(names=["a.csv"], password="pw")
+    key = (await _connect(jp_fetch, id_, "pw"))["key"]
+    fake_hub.passwords[id_] = "changed"
+    hub_routes._GRANTS.clear()
+    for _ in range(3):
+        with pytest.raises(HTTPClientError) as err:
+            await jp_fetch(NS, "api", "connections", key, "manifest")
+        assert json.loads(err.value.response.body)["reason"] == "password_changed"
+    unlocks = [c for c in fake_hub.calls if c[1] == f"records/{id_}/unlock"]
+    assert len(unlocks) == 2  # the connect, then one refused retry
+
+
+async def test_a_refused_password_never_drops_the_one_a_connect_just_stored(jp_fetch, fake_hub, monkeypatch):
+    """A read sent with the old password can be refused after the user
+    connected again with the new one: only the refused password goes."""
+    id_ = fake_hub.add_foreign(names=["a.csv"], password="first")
+    key = (await _connect(jp_fetch, id_, "first"))["key"]
+    fake_hub.passwords[id_] = "second"
+    hub_routes._GRANTS.clear()
+    answer = fake_hub.request
+
+    async def request(method, path, body=None, headers=None, timeout=None):
+        if path.endswith("/unlock") and body == {"password": "first"}:
+            # the reconnect with the new password lands while this read waits
+            hub_routes._save_hub_connections(
+                [{**c, "password": "second"} for c in hub_routes._hub_connections()]
+            )
+        return await answer(method, path, body, headers, timeout)
+
+    monkeypatch.setattr(fake_hub, "request", request)
+    with pytest.raises(HTTPClientError):
+        await jp_fetch(NS, "api", "connections", key, "manifest")
+    assert [c.get("password") for c in hub_routes._hub_connections()] == ["second"]
+
+
+def test_a_fetch_waits_by_the_size_it_copies():
+    assert hub_routes.fetch_timeout(0) == hub_routes.FETCH_SECONDS_PER_GB
+    assert hub_routes.fetch_timeout(5 * 1000**3) == 5 * hub_routes.FETCH_SECONDS_PER_GB
+
+
+async def test_a_connected_save_refuses_a_zip_of_one_entry_and_a_missing_entry(jp_fetch, fake_hub):
+    key = (await _connect(jp_fetch, fake_hub.add_foreign(names=["a.csv"])))["key"]
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "connections", key, "save", body={"names": ["a.csv"], "archive": "zip"})
+    assert err.value.code == 400
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "connections", key, "save", body={"names": ["gone.csv"]})
+    assert err.value.code == 404
+
+
+async def test_a_connected_request_upload_is_sent_and_followed_on_the_manifest(jp_fetch, fake_hub, jp_root_dir):
+    id_ = fake_hub.add_foreign(kind="request")
+    key = (await _connect(jp_fetch, id_))["key"]
+    (jp_root_dir / "folder").mkdir()
+    (jp_root_dir / "a.txt").write_text("a", encoding="utf-8")
+    answer = _json(await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["a.txt", "folder"]}))
+    assert answer["uploaded"] == ["a.txt", "folder"]
+    method, path, body = fake_hub.calls[-1]
+    assert (method, path, body["paths"]) == ("POST", f"records/{id_}/upload", ["a.txt", "folder"])
+    assert isinstance(body["exclude"], list)
+    manifest = _json(await jp_fetch(NS, "api", "connections", key, "manifest"))
+    assert (manifest["uploading"], manifest["progress"]) == (True, {"copied": 1, "total": 4})
+    item = fake_hub.foreign[0]
+    item.pop("progress")
+    item["last_upload"] = {"state": "done", "count": 2}
+    manifest = _json(await jp_fetch(NS, "api", "connections", key, "manifest"))
+    assert (manifest["uploading"], manifest["uploaded"], manifest["progress"]) == (False, 2, None)
+
+
+async def test_an_upload_leaving_the_workspace_is_refused_before_the_hub(jp_fetch, fake_hub, jp_root_dir, tmp_path):
+    key = (await _connect(jp_fetch, fake_hub.add_foreign(kind="request")))["key"]
+    (jp_root_dir / "out").symlink_to(tmp_path)
+    calls = len(fake_hub.calls)
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["out"]})
+    assert err.value.code == 400
+    assert "leaves your workspace" in json.loads(err.value.response.body)["error"]
+    assert len(fake_hub.calls) == calls
+
+
+async def test_disconnect_leaves_the_record_and_a_closed_record_says_why(jp_fetch, fake_hub):
+    id_ = fake_hub.add_foreign(names=["a.csv"])
+    key = (await _connect(jp_fetch, id_))["key"]
+    fake_hub.foreign[0]["closed"] = True
+    with pytest.raises(HTTPClientError) as err:
+        await jp_fetch(NS, "api", "connections", key, "manifest")
+    assert (err.value.code, json.loads(err.value.response.body)["reason"]) == (410, "closed")
+    await jp_fetch(NS, "api", "connections", key, method="DELETE")
+    assert _json(await jp_fetch(NS, "api", "connections"))["connections"] == []
+    assert [i["id"] for i in fake_hub.foreign] == [id_]

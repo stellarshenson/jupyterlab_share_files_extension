@@ -147,6 +147,35 @@ def test_save_all_keeps_a_plain_slug_as_the_folder_name(tmp_path):
     assert (tmp_path / "Report-2026" / "hello.txt").read_bytes() == b"hi"
 
 
+def test_save_all_as_a_zip_keeps_the_peers_archive(tmp_path):
+    """ACC-HUBM-178 standalone: the whole share as the one zip the peer sends,
+    named after it, and not unpacked."""
+    handler, key = _save_handler(tmp_path, {"target_dir": "", "archive": "zip"}, {"slug": "Report-2026", "entries": []})
+    asyncio.run(handler.post(key))
+    assert (handler.status, handler.payload["saved"]) == (200, ["Report-2026.zip"])
+    with zipfile.ZipFile(tmp_path / "Report-2026.zip") as zf:
+        assert zf.read("hello.txt") == b"hi"
+    assert not (tmp_path / "Report-2026").exists()
+
+
+def test_save_all_as_a_zip_refuses_what_is_not_a_zip(tmp_path):
+    handler, key = _save_handler(
+        tmp_path, {"target_dir": "", "archive": "zip"}, {"slug": "Report-2026", "entries": []},
+        peer={"download-all": _PeerResponse(200, b"not a zip")},
+    )
+    asyncio.run(handler.post(key))
+    assert (handler.status, handler.payload) == (502, {"error": "The peer did not send a readable zip archive"})
+    assert _saved_files(tmp_path) == set()
+
+
+def test_a_zip_of_selected_items_is_refused(tmp_path):
+    handler, key = _save_handler(
+        tmp_path, {"target_dir": "", "archive": "zip", "names": ["hello.txt"]}, {"slug": "x", "entries": []}
+    )
+    asyncio.run(handler.post(key))
+    assert handler.status == 400
+
+
 @pytest.mark.parametrize(
     "target_dir",
     ["uploads", "uploads/shares", "uploads/requests", "uploads/shares/x-ABCDEF22", "uploads/requests/inbox-ABCDEF22/HASH01"],

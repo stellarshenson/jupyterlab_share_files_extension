@@ -130,6 +130,22 @@
   animation: share-files-breathe 2.4s ease-in-out infinite;
 }
 
+.jp-ShareFilesPanel-cloudIndicator.jp-mod-active.jp-mod-arrived {
+  /* the tunnel has just landed: one ring expands out of the icon and fades,
+     once. The wait runs about 90 seconds, so an owner who looked away had
+     only a 14px glyph changing shape to look back at (DEF-PANEL-104). The
+     ring grows outside the element rather than pulsing the glyph, which
+     holds the glyph at full strength and over the 3:1 contrast a non-text
+     control has to clear (DEF-PANEL-103). It rides on top of the colour
+     jp-mod-active sets in the same frame, so the state itself never waits
+     on the animation.
+     Qualified on jp-mod-active, and this is load-bearing: a tunnel that
+     drops inside the 700ms leaves the icon connecting with this class still
+     on it, and an unqualified rule would win on source order and replace
+     the breath with a ring that never repeats. */
+  animation: share-files-arrive 700ms ease-out 1;
+}
+
 .jp-ShareFilesPanel-cloudIndicator.jp-mod-armed {
   /* hub mode: the default is on and no record asks for a tunnel. The ring in
      the base grey separates it from off without a colour; the accent and the
@@ -156,6 +172,24 @@
        (DEF-PANEL-92) */
     animation: none;
     box-shadow: inset 0 0 0 1px currentcolor;
+  }
+
+  .jp-ShareFilesPanel-cloudIndicator.jp-mod-active.jp-mod-arrived {
+    /* arrival without motion: nothing. The glyph changes from the dashed
+       silhouette to the filled cloud and takes the accent in the same frame,
+       and the tooltip carries the state on demand, so the ring is the cue's
+       whole content and there is nothing to hold in its place */
+    animation: none;
+  }
+}
+
+@keyframes share-files-arrive {
+  from {
+    box-shadow: 0 0 0 0 var(--jp-brand-color1);
+  }
+
+  to {
+    box-shadow: 0 0 0 5px transparent;
   }
 }
 

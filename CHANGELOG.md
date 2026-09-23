@@ -2,6 +2,31 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.50] - 2026-09-23
+
+### Added
+
+- Hub mode: a connection to another user's share or request, by its hub link on the hub's address, its Cloudflare hostname or under `/hub`, or by its id alone. A protected record asks for its password once, your own record is refused by name, and the hub reads the record with the lab's token. A connected share saves an entry, or the whole share unpacked or as a zip, into the current folder; a connected request takes dropped or pasted files and folders, wears the progress layer while the hub copies them, and says how many landed or why the hub refused them. It is built against the `records/<id>` routes asked for in `HUB-API-REQUEST-read-a-record-you-do-not-own.md`, which the hub does not serve yet; until it does, a connect answers with the hub's 404
+- A whole share or request saves into the file browser's current folder, as a folder of its files or as one zip, through `POST api/<shares|requests>/<id>/save`; a second save takes the next free name, and a save that fails part way removes what it wrote. A standalone connected share gains the same zip option
+- If the owner sets or changes a connected record's password later, the row reads `password changed`, and Connect Again in its menu asks for the new one
+- The header cloud icon grows one ring when the tunnel arrives after its wait, and not under `prefers-reduced-motion` (`DEF-PANEL-104`)
+
+### Changed
+
+- A hub fetch waits 300 s per GB of the record, the upload or the share, and at least 300 s, instead of the 30 s API timeout (`DEF-HUB-110`, `DEF-HUB-120`)
+- Every save writes into its own hidden staging folder and renames it to the free name when it lands, so two saves of one record into one folder cannot delete each other's files (`DEF-HUB-122`)
+- A new connection opens the Connected section and scrolls its row into view (`DEF-PANEL-115`), and a whole-record or zip save names the path it wrote (`DEF-PANEL-114`)
+
+### Fixed
+
+- Hub mode: a chosen path, or a current folder for a save, that leads out of the workspace through a link is refused by name before the hub is asked, instead of coming back refused or failed (`DEF-HUB-105`, `DEF-HUB-106`)
+- A file dated before 1980 no longer breaks a zip save (`DEF-STORE-111`)
+- A refused upload into a connected request says why on the row and in the notification, in the uploader's words, instead of quoting the uploader's group limit (`DEF-HUB-112`)
+- An upload the hub settles before the panel's next read is announced (`DEF-HUB-113`), and a read sent before the upload was accepted no longer announces an upload that has not landed (`DEF-HUB-118`)
+- A connected record whose password the owner set or changed no longer reads as a group-policy refusal or as `offline` (`DEF-HUB-109`, `DEF-HUB-119`, `DEF-HUB-123`); a stored password the hub refused is not sent again to use up the unlock limit (`DEF-HUB-121`), and a refused unlock no longer erases a password a connect has just stored (`DEF-HUB-124`)
+- Focus after a delete lands on the neighbouring row when the list changed above it (`DEF-TESTS-107`)
+- Tests: the hub cloud toggle test waits for the switch-off to reach the records (`DEF-TESTS-108`), a test proves the upload tint moves (`DEF-TESTS-117`), and the concurrent save test fails when the staging name is shared (`DEF-TESTS-125`)
+
 ## [1.2.49] - 2026-09-22
 
 ### Changed
