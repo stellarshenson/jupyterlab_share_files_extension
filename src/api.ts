@@ -6,6 +6,7 @@ import { URLExt } from '@jupyterlab/coreutils';
 import { ServerConnection } from '@jupyterlab/services';
 
 import {
+  ICertificate,
   IConnection,
   IRemoteRequest,
   IRemoteShare,
@@ -49,7 +50,9 @@ async function requestAPI<T>(
       (data && data.message) ||
       data;
     throw Object.assign(new ServerConnection.ResponseError(response, message), {
-      reason
+      reason,
+      // a connect the peer's certificate stopped: what the trust dialog shows
+      certificate: (data && data.certificate) as ICertificate | undefined
     });
   }
   return data as T;
@@ -349,6 +352,8 @@ export function hubReasonText(slug: string): string {
       'Your group requires a password on every share and request.',
     password_changed:
       "The owner set or changed this record's password - choose Connect Again in its row menu to enter the new one.",
+    certificate_untrusted:
+      'The host presents a certificate this connection does not trust - choose Connect Again in its row menu to decide whether to trust it.',
     tunnel_not_available:
       'Your group policy has Cloudflare turned off - links work on the hub network only.',
     tunnel_not_switched_on:
@@ -518,12 +523,19 @@ export function listConnections(
   return requestAPI('api/connections', s);
 }
 
+/**
+ * Connect to a link.
+ *
+ * @param trust - the SHA-256 fingerprint of the certificate the user chose
+ *   to trust in the dialog; the connection keeps that certificate.
+ */
 export function addConnection(
   s: ServerConnection.ISettings,
   link: string,
-  password = ''
+  password = '',
+  trust = ''
 ): Promise<IConnection> {
-  return requestAPI('api/connections', s, jsonBody({ link, password }));
+  return requestAPI('api/connections', s, jsonBody({ link, password, trust }));
 }
 
 export function removeConnection(

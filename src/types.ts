@@ -93,6 +93,19 @@ export interface IConnection {
   link?: string;
   /** Stored password for a protected remote resource (owner-side only) */
   password?: string;
+  /** PEM of the certificate the user trusted for this connection */
+  certificate?: string;
+}
+
+/** A peer certificate the system does not trust, as the trust dialog shows
+ * it before the user decides. */
+export interface ICertificate {
+  /** host[:port] of the link */
+  host: string;
+  /** SHA-256, colon-separated hex */
+  fingerprint: string;
+  /** why the system's check failed, in OpenSSL's words */
+  reason: string;
 }
 
 /** Remote share manifest as returned by /public/share/<id>/manifest */
@@ -108,7 +121,8 @@ export interface IRemoteShare {
 
 /** Remote request manifest as returned by /public/request/<id>/manifest.
  * On a hub the manifest also follows this user's own upload into the
- * request: running with the hub's progress, then landed or refused. */
+ * request: running with the bytes this lab has sent, then landed or
+ * refused. */
 export interface IRemoteRequest {
   id: string;
   name: string;

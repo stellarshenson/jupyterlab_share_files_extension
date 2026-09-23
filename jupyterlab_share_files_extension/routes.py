@@ -103,6 +103,88 @@ def _verify_peer_tls_setting(handler) -> bool:
 class PeerUnavailable(Exception):
     """A server-side fetch to a connected peer could not be completed."""
 
+    # the slug a connected row reads, where the panel shows one
+    reason = ""
+
+
+class PeerRefused(PeerUnavailable):
+    """A connected peer answered an upload with an error status; its body
+    carries the peer's reason."""
+
+    def __init__(self, code: int, body: bytes):
+        super().__init__(f"Upload failed: {code}")
+        self.code = code
+        self.body = body
+
+
+class PeerUntrusted(PeerUnavailable):
+    """A connected peer's certificate verified neither against the system's
+    certificate authorities nor against the certificate the user trusted for
+    the connection."""
+
+    reason = "certificate_untrusted"
+
+    def __init__(self, url: str, detail: str):
+        self.host = urlparse(url).netloc
+        self.detail = detail
+        super().__init__(
+            f"{self.host} presents a certificate this connection does not trust "
+            f"({detail}) - choose Connect Again in its row menu to decide whether to trust it."
+        )
+
+
+def _tls(verify: bool, certificate: str = "") -> dict:
+    """The fetch options that check a peer's certificate: against the
+    system's certificate authorities, or only against ``certificate`` - the
+    PEM the user trusted for the connection; no check with `verify_peer_tls`
+    off."""
+    if not (verify and certificate):
+        return {"validate_cert": verify}
+    context = ssl.create_default_context(cadata=certificate)
+    # the user trusted this certificate, whatever names it carries
+    context.check_hostname = False
+    # one a private authority signed is the whole chain on its own, and the
+    # user trusted it as it is: the certificate profile checks add nothing
+    context.verify_flags = (context.verify_flags | ssl.VERIFY_X509_PARTIAL_CHAIN) & ~ssl.VERIFY_X509_STRICT
+    return {"ssl_options": context}
+
+
+async def _handshake(parts, context: ssl.SSLContext) -> bytes:
+    """Open a TLS connection to the host in ``parts`` and return the
+    certificate it presents, DER-encoded."""
+    _reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(parts.hostname, parts.port or 443, ssl=context),
+        PEER_TIMEOUT_SECONDS,
+    )
+    try:
+        return writer.get_extra_info("ssl_object").getpeercert(binary_form=True)
+    finally:
+        writer.close()
+
+
+async def peer_certificate(link: str) -> tuple[str, str, str] | None:
+    """None when the system's certificate authorities vouch for the host of
+    ``link``, or it is not https. Otherwise the certificate the host presents,
+    read without checking it: ``(PEM, SHA-256 fingerprint, why the check
+    failed)``, the fingerprint colon-separated as browsers show it. Raises
+    ``PeerUnavailable`` when the host cannot be reached."""
+    parts = urlparse(link)
+    if parts.scheme != "https":
+        return None
+    unchecked = ssl.create_default_context()
+    unchecked.check_hostname = False
+    unchecked.verify_mode = ssl.CERT_NONE
+    try:
+        try:
+            await _handshake(parts, ssl.create_default_context())
+            return None
+        except ssl.SSLCertVerificationError as exc:
+            detail = (exc.verify_message or str(exc)).rstrip(".")
+        der = await _handshake(parts, unchecked)
+    except (OSError, asyncio.TimeoutError):
+        raise PeerUnavailable("Could not reach the peer") from None
+    return ssl.DER_cert_to_PEM_cert(der), hashlib.sha256(der).digest().hex(":").upper(), detail
+
 
 class SaveTooLarge(Exception):
     """A save from a connected peer passed the download limit, unpacked."""
@@ -201,7 +283,7 @@ class _Base(APIHandler):
             # after the close: Windows refuses to remove a name still open
             Path(spool.name).unlink(missing_ok=True)
 
-    async def _peer_fetch(self, url: str, spool=None, max_bytes: int = 0, started=None, **kwargs):
+    async def _peer_fetch(self, url: str, spool=None, max_bytes: int = 0, started=None, certificate: str = "", **kwargs):
         """Fetch a connected peer's public endpoint server-side.
 
         A download names a ``spool`` - a binary file the body is written to
@@ -210,10 +292,11 @@ class _Base(APIHandler):
         limit and at least for one, any other request PEER_TIMEOUT_SECONDS. ``started`` is a
         future the caller may pass: it resolves with the peer's headers the
         moment a 200 within the limit is announced, so the caller can relay
-        the spool while the body is still arriving. Honours the
-        `verify_peer_tls` config (self-signed peers need it off) and converts
+        the spool while the body is still arriving. The peer's certificate is
+        checked as `_tls` says, against ``certificate`` when the user trusted
+        one for the connection, and one that fails raises `PeerUntrusted`.
         TLS / connection errors, a timeout, a closed connection and an answer
-        over the limit - which `raise_error=False` does NOT suppress - into a
+        over the limit - which `raise_error=False` does NOT suppress - become a
         `PeerUnavailable` the handler maps to a 502.
         """
         writes = []  # what the spool raised: the workspace or the browser, not the peer
@@ -275,19 +358,16 @@ class _Base(APIHandler):
             return await client.fetch(
                 url,
                 raise_error=False,
-                validate_cert=self.verify_peer_tls,
                 connect_timeout=PEER_TIMEOUT_SECONDS,
                 request_timeout=request_timeout,
                 header_callback=note_headers,
+                **_tls(self.verify_peer_tls, certificate),
                 **kwargs,
             )
+        except ssl.SSLCertVerificationError as exc:
+            raise PeerUntrusted(url, (exc.verify_message or str(exc)).rstrip(".")) from None
         except ssl.SSLError as exc:
-            raise PeerUnavailable(
-                "TLS verification failed for the peer "
-                f"({exc}). If the peer uses a self-signed certificate, set "
-                "c.ShareFilesConfig.verify_peer_tls = False in "
-                "jupyter_server_config.py."
-            ) from None
+            raise PeerUnavailable(f"The TLS connection to the peer failed ({exc})") from None
         except (OSError, ConnectionError, ValueError):
             raise PeerUnavailable("Could not reach the peer") from None
         except HTTPTimeoutError as exc:
@@ -351,6 +431,7 @@ class _Base(APIHandler):
             method="POST",
             body=json.dumps({"password": password}),
             headers={"Content-Type": "application/json"},
+            certificate=conn.get("certificate", ""),
         )
         if resp.code == 429:
             raise PeerUnavailable("too many password attempts - wait before retrying")
@@ -380,9 +461,48 @@ class _Base(APIHandler):
     def connection_store(self) -> ConnectionStore:
         return ConnectionStore(self.workspace_root, self.shares_dir)
 
-    def write_error_json(self, status: int, message: str) -> None:
+    def write_error_json(self, status: int, message: str, reason: str = "") -> None:
         self.set_status(status)
-        self.finish(json.dumps({"error": message}))
+        self.finish(json.dumps({"error": message, "reason": reason} if reason else {"error": message}))
+
+    async def _connect_certificate(self, link: str, trust: str, kept: str) -> str | None:
+        """The certificate a connection to ``link`` trusts: '' when the
+        system's certificate authorities vouch for its host, else the host's
+        own when the user trusted it - in the panel's dialog just now
+        (``trust`` is its fingerprint) or at an earlier connect (``kept``).
+        None when the answer is written: what the dialog shows for a
+        certificate the user has not decided on, why a certificate cannot be
+        used even once trusted (an expired one), or why the host could not be
+        reached."""
+        if not self.verify_peer_tls:
+            return ""
+        try:
+            found = await peer_certificate(link)
+        except PeerUnavailable as exc:
+            self.write_error_json(502, str(exc))
+            return None
+        if found is None:
+            return ""
+        pem, fingerprint, detail = found
+        if fingerprint == trust or pem == kept:
+            return pem
+        host = urlparse(link).netloc
+        try:
+            # a certificate the lab could not use even once trusted - an
+            # expired one - is named now instead of offered in the dialog
+            await _handshake(urlparse(link), _tls(True, pem)["ssl_options"])
+        except ssl.SSLCertVerificationError as exc:
+            self.write_error_json(502, f"{host} presents a certificate that cannot be used ({(exc.verify_message or str(exc)).rstrip('.')})")
+            return None
+        except (OSError, asyncio.TimeoutError):
+            self.write_error_json(502, "Could not reach the peer")
+            return None
+        self.set_status(502)
+        self.write_json({
+            "error": f"{host} presents a certificate this lab does not trust ({detail})",
+            "certificate": {"host": host, "fingerprint": fingerprint, "reason": detail},
+        })
+        return None
 
     def write_json(self, payload: Any) -> None:
         self.set_header("Content-Type", "application/json")
@@ -1252,12 +1372,15 @@ class ConnectionsHandler(_Base):
         """Add a connection.
 
         Body: { "link": "https://host/.../public/share/<id>",
-                "password": "..." (optional) }
+                "password": "..." (optional),
+                "trust": "<SHA-256 fingerprint>" (optional) }
         We parse the link, probe whether the resource is password protected,
         verify a provided password against the peer's unlock endpoint, and
         persist a connection entry. A protected resource without (or with a
         wrong) password answers 401 `password_required` so the panel can
-        prompt and retry.
+        prompt and retry. A certificate the system does not trust answers
+        502 with its ``certificate`` details until the user trusts it in the
+        panel's dialog; the connection then keeps it.
         """
         body = self.get_json_body() or {}
         link = (body.get("link") or "").strip()
@@ -1279,12 +1402,18 @@ class ConnectionsHandler(_Base):
                 400,
                 "That link points to your own server - it's already in your panel.",
             )
+        stored = next((c for c in self.connection_store.list() if c.get("link") == link), {})
+        # Connect Again sends no password: the connection's own is tried first
+        password = password or stored.get("password", "")
+        certificate = await self._connect_certificate(link, str(body.get("trust") or ""), stored.get("certificate", ""))
+        if certificate is None:
+            return
         # Probe the peer: protected resources answer 401 on the bare manifest,
         # a removed one 404 and is refused with the sentence the polls give.
         # With a password given, verify it via the peer's unlock endpoint so a
         # wrong password is caught at connect time, not at first download.
         try:
-            probe = await self._peer_fetch(link.rstrip("/") + "/manifest")
+            probe = await self._peer_fetch(link.rstrip("/") + "/manifest", certificate=certificate)
             if probe.code == 404:
                 return self.write_error_json(*_peer_answer(probe.code))
             if probe.code == 401:
@@ -1299,6 +1428,7 @@ class ConnectionsHandler(_Base):
                     method="POST",
                     body=json.dumps({"password": password}),
                     headers={"Content-Type": "application/json"},
+                    certificate=certificate,
                 )
                 if unlock.code == 429:
                     return self.write_error_json(
@@ -1315,6 +1445,10 @@ class ConnectionsHandler(_Base):
                 token = _unlock_token(unlock.body)
                 if token:
                     _PEER_TOKENS[(link.rstrip("/"), password)] = token
+        except PeerUntrusted as exc:
+            # the trusted certificate itself is refused (it expired, for example):
+            # neither the dialog nor Connect Again can fix that, so name the certificate
+            return self.write_error_json(502, f"{exc.host} presents a certificate that cannot be used ({exc.detail})")
         except PeerUnavailable as exc:
             return self.write_error_json(502, str(exc))
         entry = self.connection_store.add(
@@ -1325,6 +1459,7 @@ class ConnectionsHandler(_Base):
             owner=parsed.get("owner", ""),
             link=link,
             password=password,
+            certificate=certificate,
         )
         self.write_json(entry)
 
@@ -1487,11 +1622,16 @@ class ConnectionSaveHandler(_Base):
             # Protected peer? trade the stored password for an unlock token
             auth_headers = await self._peer_auth_headers(conn)
             # Resolve share name for the wrapping folder when saving all
-            manifest_resp = await self._peer_fetch(api_base + "/manifest", headers=auth_headers)
+            certificate = conn.get("certificate", "")
+            manifest_resp = await self._peer_fetch(
+                api_base + "/manifest", headers=auth_headers, certificate=certificate
+            )
             if manifest_resp.code == 401 and auth_headers:
                 # a kept token the peer no longer accepts: unlock once more
                 auth_headers = await self._peer_auth_headers(conn, fresh=True)
-                manifest_resp = await self._peer_fetch(api_base + "/manifest", headers=auth_headers)
+                manifest_resp = await self._peer_fetch(
+                    api_base + "/manifest", headers=auth_headers, certificate=certificate
+                )
             if manifest_resp.code != 200:
                 return self.write_error_json(*_peer_answer(manifest_resp.code))
             try:
@@ -1513,7 +1653,8 @@ class ConnectionSaveHandler(_Base):
                 # Save All - download zip, extract into <dest_root>/<share-slug>/
                 with self._spool() as spool:
                     zip_resp = await self._peer_fetch(
-                        api_base + "/download-all", spool=spool, max_bytes=left, headers=auth_headers
+                        api_base + "/download-all", spool=spool, max_bytes=left, headers=auth_headers,
+                        certificate=certificate,
                     )
                     if zip_resp.code != 200:
                         return self._failed(saved, 502, f"Could not download share ({zip_resp.code})")
@@ -1548,7 +1689,9 @@ class ConnectionSaveHandler(_Base):
                         return self._failed(saved, 404, f"Not in share: {name}")
                     url = api_base + "/download/" + tornado.escape.url_escape(name)
                     with self._spool() as spool:
-                        resp = await self._peer_fetch(url, spool=spool, max_bytes=left, headers=auth_headers)
+                        resp = await self._peer_fetch(
+                            url, spool=spool, max_bytes=left, headers=auth_headers, certificate=certificate
+                        )
                         if resp.code != 200:
                             return self._failed(saved, 502, f"Could not download {name} ({resp.code})")
                         if entry.get("type") == "directory":
@@ -1623,17 +1766,18 @@ class _ConnectionPeerBase(_Base):
             self.write_error_json(400, "Connection has no link - disconnect it and connect again")
             return None
         try:
+            certificate = conn.get("certificate", "")
             headers = await self._peer_auth_headers(conn)
-            resp = await self._peer_fetch(link + "/" + suffix, headers=headers, **fetch)
+            resp = await self._peer_fetch(link + "/" + suffix, headers=headers, certificate=certificate, **fetch)
             if resp.code == 401 and headers:
                 # a kept token the peer no longer accepts: unlock once more
                 headers = await self._peer_auth_headers(conn, fresh=True)
-                resp = await self._peer_fetch(link + "/" + suffix, headers=headers, **fetch)
+                resp = await self._peer_fetch(link + "/" + suffix, headers=headers, certificate=certificate, **fetch)
         except PeerUnavailable as exc:
             started = fetch.get("started")
             if started is not None and started.done():
                 raise
-            self.write_error_json(502, str(exc))
+            self.write_error_json(502, str(exc), exc.reason)
             return None
         if resp.code != 200:
             self.write_error_json(*_peer_answer(resp.code))
@@ -1776,6 +1920,7 @@ class ConnectionUploadHandler(_Base):
                     filename,
                     validate_cert=self.verify_peer_tls,
                     headers=headers,
+                    certificate=conn.get("certificate", ""),
                 )
                 if not uploader_hash:
                     try:
@@ -1816,11 +1961,14 @@ async def _post_file(
     filename: str,
     validate_cert: bool = True,
     headers: dict | None = None,
+    progress=None,
+    certificate: str = "",
 ) -> bytes:
     """POST one file as the raw body under ``X-Filename`` - the wire shape
     the hub's fileshare service and PublicRequestUploadHandler take - read
     from ``path`` in chunks as it is sent, never held whole. Returns the
-    response body.
+    response body; ``progress`` is called with each chunk's size as it goes.
+    ``certificate`` is the one the user trusted for the connection, if any.
 
     An upload may take PEER_UPLOAD_SECONDS_PER_GB for every GB of the file,
     and at least for one. A timeout and a closed connection - which
@@ -1834,6 +1982,8 @@ async def _post_file(
         with open(path, "rb") as f:
             while chunk := f.read(_EXTRACT_CHUNK_BYTES):
                 await write(chunk)
+                if progress:
+                    progress(len(chunk))
 
     try:
         resp = await client.fetch(
@@ -1847,16 +1997,14 @@ async def _post_file(
             },
             body_producer=produce,
             raise_error=False,
-            validate_cert=validate_cert,
             connect_timeout=PEER_TIMEOUT_SECONDS,
             request_timeout=request_timeout,
+            **_tls(validate_cert, certificate),
         )
+    except ssl.SSLCertVerificationError as exc:
+        raise PeerUntrusted(url, (exc.verify_message or str(exc)).rstrip(".")) from None
     except ssl.SSLError as exc:
-        raise PeerUnavailable(
-            f"TLS verification failed for the peer ({exc}). If the peer uses a "
-            "self-signed certificate, set c.ShareFilesConfig.verify_peer_tls = "
-            "False in jupyter_server_config.py."
-        ) from None
+        raise PeerUnavailable(f"The TLS connection to the peer failed ({exc})") from None
     except (OSError, ConnectionError):
         raise PeerUnavailable("Could not reach the peer") from None
     except HTTPTimeoutError as exc:
@@ -1869,7 +2017,7 @@ async def _post_file(
     if resp.code == 401:
         raise PeerUnavailable(PEER_PASSWORD_CHANGED)
     if resp.code >= 400:
-        raise PeerUnavailable(f"Upload failed: {resp.code}")
+        raise PeerRefused(resp.code, resp.body or b"")
     return resp.body or b""
 
 

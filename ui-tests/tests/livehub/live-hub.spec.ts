@@ -136,8 +136,8 @@ test('api/info reports hub mode against the real hub and mounts no recipient or 
   for (const path of [
     '/jupyterlab-share-files-extension/public/share/AAAAAAAA',
     '/jupyterlab-share-files-extension/public/request/AAAAAAAA',
-    // a connected entry goes from the hub into the workspace, never through
-    // the lab to the browser (ACC-HUBM-175)
+    // a connected entry is saved into the workspace, never handed to the
+    // browser (ACC-HUBM-178)
     `${API}/connections/share:hub:AAAAAAAA/download`
   ]) {
     expect((await api(page, 'GET', path)).status).toBe(404);

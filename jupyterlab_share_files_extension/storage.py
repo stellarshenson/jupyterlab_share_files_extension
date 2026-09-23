@@ -933,6 +933,7 @@ class ConnectionStore:
         owner: str = "",
         link: str = "",
         password: str = "",
+        certificate: str = "",
     ) -> dict[str, Any]:
         if kind not in ("share", "request"):
             raise StorageError(f"Invalid kind: {kind}")
@@ -940,10 +941,18 @@ class ConnectionStore:
         items = self._load()
         for existing in items:
             if existing.get("key") == key:
+                before = dict(existing)
                 # Re-connecting with a (new) password updates the stored one -
                 # the owner may have changed it since the first connect.
-                if password and existing.get("password") != password:
+                if password:
                     existing["password"] = password
+                # and the certificate is the one this connect trusted: none
+                # when the system's authorities now vouch for the host
+                if certificate:
+                    existing["certificate"] = certificate
+                else:
+                    existing.pop("certificate", None)
+                if existing != before:
                     self._save(items)
                 return existing
         entry = {
@@ -964,6 +973,10 @@ class ConnectionStore:
             # Peer password for a protected remote share/request - used by the
             # server (and panel) to unlock before manifest/download/upload.
             entry["password"] = password
+        if certificate:
+            # the PEM of the certificate the user trusted for this connection
+            # in the panel's dialog - the only one its fetches accept
+            entry["certificate"] = certificate
         items.append(entry)
         self._save(items)
         return entry

@@ -127,10 +127,11 @@ class ShareFilesConfig(Configurable):
         config=True,
         help=(
             "When True (default), the server verifies the peer's TLS "
-            "certificate when saving from a connected share or uploading to a "
-            "connected request. Set to False when peers (e.g. a JupyterHub) "
-            "use a self-signed certificate - otherwise those server-side "
-            "fetches fail with a certificate verification error."
+            "certificate on every fetch for a connected share or request. A "
+            "certificate the system does not trust, a self-signed one among "
+            "them, asks the user at connect whether to trust it, and the "
+            "connection then accepts that certificate only. Set to False to "
+            "skip the check, and the question, for every peer."
         ),
     )
 

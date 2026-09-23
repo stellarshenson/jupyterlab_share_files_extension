@@ -99,9 +99,9 @@ def _handler(cls, workspace, *, password="", link=PEER_LINK, name="", max_gb="",
 
     handler.finish = _finish
 
-    def _write_error(code, message):
+    def _write_error(code, message, reason=""):
         handler.status = code
-        handler.payload = {"error": message}
+        handler.payload = {"error": message, "reason": reason} if reason else {"error": message}
 
     handler.write_error_json = _write_error
 

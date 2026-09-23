@@ -480,7 +480,7 @@ describe('share clipboard', () => {
   // paste, since JupyterLab's native file-browser clipboard is private. The
   // `origin` flag decides who performs a paste: `fb` means native paste handled
   // it; `panel` means our hook must do the transfer.
-  beforeEach(() => clearClip());
+  beforeEach(() => setClip(null));
 
   it('starts empty', () => {
     expect(getClip()).toBeNull();
@@ -510,8 +510,23 @@ describe('share clipboard', () => {
 
   it('clears back to empty', () => {
     setClip({ kind: 'local', origin: 'panel', mode: 'copy', paths: ['x'] });
-    clearClip();
+    clearClip(getClip());
     expect(getClip()).toBeNull();
+  });
+
+  it('leaves a newer clip in place when an older paste ends', () => {
+    // a paste clears its own clip after the server answers; the user may
+    // have cut something else by then
+    setClip({ kind: 'local', origin: 'fb', mode: 'cut', paths: ['a'] });
+    const pasted = getClip();
+    setClip({ kind: 'local', origin: 'fb', mode: 'cut', paths: ['b'] });
+    clearClip(pasted);
+    expect(getClip()).toEqual({
+      kind: 'local',
+      origin: 'fb',
+      mode: 'cut',
+      paths: ['b']
+    });
   });
 });
 

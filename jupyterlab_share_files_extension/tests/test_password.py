@@ -321,9 +321,9 @@ def _connections_handler(workspace, body, peer_responses):
     handler.set_status = lambda code: setattr(handler, "status", code)
     handler.write_json = lambda p: setattr(handler, "payload", p)
 
-    def _write_error(code, message):
+    def _write_error(code, message, reason=""):
         handler.status = code
-        handler.payload = {"error": message}
+        handler.payload = {"error": message, "reason": reason} if reason else {"error": message}
 
     handler.write_error_json = _write_error
     handler.fetched = []
@@ -334,6 +334,11 @@ def _connections_handler(workspace, body, peer_responses):
         return peer_responses[suffix]
 
     handler._peer_fetch = _peer_fetch
+
+    async def _connect_certificate(link, trust, kept):
+        return ""  # the system's authorities vouch for the peer
+
+    handler._connect_certificate = _connect_certificate
     return handler
 
 

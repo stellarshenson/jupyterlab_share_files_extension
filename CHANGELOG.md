@@ -2,6 +2,28 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [Unreleased]
+
+### Added
+
+- A link whose host presents a certificate the system does not trust, a self-signed one among them, opens a dialog at connect with the host, the reason and the SHA-256 fingerprint; Do Not Trust is the default. Trust keeps that one certificate with the connection until it is removed, and every fetch for the connection accepts that certificate only. A different certificate later marks the row "untrusted", and Connect Again asks about the new one. A certificate the lab could not use even once trusted, an expired one, is named at connect and not offered. Standalone and hub mode alike
+
+### Changed
+
+- `c.ShareFilesConfig.verify_peer_tls = False` is no longer needed for a self-signed peer or hub; it now skips the check, and the question, for every peer
+- The Connect button is filled in the colour of the theme's icons instead of the accent blue, and it stays whole in a narrow sidebar
+
+- Hub mode: a connection to another user's share or request reads the record through the link its owner handed out, as a recipient's browser does, and sends it no hub token: the page, its unlock form, `/d/<path>`, `/archive` and `/u`. The hub answers 404 for a record the caller does not own, by design, so the `records/<id>` routes requested for 1.2.50 are withdrawn, and a connection now works on the live hub
+- Hub mode: a connection needs the whole link; an id alone, or a `/hub/s/` address, is refused with a sentence asking for the link
+- Hub mode: a connected share's bytes pass through the lab, streamed to disk within the peer download limit; a connected request's files go one per request under their own names, so a folder's files arrive without the folder, and an upload refusal names its reason
+- Hub mode: the panel reads connected rows again on its poll interval, and once a second while the lab sends an upload into one, because the hub signals no change to another user's record
+- Hub mode: a drop or paste onto a connected request whose row says closed, password changed or untrusted sends nothing and names the row's reason; disconnecting during an upload says that a file already on its way is still sent and no further file is
+- Dependencies moved to the newest release inside their ranges (`@jupyterlab/*` 4.6.4, webpack 5.111.1, prettier 3.9.9); the Makefile follows the canonical 1.41, which increases the version on `make publish` only and runs the tests before it publishes
+
+### Fixed
+
+- A hub paste that is refused no longer also says it was pasted as a copy, and the cut stays on the panel clipboard for the next try; a paste that ends after a newer cut or copy leaves that one in place
+
 ## [1.2.50] - 2026-09-23
 
 ### Added

@@ -36,6 +36,10 @@ export function setClip(clip: ShareClip): void {
   _clip = clip;
 }
 
-export function clearClip(): void {
-  _clip = null;
+/** Empty the clipboard if it still holds `clip`: a paste that ends after the
+ * user cut or copied something newer leaves the newer clip in place. */
+export function clearClip(clip: ShareClip): void {
+  if (_clip === clip) {
+    _clip = null;
+  }
 }

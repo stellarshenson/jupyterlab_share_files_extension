@@ -11,23 +11,29 @@ What has no hub equivalent is simply not mounted: removing a single upload,
 downloading a connected entry through the lab, and the per-user Cloudflare
 tunnel. The tunnel toggle survives with a new meaning - every hub record
 carries its own tunnel switch, and the toggle flips them all and sets the
-default for the next one. A connection is another user's record on the same
-hub, read and written through the hub's ``records/<id>`` routes.
+default for the next one. A connection is another user's record, read and
+written through its link as a recipient's browser does: the hub answers 404
+for a record the caller does not own, by design.
 """
 
 from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import json
 import os
 import re
 import secrets
 import shutil
 import time
+import zipfile
+from html.parser import HTMLParser
+from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlencode, urlparse
 
+import tornado.httpclient
 import tornado.web
 from jupyter_server.utils import url_path_join
 from tornado.iostream import StreamClosedError
@@ -35,13 +41,23 @@ from tornado.iostream import StreamClosedError
 from .hub import HubClient, HubUnavailable, hub_api_origin
 from .hub_stream import CLOSE, KEEPALIVE_SECONDS, RELAY, RETRY_SECONDS
 from .routes import (
+    _ZIP_UNREADABLE,
     GB,
     GeneratePasswordHandler,
+    PeerRefused,
+    PeerUnavailable,
+    PeerUntrusted,
+    SaveTooLarge,
     _Base,
+    _download_limit,
+    _extract_zip_into,
+    _post_file,
     _request_origin,
+    _resolve_workspace_target_dir,
     probe_link,
 )
 from .storage import (
+    StorageError,
     _is_safe_relative,
     _resolve_unique_target,
     _safe_name,
@@ -255,12 +271,12 @@ class _HubBase(_Base):
         self.finish(body)
 
     async def _hub(
-        self, method: str, path: str, body: dict | None = None, headers: dict | None = None, timeout: float | None = None
+        self, method: str, path: str, body: dict | None = None, timeout: float | None = None
     ):
         """One hub call. Returns ``(status, data)``; a hub that cannot be
         reached answers the panel 502 and returns ``None``."""
         try:
-            return await HubClient().request(method, path, body, headers, timeout=timeout)
+            return await HubClient().request(method, path, body, timeout=timeout)
         except HubUnavailable as exc:
             self._refuse(502, str(exc), HubUnavailable.reason)
             return None
@@ -1071,29 +1087,133 @@ class HubRecordSaveHandler(_HubBase):
 # standalone connection does.
 CONNECTIONS_KEY = "hub_connections"
 
-# a hub record link ends in the recipient page `/s/<policy id>/<record id>`,
-# on the hub's own address, its Cloudflare hostname or under its `/hub` prefix
-_HUB_LINK_RE = re.compile(r"/s/[^/]+/([A-Za-z0-9_-]{6,64})/?$")
+# The hub answers 404 for a record the caller does not own, by design, so a
+# connection reads the record through its link, as a recipient's browser does:
+# the page, /unlock, /d/<path>, /archive and /u of the hub's fileshare app,
+# which its author named the link's public contract (question board topic
+# t01, 2026-09-23). A link is `<origin>/s/<policy id>/<record id>`; the policy
+# segment routes it to its app, so the link is kept exactly as pasted.
+_HUB_LINK_RE = re.compile(r"/s/[^/]+/([A-Za-z0-9_-]{6,64})$")
+UNLOCK_COOKIE = "fs_unlock"
 
-# the grant each unlock earned, by record id: short-lived on the hub and lost
-# on restart here, and earned again from the stored password either way
-_GRANTS: dict[str, str] = {}
+# the fs_unlock cookie each unlock earned, by (link, password): it carries the
+# key the app derives at unlock, so it lives in this process only and is
+# earned again from the stored password after a restart
+_COOKIES: dict[tuple[str, str], str] = {}
+
+# this user's running or last upload into each connected request, by
+# connection key, and the tasks sending them, held so the loop keeps them
+_UPLOADS: dict[str, dict] = {}
+_UPLOAD_TASKS: set = set()
+
+# the page each connection read last: a request's page lists no uploads, so
+# while this lab's own upload runs the panel's progress reads are answered
+# from here and send nothing to the link
+_PAGES: dict[str, dict] = {}
+
+# the page states sizes in binary units: "5.0 GB" is 5 GiB
+_SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+
+# the panel's answer for a link status other than 200; 401 is a page that
+# stays locked, so the owner set or changed the password since the connect
+_LINK_ANSWERS = {
+    401: (401, "The owner set or changed this record's password", "password_changed"),
+    404: (404, "The owner closed this share or request, or it expired.", "closed"),
+    429: (429, "The hub asked this lab to wait before reading the record again - try again in a minute.", ""),
+}
+
+# a download the link answers 429 is asked again after this many seconds, at
+# most this many times: past its burst the app allows one request every 2 s
+_RETRY_SECONDS = 2
+_RETRIES = 30
 
 
-def parse_hub_link(text: str) -> str:
-    """The record id a pasted hub link, or a bare id, names."""
-    text = text.strip()
-    if _HUB_ID_RE.match(text):
-        return text
-    parsed = urlparse(text)
-    match = _HUB_LINK_RE.search(parsed.path)
-    if parsed.scheme not in ("http", "https") or not match:
-        raise ValueError("Paste a share or request link from the hub, or its id")
-    return match.group(1)
+def parse_hub_link(text: str) -> tuple[str, str]:
+    """The pasted link less a trailing slash, query and fragment, and the id
+    of the record it names. A bare id reaches no record, and ``/hub/s/`` is
+    the hub's own page, not the record's."""
+    parsed = urlparse(text.strip())
+    path = parsed.path.rstrip("/")
+    match = _HUB_LINK_RE.search(path)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or not match or path.split("/")[-4:-3] == ["hub"]:
+        raise ValueError("Paste the whole link of a hub share or request - it ends in /s/<policy>/<id>")
+    return f"{parsed.scheme}://{parsed.netloc}{path}", match.group(1)
+
+
+def _size(text: str) -> int:
+    match = re.fullmatch(r"\s*([\d.]+)\s*([KMGT]?B)\s*", text)
+    return int(float(match.group(1)) * _SIZE_UNITS[match.group(2)]) if match else 0
+
+
+class _PageReader(HTMLParser):
+    """What the lab reads of a record's page: the title in ``h1``, the owner
+    line, the file table's ``/d/`` links and sizes, the unlock form and the
+    request page's ``var cap``."""
+
+    def __init__(self):
+        super().__init__()
+        self.title = self.sub = self.script = ""
+        self.files: list[dict] = []
+        self.locked = False
+        self._text = ""  # the attribute the text being read belongs to
+        self._row: dict | None = None
+
+    def handle_starttag(self, tag, attrs):
+        attr = dict(attrs)
+        classes = (attr.get("class") or "").split()
+        if tag == "h1":
+            self._text = "title"
+        elif tag == "p" and "sub" in classes:
+            self._text = "sub"
+        elif tag == "script":
+            self._text = "script"
+        elif tag == "form" and (attr.get("action") or "").endswith("/unlock"):
+            self.locked = True
+        elif tag == "tr":
+            self._row = {"name": "", "size": ""}
+        elif self._row is not None and tag == "td" and "size" in classes:
+            self._text = "size"
+        elif self._row is not None and tag == "a" and "/d/" in (attr.get("href") or ""):
+            self._row["name"] = unquote(attr["href"].split("/d/", 1)[1])
+
+    def handle_endtag(self, tag):
+        if tag in ("h1", "p", "script", "td"):
+            self._text = ""
+        elif tag == "tr" and self._row is not None:
+            if self._row["name"]:
+                self.files.append({"name": self._row["name"], "size": _size(self._row["size"])})
+            self._row = None
+
+    def handle_data(self, data):
+        if self._text == "size":
+            self._row["size"] += data
+        elif self._text:
+            setattr(self, self._text, getattr(self, self._text) + data)
+
+
+def read_page(html: str) -> dict:
+    """A record's page -> what a connection uses of it."""
+    reader = _PageReader()
+    reader.feed(html)
+    reader.close()
+    cap = re.search(r"\bvar cap=(\d+)", reader.script)
+    sub = " ".join(reader.sub.split())
+    if sub.startswith("Shared by "):
+        owner = sub[len("Shared by "):]
+    else:
+        owner = sub.partition(" asked you to upload")[0] if " asked you to upload" in sub else ""
+    return {
+        "locked": reader.locked,
+        "kind": "request" if cap else "share",
+        "title": " ".join(reader.title.split()),
+        "owner": owner,
+        "files": reader.files,
+        "cap": int(cap.group(1)) if cap else 0,
+    }
 
 
 def remote_entries(files: list[dict]) -> list[dict]:
-    """A record's files -> its top-level entries. The hub lists files only; a
+    """A record's files -> its top-level entries. The page lists files only; a
     name holding ``/`` sits in a folder, which is one entry of their size."""
     entries: dict[str, dict] = {}
     for f in files:
@@ -1105,25 +1225,38 @@ def remote_entries(files: list[dict]) -> list[dict]:
     return list(entries.values())
 
 
-def manifest_from_record(record: dict, link: str) -> dict:
-    """One ``records/<id>`` answer -> the manifest a connected row draws. The
-    upload fields are this user's own upload into a request."""
-    last_upload = record.get("last_upload") or {}
+def manifest_from_page(page: dict, conn: dict, upload: dict | None) -> dict:
+    """What a connected row draws: the record as its page reads now, and this
+    user's own upload into a request as the lab is sending it."""
+    upload = upload or {}
+    state = upload.get("state")
     manifest = {
-        "id": record.get("id", ""),
-        "name": record.get("title") or record.get("id", ""),
-        "slug": record.get("id", ""),
-        "kind": record.get("kind", ""),
-        "created_at": _ts(record.get("created_at")),
-        "link": link,
-        "uploading": last_upload.get("state") == "running",
-        "uploaded": int(last_upload.get("count") or 0) if last_upload.get("state") == "done" else 0,
-        "upload_reason": str(last_upload.get("reason") or "") if last_upload.get("state") == "refused" else "",
-        "progress": record.get("progress") or None,
+        "id": conn["id"],
+        "name": page["title"] or conn.get("name") or conn["id"],
+        "slug": conn["id"],
+        "kind": page["kind"],
+        "owner": page["owner"],
+        # the page carries no creation date
+        "created_at": 0,
+        "link": conn["link"],
+        "uploading": state == "running",
+        # a refusal part way still counts the files that landed before it
+        "uploaded": upload.get("count", 0) if state in ("done", "refused") else 0,
+        "upload_reason": upload.get("reason", "") if state == "refused" else "",
+        "progress": {"copied": upload["copied"], "total": upload["total"]} if state == "running" else None,
     }
-    if manifest["kind"] == "share":
-        manifest["entries"] = remote_entries(record.get("files") or [])
+    if page["kind"] == "share":
+        manifest["entries"] = remote_entries(page["files"])
     return manifest
+
+
+def _refusal(body: bytes) -> str:
+    """The slug of an upload refusal, ``{"error": <slug>, "message": ...}``."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return ""
+    return str(data.get("error") or "") if isinstance(data, dict) else ""
 
 
 def _hub_connections() -> list[dict]:
@@ -1138,8 +1271,9 @@ def _save_hub_connections(items: list[dict]) -> None:
 
 
 class _HubConnectionBase(_HubBase):
-    """A record another user owns, reached through the hub with the grant its
-    password earned (ACC-HUBM-175): the lab never fetches a recipient page."""
+    """A record another user owns, read through its link as a recipient's
+    browser reads it (ACC-HUBM-175): this server sends the requests, with the
+    unlock cookie and never the hub token, and the bytes pass through it."""
 
     def _connection(self, key: str) -> dict | None:
         """The stored connection, or ``None`` with the 404 written."""
@@ -1149,73 +1283,94 @@ class _HubConnectionBase(_HubBase):
         self.write_error_json(404, f"Connection not found: {key}")
         return None
 
-    async def _unlock(self, id_: str, password: str):
-        answer = await self._hub("POST", f"records/{id_}/unlock", {"password": password})
-        if answer is not None and answer[0] == 200 and isinstance(answer[1], dict) and answer[1].get("grant"):
-            _GRANTS[id_] = str(answer[1]["grant"])
-        return answer
-
-    async def _record(
-        self,
-        method: str,
-        id_: str,
-        suffix: str = "",
-        body: dict | None = None,
-        password: str = "",
-        timeout: float | None = None,
-    ):
-        """One call on a record, as ``_hub``. A 401 while a password is held
-        unlocks once and asks again: the grant lapses and dies on restart.
-        A password the owner set or changed after the connect answers 401
-        ``password_changed``: the hub's own slugs name its group policy and a
-        wrong guess, neither of which is what happened."""
-        path = f"records/{id_}" + (f"/{suffix}" if suffix else "")
-        grant = lambda: {"X-Fileshare-Grant": _GRANTS[id_]} if id_ in _GRANTS else {}  # noqa: E731
-        answer = await self._hub(method, path, body, grant(), timeout)
-        if answer is None or answer[0] != 401:
-            return answer
-        if password:
-            unlocked = await self._unlock(id_, password)
-            if unlocked is None or unlocked[0] not in (200, 403):
-                return unlocked
-            if unlocked[0] == 403:
-                # the hub counts each unlock toward its 429 limit: sent again
-                # at every read, the stale password would use up the attempts
-                # a connect with the new one needs
-                # only the refused one: a connect with the new password may
-                # have stored it while this call waited
-                _save_hub_connections(
-                    [{k: v for k, v in c.items() if k != "password"}
-                     if c.get("id") == id_ and c.get("password") == password else c
-                     for c in _hub_connections()]
-                )
-            if unlocked[0] == 200:
-                answer = await self._hub(method, path, body, grant(), timeout)
-                if answer is None or answer[0] != 401:
-                    return answer
-        return 401, {"reason": "password_changed", "message": "The owner set or changed this record's password"}
-
     def _rel(self, path: Path) -> str:
         return path.relative_to(Path(self.workspace_root)).as_posix()
 
-    async def _fetch(self, conn: dict, staging: Path, timeout: float, name: str = "") -> bool:
-        """Ask the hub to write the record, or its entry ``name``, into
-        ``staging``. False means the refusal is already written."""
-        body = {"dest": self._rel(staging)}
-        if name:
-            body["name"] = name
-        answer = await self._record("POST", conn["id"], "fetch", body, conn.get("password", ""), timeout)
-        if answer is None:
-            return False
-        if answer[0] != 200:
-            self._relay(*answer)
-            return False
-        return True
+    def _cookie(self, conn: dict) -> dict:
+        value = _COOKIES.get((conn["link"], conn.get("password", "")))
+        return {"Cookie": f"{UNLOCK_COOKIE}={value}"} if value else {}
+
+    async def _unlock(self, conn: dict) -> int:
+        """Send the stored password to the page's unlock form and keep the
+        cookie a 303 sets; returns the link's status."""
+        link, password = conn["link"], conn.get("password", "")
+        resp = await self._peer_fetch(
+            link + "/unlock",
+            method="POST",
+            body=urlencode({"password": password}),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+            certificate=conn.get("certificate", ""),
+        )
+        if resp.code == 303:
+            jar = SimpleCookie()
+            for header in resp.headers.get_list("Set-Cookie"):
+                jar.load(header)
+            if UNLOCK_COOKIE in jar:
+                _COOKIES[(link, password)] = jar[UNLOCK_COOKIE].value
+        elif resp.code == 403:
+            # the app allows 5 tries and then one a minute: sent again at every
+            # read, a stale password would use up the tries a connect with the
+            # new one needs. Only the refused one goes - a connect with the
+            # new password may have stored it while this call waited.
+            _save_hub_connections(
+                [{k: v for k, v in c.items() if k != "password"}
+                 if c.get("key") == conn.get("key") and c.get("password") == password else c
+                 for c in _hub_connections()]
+            )
+        return resp.code
+
+    async def _read(self, conn: dict) -> tuple[int, dict]:
+        """``(200, page)`` for the record's page, unlocked with the stored
+        password when it asks; otherwise the status that stopped it - the
+        link's own, or 401 for a page that stays locked. Raises
+        ``PeerUnavailable`` when the link cannot be reached."""
+        certificate = conn.get("certificate", "")
+        resp = await self._peer_fetch(conn["link"], headers=self._cookie(conn), certificate=certificate)
+        page = read_page(resp.body.decode("utf-8", "replace")) if resp.code == 200 else None
+        if page is not None and page["locked"] and conn.get("password"):
+            code = await self._unlock(conn)
+            if code != 303:
+                return (401 if code == 403 else code), {}
+            resp = await self._peer_fetch(conn["link"], headers=self._cookie(conn), certificate=certificate)
+            page = read_page(resp.body.decode("utf-8", "replace")) if resp.code == 200 else None
+        if page is None:
+            return resp.code, {}
+        return (401, page) if page["locked"] else (200, page)
+
+    async def _page(self, conn: dict) -> dict | None:
+        """The record's page, or ``None`` with the panel's answer written."""
+        try:
+            code, page = await self._read(conn)
+        except PeerUnavailable as exc:
+            self._refuse(502, str(exc), exc.reason)
+            return None
+        if code == 200:
+            return page
+        self._refuse(*_LINK_ANSWERS.get(code, (502, f"The record's link answered {code}", "")))
+        return None
+
+    async def _download(self, conn: dict, suffix: str, path: Path, max_bytes: int, label: str) -> int:
+        """Stream ``<link>/<suffix>`` into the file ``path``, at most
+        ``max_bytes``, and return the bytes written. A 429 is waited out; any
+        other answer but 200 raises ``PeerUnavailable``."""
+        with open(path, "wb") as spool:
+            for _ in range(_RETRIES):
+                resp = await self._peer_fetch(
+                    conn["link"] + "/" + suffix, spool=spool, max_bytes=max_bytes, headers=self._cookie(conn),
+                    certificate=conn.get("certificate", ""),
+                )
+                if resp.code != 429:
+                    break
+                await asyncio.sleep(_RETRY_SECONDS)
+            if resp.code != 200:
+                raise PeerUnavailable(f"The record's link answered {resp.code} for {label}")
+            return spool.tell()
 
 
 class HubConnectionsHandler(_HubConnectionBase):
     """api/connections - the records this user connected to, and connecting
-    one by its hub link or its id."""
+    one by the link its owner handed out."""
 
     @tornado.web.authenticated
     def get(self):
@@ -1224,48 +1379,70 @@ class HubConnectionsHandler(_HubConnectionBase):
     @tornado.web.authenticated
     async def post(self):
         body = self.get_json_body() or {}
-        password = str(body.get("password") or "")
+        typed = str(body.get("password") or "")
         try:
-            id_ = parse_hub_link(str(body.get("link") or ""))
+            link, id_ = parse_hub_link(str(body.get("link") or ""))
         except ValueError as exc:
             return self.write_error_json(400, str(exc))
-        if password:
-            unlocked = await self._unlock(id_, password)
-            if unlocked is None:
-                return
-            if unlocked[0] == 429:
-                return self.write_error_json(429, "too many password attempts - wait before retrying")
-            if unlocked[0] != 200:
-                self.set_status(401)
-                return self.write_json({"error": "wrong password", "password_required": True})
-        answer = await self._record("GET", id_)
+        answer = await self._hub("GET", "items")
         if answer is None:
             return
-        code, record = answer
+        if answer[0] != 200:
+            return self._relay(*answer)
+        items = answer[1].get("items") if isinstance(answer[1], dict) else None
+        own = next((i for i in items or [] if i.get("id") == id_), None)
+        if own is not None:
+            kind = "request" if own.get("kind") == "request" else "share"
+            return self.write_error_json(
+                400, f"That {kind} is your own - it is already in your panel under My {kind.title()}s."
+            )
+        stored = next((c for c in _hub_connections() if c.get("link") == link), {})
+        # Connect Again sends no password: the connection's own is tried, and
+        # only by _read, on a page that still asks for one
+        password = typed or stored.get("password", "")
+        certificate = await self._connect_certificate(link, str(body.get("trust") or ""), stored.get("certificate", ""))
+        if certificate is None:
+            return
+        conn = {"link": link, "id": id_, "password": password, "certificate": certificate}
+        try:
+            if typed:
+                code = await self._unlock(conn)
+                if code == 403:
+                    self.set_status(401)
+                    return self.write_json({"error": "wrong password", "password_required": True})
+                if code == 429:
+                    return self.write_error_json(429, "too many password attempts - wait before retrying")
+            code, page = await self._read(conn)
+        except PeerUntrusted as exc:
+            # the trusted certificate itself is refused (it expired, for example):
+            # neither the dialog nor Connect Again can fix that, so name the certificate
+            return self.write_error_json(502, f"{exc.host} presents a certificate that cannot be used ({exc.detail})")
+        except PeerUnavailable as exc:
+            return self.write_error_json(502, str(exc))
         if code == 401:
             self.set_status(401)
             return self.write_json({"error": "password required", "password_required": True})
         if code != 200:
-            return self._relay(code, record)
-        kind = record.get("kind") if record.get("kind") in ("share", "request") else "share"
-        # the hub names the owner; the lab is spawned for its user
-        if record.get("owner") and record.get("owner") == os.environ.get("JUPYTERHUB_USER"):
-            return self.write_error_json(
-                400, f"That {kind} is your own - it is already in your panel under My {kind.title()}s."
-            )
+            return self._refuse(*_LINK_ANSWERS.get(code, (502, f"The record's link answered {code}", "")))
+        parsed = urlparse(link)
         entry = {
-            "key": f"{kind}:hub:{id_}",
-            "kind": kind,
+            "key": f"{page['kind']}:hub:{id_}",
+            "kind": page["kind"],
             "id": id_,
-            "host": "hub",
-            "name": record.get("title") or id_,
-            "owner": record.get("owner") or "",
-            "link": self._link(record.get("url", "")),
+            "host": f"{parsed.scheme}://{parsed.netloc}",
+            "name": page["title"] or id_,
+            "owner": page["owner"],
+            "link": link,
             "added_at": int(time.time()),
         }
         if password:
             entry["password"] = password
-        # connecting again replaces the entry, with the password given now
+        if certificate:
+            # the one the user trusted in the panel's dialog, the only one
+            # this connection's fetches accept
+            entry["certificate"] = certificate
+        # connecting again replaces the entry, with the password and the
+        # certificate given now
         items = [c for c in _hub_connections() if c.get("key") != entry["key"]]
         _save_hub_connections(items + [entry])
         self.write_json(entry)
@@ -1280,33 +1457,38 @@ class HubConnectionItemHandler(_HubConnectionBase):
         kept = [c for c in items if c.get("key") != key]
         if len(kept) != len(items):
             _save_hub_connections(kept)
+        _UPLOADS.pop(key, None)
+        _PAGES.pop(key, None)
         self.write_json({"ok": True})
 
 
 class HubConnectionManifestHandler(_HubConnectionBase):
-    """api/connections/<key>/manifest - the record as the hub reads it now."""
+    """api/connections/<key>/manifest - the record as its page reads now,
+    with this user's own upload into it."""
 
     @tornado.web.authenticated
     async def get(self, key):
         conn = self._connection(key)
         if conn is None:
             return
-        answer = await self._record("GET", conn["id"], password=conn.get("password", ""))
-        if answer is None:
-            return
-        code, record = answer
-        if code != 200:
-            return self._relay(code, record)
+        upload = _UPLOADS.get(key)
+        page = _PAGES.get(key) if upload and upload["state"] == "running" else None
+        if page is None:
+            page = await self._page(conn)
+            if page is None:
+                return
+            _PAGES[key] = page
         self.set_header("Cache-Control", "no-store")
-        self.write_json(manifest_from_record(record, self._link(record.get("url", ""))))
+        self.write_json(manifest_from_page(page, conn, upload))
 
 
 class HubConnectionSaveHandler(_HubConnectionBase):
-    """api/connections/<key>/save - entries of a connected share, or the
-    whole of it as its files or one zip, written by the hub into the current
-    folder. As for the owner's records, the hub creates the folder it is
-    given, so each lands in a staging folder picked here and is moved out;
-    a zip is packed here from what the hub wrote."""
+    """api/connections/<key>/save - entries of a connected share, or the whole
+    of it as its files or one zip, downloaded through its link into the
+    current folder: a file from /d/<path>, a folder file by file, the whole
+    share from /archive. Each save writes under a staging name only it uses
+    and takes the free name when complete; a save that fails removes what it
+    wrote (DEF-PEER-53)."""
 
     @tornado.web.authenticated
     async def post(self, key):
@@ -1325,64 +1507,87 @@ class HubConnectionSaveHandler(_HubConnectionBase):
             or not all(isinstance(n, str) and n and _is_safe_relative(n) for n in names)
         ):
             return self.write_error_json(400, "'names' must be a non-empty list of entry names")
-        parent = self._workspace_dir(str(body.get("target_dir") or "").strip("/"))
-        if parent is None:
+        target_dir = str(body.get("target_dir") or "").strip("/")
+        try:
+            parent = _resolve_workspace_target_dir(self.workspace_root, target_dir, self.shares_dir)
+        except StorageError as exc:
+            return self.write_error_json(400, str(exc))
+        if not parent.is_dir():
+            return self.write_error_json(404, f"Not a folder: {target_dir or '.'}")
+        page = await self._page(conn)
+        if page is None:
             return
-        # the record's size now is what its fetches are given time by
-        answer = await self._record("GET", conn["id"], password=conn.get("password", ""))
-        if answer is None:
-            return
-        if answer[0] != 200:
-            return self._relay(*answer)
-        timeout = fetch_timeout(answer[1].get("bytes"))
-        if names is None:
-            name = _safe_name(str(conn.get("name") or "share"))
-            staging = _staging(parent, name)
-            if not await self._fetch(conn, staging, timeout):
-                shutil.rmtree(staging, ignore_errors=True)
-                return
-            if not archive:
-                return self.write_json({"ok": True, "saved": [self._rel(_land(staging, parent, name))]})
-            dest = _resolve_unique_target(parent, f"{name}.zip")
-            try:
-                _zip_tree(staging, dest)
-            except OSError as exc:
-                dest.unlink(missing_ok=True)
-                return self.write_error_json(500, f"Could not pack the share: {exc}")
-            finally:
-                shutil.rmtree(staging, ignore_errors=True)
-            return self.write_json({"ok": True, "saved": [self._rel(dest)]})
+        held = [f["name"] for f in page["files"]]
+        for entry in names or []:
+            if not any(n == entry or n.startswith(entry + "/") for n in held):
+                return self.write_error_json(404, f"The share holds no {entry}")
+        limit = _download_limit(body.get("max_gb"))
+        written: list[Path] = []
+        try:
+            if names is None:
+                saved = await self._whole(conn, page, parent, archive, limit, written)
+            else:
+                saved = await self._entries(conn, held, parent, names, limit, written)
+        except PeerUnavailable as exc:
+            return self._failed(written, 502, str(exc))
+        except SaveTooLarge:
+            return self._failed(written, 502, f"The share is larger than {limit / GB:g} GB when unpacked")
+        except _ZIP_UNREADABLE:
+            return self._failed(written, 502, "The hub did not send a readable zip archive")
+        except OSError:
+            # the workspace refused the write (disk full, read-only) mid-save
+            return self._failed(written, 502, "Could not write the save to the workspace")
+        self.write_json({"ok": True, "saved": [self._rel(p) for p in saved]})
+
+    async def _whole(self, conn, page, parent: Path, archive: str, limit: int, written: list) -> list[Path]:
+        name = _safe_name(page["title"] or conn.get("name") or conn["id"])
+        part = _staging(parent, f"{name}.zip")
+        written.append(part)
+        await self._download(conn, "archive", part, limit, "the whole share")
+        if archive:
+            if not zipfile.is_zipfile(part):
+                raise zipfile.BadZipFile("not a zip archive")
+            return [_land(part, parent, f"{name}.zip")]
+        staging = _staging(parent, name)
+        written.append(staging)
+        _extract_zip_into(part, staging, limit)
+        part.unlink()
+        return [_land(staging, parent, name)]
+
+    async def _entries(self, conn, held: list[str], parent: Path, names: list[str], limit: int, written: list) -> list[Path]:
+        left = limit
         saved: list[Path] = []
         for entry in names:
             staging = _staging(parent, Path(entry).name)
-            try:
-                if not await self._fetch(conn, staging, timeout, entry):
-                    self._remove(saved)
-                    return
-                source = staging / entry
-                if not source.exists():
-                    self._remove(saved)
-                    return self.write_error_json(404, f"The share holds no {entry}")
-                dest = _resolve_unique_target(parent, Path(entry).name)
-                shutil.move(str(source), str(dest))
-                saved.append(dest)
-            finally:
-                shutil.rmtree(staging, ignore_errors=True)
-        self.write_json({"ok": True, "saved": [self._rel(p) for p in saved]})
+            written.append(staging)
+            for member in (n for n in held if n == entry or n.startswith(entry + "/")):
+                rel = member[len(entry) + 1:]
+                if rel and not _is_safe_relative(rel):
+                    raise PeerUnavailable(f"The share lists an unsafe path: {member}")
+                target = staging / rel if rel else staging
+                target.parent.mkdir(parents=True, exist_ok=True)
+                left -= await self._download(conn, "d/" + quote(member, safe=""), target, left, member)
+            dest = _land(staging, parent, Path(entry).name)
+            written.append(dest)
+            saved.append(dest)
+        return saved
 
-    def _remove(self, saved: list[Path]) -> None:
-        """A save that answers an error leaves nothing behind (DEF-PEER-53)."""
-        for path in saved:
+    def _failed(self, written: list[Path], code: int, message: str) -> None:
+        """Remove what the save wrote, then answer with the error."""
+        for path in written:
             if path.is_dir():
                 shutil.rmtree(path, ignore_errors=True)
             else:
                 path.unlink(missing_ok=True)
+        self.write_error_json(code, message)
 
 
 class HubConnectionUploadHandler(_HubConnectionBase):
     """api/connections/<key>/upload - files and folders from the workspace
-    into a connected request. The hub reads them from its own mount, answers
-    at once and copies after; the row follows the copy from the manifest."""
+    into a connected request, sent through its link as its page sends them:
+    one file per request under its own name, so a folder's files arrive
+    without the folder. The answer comes at once and the files go after; the
+    row follows the upload from the manifest."""
 
     @tornado.web.authenticated
     async def post(self, key):
@@ -1391,20 +1596,108 @@ class HubConnectionUploadHandler(_HubConnectionBase):
             return
         if conn.get("kind") != "request":
             return self.write_error_json(400, "Connection is not a request")
-        paths = self._kept_paths((self.get_json_body() or {}).get("paths") or [])
-        if paths is None:
-            return
-        if not paths:
+        paths = (self.get_json_body() or {}).get("paths") or []
+        if not isinstance(paths, list) or not paths:
             return self.write_error_json(400, "'paths' must be a non-empty list")
-        answer = await self._record(
-            "POST", conn["id"], "upload", {"paths": paths, "exclude": self._hub_exclude()},
-            conn.get("password", ""),
-        )
-        if answer is None:
+        if _UPLOADS.get(key, {}).get("state") == "running":
+            return self.write_error_json(409, "An upload into this request is still running - wait for it to finish")
+        files = self._files(paths)
+        if files is None:
             return
-        if answer[0] != 202:
-            return self._relay(*answer)
+        state = _UPLOADS[key] = {
+            "state": "running", "copied": 0, "total": sum(f.stat().st_size for f in files), "count": 0, "reason": "",
+        }
+        task = asyncio.ensure_future(self._send(conn, files, state))
+        _UPLOAD_TASKS.add(task)
+        task.add_done_callback(_UPLOAD_TASKS.discard)
         self.write_json({"ok": True, "uploaded": [Path(p).name for p in paths]})
+
+    def _files(self, paths: list) -> list[Path] | None:
+        """The files the chosen paths hold, the excluded-names catalogue
+        applied at every depth; ``None`` with the refusal written."""
+        root = Path(self.workspace_root)
+        files: list[Path] = []
+        for rel in paths:
+            if not isinstance(rel, str) or "\x00" in rel or not _is_safe_relative(rel):
+                self.write_error_json(400, f"Unsafe path: {rel}")
+                return None
+            src = root / rel
+            if not src.exists():
+                self.write_error_json(404, f"Not found: {rel}")
+                return None
+            if is_excluded(src.name, self.excluded_names):
+                continue
+            if not src.is_dir():
+                files.append(src)
+                continue
+            for folder, dirs, names in os.walk(src):
+                dirs[:] = sorted(d for d in dirs if not is_excluded(d, self.excluded_names))
+                # regular files only: a link that leads nowhere, a pipe or a
+                # socket is not a file to send
+                files += [
+                    p for n in sorted(names)
+                    if not is_excluded(n, self.excluded_names) and (p := Path(folder) / n).is_file()
+                ]
+        if not files:
+            chosen = [Path(rel).name for rel in paths]
+            if all(is_excluded(n, self.excluded_names) for n in chosen):
+                self.write_error_json(400, all_excluded_message(chosen))
+            else:
+                self.write_error_json(400, "The chosen folders hold no files to upload")
+            return None
+        return files
+
+    async def _send(self, conn: dict, files: list[Path], state: dict) -> None:
+        """Send the files in turn; the first refusal ends the upload and is
+        kept as its reason."""
+        client = tornado.httpclient.AsyncHTTPClient()
+        reason = ""
+        try:
+            for path in files:
+                if _UPLOADS.get(conn["key"]) is not state:
+                    # the connection was removed: send nothing more
+                    break
+                reason = await self._send_one(client, conn, path, state)
+                if reason:
+                    break
+                state["count"] += 1
+        except PeerUntrusted as exc:
+            # past tense and no instruction: Connect Again may trust the new
+            # certificate while this reason still stands for the last upload
+            reason = f"{exc.host} presented a certificate this connection did not trust ({exc.detail})"
+        except PeerUnavailable as exc:
+            # the lab's own sentence: the hub never refused this
+            reason = str(exc)
+        except OSError as exc:
+            reason = f"Could not read {path.name} from the workspace: {exc.strerror or exc}"
+        state.update(state="refused" if reason else "done", reason=reason)
+
+    async def _send_one(self, client, conn: dict, path: Path, state: dict) -> str:
+        """Send one file: '' when it landed, else the reason it did not. A
+        request that asks for its password is unlocked once with the stored
+        one; with none stored, or that one refused, the owner changed it."""
+        start = state["copied"]
+
+        def sent(n: int) -> None:
+            state["copied"] += n
+
+        async def send() -> str:
+            state["copied"] = start
+            try:
+                await _post_file(
+                    client, conn["link"] + "/u", path, path.name,
+                    validate_cert=self.verify_peer_tls, headers=self._cookie(conn), progress=sent,
+                    certificate=conn.get("certificate", ""),
+                )
+            except PeerRefused as exc:
+                # the link answers 404 for a record its owner closed meanwhile
+                return _refusal(exc.body) or ("closed" if exc.code == 404 else f"the hub answered {exc.code}")
+            return ""
+
+        reason = await send()
+        if reason == "password_required" and conn.get("password") and await self._unlock(conn) == 303:
+            reason = await send()
+        return "password_changed" if reason == "password_required" else reason
 
 
 def hub_handlers(base_url: str, ns: str) -> list:

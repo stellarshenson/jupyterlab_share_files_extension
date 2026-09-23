@@ -279,7 +279,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
       ) {
         // Native paste just moved the originals - drop the stale mirror so a
         // later panel paste does not try to re-delete already-moved files.
-        clearClip();
+        clearClip(clip);
       }
     });
 

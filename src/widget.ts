@@ -52,7 +52,7 @@ import {
   setupTunnel,
   uploadToConnection
 } from './api';
-import { clearClip, getClip, setClip } from './clipboard';
+import { clearClip, getClip, setClip, type ShareClip } from './clipboard';
 import {
   addIcon,
   closeIcon,
@@ -69,6 +69,7 @@ import {
   trashIcon
 } from './icons';
 import {
+  ICertificate,
   IConnection,
   IRemoteRequest,
   IRemoteShare,
@@ -82,6 +83,9 @@ const MIN_POLL_INTERVAL_SECONDS = 2;
 /** Hub mode: how long the panel waits after a ring before fetching, so a
  * burst of rings costs one fetch. */
 const STREAM_REFRESH_DELAY_MS = 300;
+// hub mode: how soon a connected request is read again while this lab's
+// upload into it runs
+const UPLOAD_FOLLOW_MS = 1000;
 const CONTENTS_MIME = 'application/x-jupyter-icontents';
 // Our own MIME for dragging a connected (remote) share entry out of the panel.
 // Carries `[{ key, name, type }]`; the file browser drop patch resolves it to a
@@ -288,6 +292,10 @@ export class ShareFilesPanel extends Widget {
     if (next.pollIntervalSeconds !== prevInterval && this._pollHandle) {
       this._restartPolling();
     }
+    if (next.pollIntervalSeconds !== prevInterval && this._connectionPoll) {
+      this._stopConnectionPolling();
+      this._startConnectionPolling();
+    }
     // Persist the autostart preference server-side - the server reads it at
     // startup to decide whether to bring the tunnel up.
     if (next.tunnelAutostart !== prevAutostart) {
@@ -403,8 +411,9 @@ export class ShareFilesPanel extends Widget {
     }
   }
 
-  /** Add files (workspace-relative paths) to an existing share by id. */
-  async addToShareFlow(shareId: string, paths: string[]): Promise<void> {
+  /** Add files (workspace-relative paths) to an existing share by id.
+   * Resolves to whether the server took the add. */
+  async addToShareFlow(shareId: string, paths: string[]): Promise<boolean> {
     this._state.busyKeys.add(shareId);
     this._render();
     try {
@@ -416,26 +425,47 @@ export class ShareFilesPanel extends Widget {
           autoClose: 5000
         });
       }
+      return true;
     } catch (err: any) {
       this._noteEditFailure('add items', err);
+      return false;
     } finally {
       this._state.busyKeys.delete(shareId);
       await this.refresh();
     }
   }
 
-  /** Upload local files to a connected request. */
+  /** Upload local files to a connected request. Resolves to whether the
+   * server took the upload. */
   async uploadToConnectionFlow(
     connectionKey: string,
     paths: string[]
-  ): Promise<void> {
+  ): Promise<boolean> {
+    const reason = this._state.offlineKeys.has(connectionKey)
+      ? this._state.offlineReasons.get(connectionKey)
+      : undefined;
+    // on a hub a closed record, a changed password or a certificate no longer
+    // trusted takes no upload, and the row would never show its end: say so
+    // instead of sending. A plain 'offline' may pass by itself, so it sends.
+    if (
+      this._hubMode &&
+      reason &&
+      ['closed', 'password_changed', 'certificate_untrusted'].some(
+        slug => reason === hubReasonText(slug)
+      )
+    ) {
+      Notification.warning(`The upload was not sent: ${reason}`, {
+        autoClose: 8000
+      });
+      return false;
+    }
     this._state.busyKeys.add(connectionKey);
     this._render();
     try {
       await uploadToConnection(this._serverSettings, connectionKey, paths, '');
-      // on a hub the copy runs after the answer: the row carries it, and its
-      // landing is announced by _refreshConnection. The copy may settle
-      // before the next read, so the row reads it as running until then.
+      // on a hub this lab sends the files after the answer: the row carries
+      // the upload, and its end is announced by _refreshConnection. It may
+      // end before the next read, so the row reads it as running until then.
       const cached = this._state.connectionData.get(connectionKey);
       if (!this._hubMode) {
         Notification.success(`${paths.length} item(s) uploaded`, {
@@ -448,10 +478,12 @@ export class ShareFilesPanel extends Widget {
           uploading: true
         });
       }
+      return true;
     } catch (err: any) {
       Notification.error(`Upload failed: ${err.message || err}`, {
         autoClose: 8000
       });
+      return false;
     } finally {
       this._state.busyKeys.delete(connectionKey);
       await this.refresh();
@@ -574,8 +606,9 @@ export class ShareFilesPanel extends Widget {
   }
 
   /** Submit a link to connect to. Used by the connect input. Resolves true
-   * when the connection was stored, false when it was refused, failed or
-   * the password prompt was cancelled - the input keeps the link then. */
+   * when the connection was stored, false when it was refused, failed, or
+   * the password prompt or the certificate dialog was cancelled - the input
+   * keeps the link then. */
   async connectToLink(link: string): Promise<boolean> {
     if (!link) {
       return false;
@@ -610,14 +643,29 @@ export class ShareFilesPanel extends Widget {
     }
     // Protected resources answer 401 password_required on connect - prompt
     // and retry with the password. A wrong password comes back as another
-    // 401 so the prompt repeats until cancel (rate limited server-side).
+    // 401 so the prompt repeats until cancel (rate limited server-side). A
+    // certificate the system does not trust comes back with its details:
+    // the user decides, and a trusted one is sent with every retry.
     let password = '';
+    let trust = '';
     let added: IConnection;
     for (;;) {
       try {
-        added = await addConnection(this._serverSettings, link, password);
+        added = await addConnection(
+          this._serverSettings,
+          link,
+          password,
+          trust
+        );
         break;
       } catch (err: any) {
+        if (err?.certificate) {
+          if (!(await this._trustCertificate(err.certificate))) {
+            return false; // not trusted
+          }
+          trust = err.certificate.fingerprint;
+          continue;
+        }
         const status = err?.response?.status;
         if (status === 401) {
           const entered = await this._promptForConnectPassword(
@@ -643,6 +691,37 @@ export class ShareFilesPanel extends Widget {
     this._render();
     this._byFocusKey(`conn:${added.key}`)?.scrollIntoView({ block: 'nearest' });
     return true;
+  }
+
+  /** Ask whether to trust a certificate the system does not; Enter and
+   * Escape both leave it untrusted. */
+  private async _trustCertificate(cert: ICertificate): Promise<boolean> {
+    const body = document.createElement('div');
+    const lead = document.createElement('p');
+    lead.textContent = `${cert.host} presents a certificate this lab does not trust: ${cert.reason}.`;
+    const advice = document.createElement('p');
+    advice.textContent =
+      'Trust it only if you know this host uses its own certificate. ' +
+      'Once trusted, the connection accepts this certificate until you remove ' +
+      'the connection, as long as the certificate has not expired. ' +
+      "If the host later presents a different one, the row shows 'untrusted' " +
+      'and Connect Again in its menu asks about the new one.';
+    const label = document.createElement('p');
+    label.textContent = 'SHA-256 fingerprint:';
+    const print = document.createElement('code');
+    print.className = 'jp-ShareFilesPanel-fingerprint';
+    print.textContent = cert.fingerprint;
+    body.append(lead, advice, label, print);
+    const result = await showDialog({
+      title: 'Trust this certificate?',
+      body: new Widget({ node: body }),
+      buttons: [
+        Dialog.cancelButton({ label: 'Do Not Trust' }),
+        Dialog.warnButton({ label: 'Trust' })
+      ],
+      defaultButton: 0
+    });
+    return result.button.accept;
   }
 
   /** Prompt for the password of a protected link being connected to. */
@@ -707,6 +786,7 @@ export class ShareFilesPanel extends Widget {
       return;
     }
     this._stopPolling();
+    this._startConnectionPolling();
     const stream = new EventSource(streamUrl(this._serverSettings));
     stream.addEventListener('changed', () => this._scheduleRefresh());
     // fetch on open and on every reconnect (EventSource retries by itself)
@@ -733,6 +813,51 @@ export class ShareFilesPanel extends Widget {
       window.clearTimeout(this._refreshTimer);
       this._refreshTimer = null;
     }
+    this._stopConnectionPolling();
+  }
+
+  /** Hub mode: a record another user owns rings nothing on this lab's
+   * stream, so connected rows are read again on the poll interval. */
+  private _startConnectionPolling(): void {
+    if (this._connectionPoll) {
+      return;
+    }
+    const seconds = Math.max(
+      MIN_POLL_INTERVAL_SECONDS,
+      this._settings.pollIntervalSeconds || DEFAULT_POLL_INTERVAL_SECONDS
+    );
+    this._connectionPoll = window.setInterval(() => {
+      void Promise.all(
+        this._state.connections.map(conn => this._refreshConnection(conn))
+      ).then(() => this._render());
+    }, seconds * 1000);
+  }
+
+  private _stopConnectionPolling(): void {
+    if (this._connectionPoll) {
+      window.clearInterval(this._connectionPoll);
+      this._connectionPoll = null;
+    }
+    for (const timer of this._uploadFollowers.values()) {
+      window.clearTimeout(timer);
+    }
+    this._uploadFollowers.clear();
+  }
+
+  /** Hub mode: this lab sends an upload into a connected request itself, so
+   * the row is read again each second while it runs - its progress moves and
+   * its end is announced without waiting for the poll. */
+  private _followUpload(conn: IConnection): void {
+    if (this._uploadFollowers.has(conn.key)) {
+      return;
+    }
+    this._uploadFollowers.set(
+      conn.key,
+      window.setTimeout(() => {
+        this._uploadFollowers.delete(conn.key);
+        void this._refreshConnection(conn).then(() => this._render());
+      }, UPLOAD_FOLLOW_MS)
+    );
   }
 
   /** Coalesce a burst of rings (the hub rings once per changed record, and
@@ -900,7 +1025,6 @@ export class ShareFilesPanel extends Widget {
     connectRow.appendChild(connectInput);
     connectRow.appendChild(connectBtn);
     root.appendChild(connectRow);
-    this._connectRow = connectRow;
 
     this._attachDropTargetOnZone();
   }
@@ -971,13 +1095,6 @@ export class ShareFilesPanel extends Widget {
     // The drop zone is for creating a new share - hide it if shares are off.
     if (this._dropZone) {
       this._dropZone.style.display = this._settings.enableShares ? '' : 'none';
-    }
-    // a hub record is named by its id alone as well as by its link
-    const connectInput = this._connectRow?.querySelector('input');
-    if (connectInput) {
-      connectInput.placeholder = this._hubMode
-        ? 'Paste a share or request link, or its id'
-        : 'Paste a share or request link';
     }
     if (focusedKey) {
       this._restoreFocus(focusedKey, byKeyboard, neighbourKeys, focusedSection);
@@ -1412,13 +1529,33 @@ export class ShareFilesPanel extends Widget {
   /** Why an upload into another user's request was refused. Its size limit
    * is the request's, not the uploader's group policy hubReasonText names. */
   private _uploadReasonText(reason: string): string {
-    return reason === 'over_cap'
-      ? 'The files are larger than this request accepts.'
-      : hubReasonText(reason);
+    const text: Record<string, string> = {
+      over_cap: 'A file is larger than this request accepts.',
+      volume_watermark: 'The hub has no free space for new uploads.',
+      too_large:
+        'A file arrived too slowly and the hub stopped waiting for it.',
+      // past tense and no instruction: the row reads the reason only once
+      // Connect Again has given the new password
+      password_changed: "The owner had set or changed this record's password."
+    };
+    // the lab's own sentence - the hub was not reached - passes as it is
+    return (
+      text[reason] ||
+      (this._hubRefused(reason) ? hubReasonText(reason) : reason)
+    );
   }
 
-  private _uploadRefusedText(reason: string): string {
-    return `The hub refused the last upload - ${this._uploadReasonText(reason)}`;
+  /** A reason slug is the hub's refusal; a sentence is the lab's own failure
+   * to send. */
+  private _hubRefused(reason: string): boolean {
+    return /^[a-z_]+$/.test(reason);
+  }
+
+  private _uploadRefusedText(reason: string, uploaded = 0): string {
+    const landed = uploaded ? ` after ${uploaded} item(s) uploaded` : '';
+    return this._hubRefused(reason)
+      ? `The hub refused the last upload${landed} - ${this._uploadReasonText(reason)}`
+      : `The last upload stopped${landed} - ${reason}`;
   }
 
   /** One file or folder of a hub share: remove, rename (F2 and the menu),
@@ -2015,11 +2152,16 @@ export class ShareFilesPanel extends Widget {
       const offline = document.createElement('span');
       offline.className = 'jp-ShareFilesPanel-offline';
       const reason = this._state.offlineReasons.get(conn.key);
-      // a changed password is a step for the user, not an outage to wait out
+      // a changed password or certificate is a step for the user, and a
+      // closed record is gone - none of them an outage to wait out
       offline.textContent =
         this._hubMode && reason === hubReasonText('password_changed')
           ? 'password changed'
-          : 'offline';
+          : this._hubMode && reason === hubReasonText('closed')
+            ? 'closed'
+            : reason === hubReasonText('certificate_untrusted')
+              ? 'untrusted'
+              : 'offline';
       // "unavailable", not "could not reach" - a 401 or 404 means the peer
       // answered fine and the fault is the password or a deleted resource.
       // A hub record has an owner, not a peer, and its reason says it all.
@@ -2041,13 +2183,19 @@ export class ShareFilesPanel extends Widget {
     } else if (conn.kind === 'request') {
       const requestData = data as IRemoteRequest | undefined;
       const reason = requestData?.upload_reason;
-      if (requestData?.uploading) {
+      if (requestData?.uploading && !this._state.offlineKeys.has(conn.key)) {
         meta.textContent = 'uploading';
       } else if (reason) {
         // a collapsed row must still say the last upload did not happen
         meta.classList.add('jp-mod-refused');
-        meta.textContent = 'request - upload refused';
-        meta.title = `${this._uploadRefusedText(reason)}\nrefused: ${reason}`;
+        meta.textContent = this._hubRefused(reason)
+          ? 'request - upload refused'
+          : 'request - upload stopped';
+        // a hub slug stays readable on hover; the lab's own sentence is
+        // already the whole text
+        meta.title = this._hubRefused(reason)
+          ? `${this._uploadRefusedText(reason, requestData.uploaded)}\nrefused: ${reason}`
+          : this._uploadRefusedText(reason, requestData.uploaded);
       } else {
         meta.textContent = 'request';
       }
@@ -2068,7 +2216,12 @@ export class ShareFilesPanel extends Widget {
     // ACC-HUBM-180: an upload in flight tints the row it goes to, as every
     // other transfer does (ACC-PROG-172)
     const upload = data as IRemoteRequest | undefined;
-    if (upload?.uploading && upload.progress?.total) {
+    // a row that went offline keeps its last manifest: no upload shows on it
+    if (
+      upload?.uploading &&
+      upload.progress?.total &&
+      !this._state.offlineKeys.has(conn.key)
+    ) {
       header.appendChild(
         this._progressOverlay(
           upload.progress.copied / upload.progress.total,
@@ -2101,9 +2254,14 @@ export class ShareFilesPanel extends Widget {
         const shareData = data as IRemoteShare;
         item.appendChild(this._renderConnectedShareEntries(conn, shareData));
       } else if (conn.kind === 'request') {
-        const reason = (data as IRemoteRequest | undefined)?.upload_reason;
-        if (reason && !(data as IRemoteRequest).uploading) {
-          item.appendChild(this._renderEmpty(this._uploadRefusedText(reason)));
+        const requestData = data as IRemoteRequest | undefined;
+        const reason = requestData?.upload_reason;
+        if (reason && !requestData.uploading) {
+          item.appendChild(
+            this._renderEmpty(
+              this._uploadRefusedText(reason, requestData.uploaded)
+            )
+          );
         }
         const hint = document.createElement('div');
         hint.className = 'jp-ShareFilesPanel-empty';
@@ -2909,15 +3067,11 @@ export class ShareFilesPanel extends Widget {
           const clip = getClip();
           if (id && this._hubMode && clip?.kind === 'local') {
             // the hub copies after its answer, so a cut is pasted as a copy:
-            // nothing is deleted on the strength of a 202
-            void this.addToShareFlow(id, clip.paths);
-            if (clip.mode === 'cut') {
-              clearClip();
-              Notification.info(
-                'A cut is pasted as a copy - the originals stay in your workspace',
-                { autoClose: 8000 }
-              );
-            }
+            // nothing is deleted on the strength of a 202. A refused paste
+            // keeps the clip for the next try.
+            void this.addToShareFlow(id, clip.paths).then(sent =>
+              this._notePastedCut(sent, clip)
+            );
           } else if (id) {
             void this._pasteIntoShare(id);
           }
@@ -2931,19 +3085,26 @@ export class ShareFilesPanel extends Widget {
           if (key && this._hubMode && clip?.kind === 'local') {
             // as a paste into a hub share: the hub copies after its answer,
             // so nothing is deleted on the strength of a 202
-            void this.uploadToConnectionFlow(key, clip.paths);
-            if (clip.mode === 'cut') {
-              clearClip();
-              Notification.info(
-                'A cut is pasted as a copy - the originals stay in your workspace',
-                { autoClose: 8000 }
-              );
-            }
+            void this.uploadToConnectionFlow(key, clip.paths).then(sent =>
+              this._notePastedCut(sent, clip)
+            );
           } else if (key) {
             void this._pasteIntoConnectedRequest(key);
           }
         }
       });
+    }
+  }
+
+  /** A cut the hub took is pasted as a copy: the clip is spent and the
+   * originals stay. A refused one leaves the clip for the next try. */
+  private _notePastedCut(sent: boolean, clip: ShareClip): void {
+    if (sent && clip?.kind === 'local' && clip.mode === 'cut') {
+      clearClip(clip);
+      Notification.info(
+        'A cut is pasted as a copy - the originals stay in your workspace',
+        { autoClose: 8000 }
+      );
     }
   }
 
@@ -2965,7 +3126,7 @@ export class ShareFilesPanel extends Widget {
       await addShareItems(this._serverSettings, shareId, paths);
       if (mode === 'cut') {
         await Promise.all(paths.map(p => this._contents.delete(p)));
-        clearClip();
+        clearClip(clip);
       }
       Notification.success(`${paths.length} item(s) added`, {
         autoClose: 5000
@@ -2997,7 +3158,7 @@ export class ShareFilesPanel extends Widget {
       await uploadToConnection(this._serverSettings, connKey, paths, '');
       if (mode === 'cut') {
         await Promise.all(paths.map(p => this._contents.delete(p)));
-        clearClip();
+        clearClip(clip);
       }
       Notification.success(`${paths.length} item(s) uploaded`, {
         autoClose: 5000
@@ -3267,7 +3428,8 @@ export class ShareFilesPanel extends Widget {
     }
     menu.addItem({ type: 'separator' });
     if (this._state.offlineKeys.has(conn.key)) {
-      // a password the owner set or changed since: the prompt asks for it
+      // a password the owner set or changed since: the prompt asks for it;
+      // a certificate the user has not trusted: the dialog asks about it
       menu.addItem({
         command: 'share-files-panel:connect-again',
         args: { link: conn.link || conn.id }
@@ -3426,8 +3588,20 @@ export class ShareFilesPanel extends Widget {
   }
 
   private async _disconnect(conn: IConnection): Promise<void> {
+    const data = this._state.connectionData.get(conn.key);
+    // what the row showed: the lab sends no further file once it is removed
+    const uploading =
+      data?.kind === 'request' &&
+      data.uploading &&
+      !this._state.offlineKeys.has(conn.key);
     try {
       await removeConnection(this._serverSettings, conn.key);
+      if (uploading) {
+        Notification.info(
+          `Disconnected from ${conn.name}: a file already on its way is still sent, and no further file of the upload is sent.`,
+          { autoClose: 8000 }
+        );
+      }
     } catch (err: any) {
       Notification.error(`Could not disconnect: ${err.message || err}`, {
         autoClose: 8000
@@ -3464,6 +3638,9 @@ export class ShareFilesPanel extends Widget {
       const before = this._state.connectionData.get(conn.key);
       this._state.connectionData.set(conn.key, data);
       this._noteUploadLanded(before, data);
+      if (this._hubMode && data.kind === 'request' && data.uploading) {
+        this._followUpload(conn);
+      }
       this._state.offlineKeys.delete(conn.key);
       this._state.offlineReasons.delete(conn.key);
       this._loggedOfflineKeys.delete(conn.key);
@@ -3507,7 +3684,7 @@ export class ShareFilesPanel extends Widget {
     }
     if (now.upload_reason) {
       Notification.error(
-        `The upload to ${now.name} was refused: ${this._uploadReasonText(now.upload_reason)}`,
+        `The upload to ${now.name} ${this._hubRefused(now.upload_reason) ? 'was refused' : 'stopped'} after ${now.uploaded || 0} item(s) uploaded: ${this._uploadReasonText(now.upload_reason)}`,
         { autoClose: 8000 }
       );
     } else {
@@ -4636,7 +4813,6 @@ export class ShareFilesPanel extends Widget {
   private _state: IPanelState;
   private _body: HTMLElement | null = null;
   private _dropZone: HTMLElement | null = null;
-  private _connectRow: HTMLElement | null = null;
   private _refreshBtn: HTMLElement | null = null;
   private _filterBtn: HTMLElement | null = null;
   private _cloudIndicator: HTMLElement | null = null;
@@ -4654,6 +4830,10 @@ export class ShareFilesPanel extends Widget {
   private _stream: EventSource | null = null;
   /** Hub mode: a pending ring-driven refresh, so a burst costs one fetch. */
   private _refreshTimer: number | null = null;
+  /** Hub mode: the poll of connected rows, and per connected request the
+   * pending read that follows this lab's upload into it. */
+  private _connectionPoll: number | null = null;
+  private _uploadFollowers = new Map<string, number>();
   /** True while the server is unreachable (offline / suspended / restarting),
    * so a poll storm is logged once instead of every tick. */
   private _networkOffline = false;

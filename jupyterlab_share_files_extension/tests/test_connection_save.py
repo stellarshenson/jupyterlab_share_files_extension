@@ -72,9 +72,9 @@ def _stub_handler(cls, workspace, body, kind, id_, link):
     handler.payload = None
     handler.write_json = lambda p: setattr(handler, "payload", p)
 
-    def _write_error(code, message):
+    def _write_error(code, message, reason=""):
         handler.status = code
-        handler.payload = {"error": message}
+        handler.payload = {"error": message, "reason": reason} if reason else {"error": message}
 
     handler.write_error_json = _write_error
     return handler, entry["key"]

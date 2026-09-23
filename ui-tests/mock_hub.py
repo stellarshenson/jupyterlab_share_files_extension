@@ -20,28 +20,41 @@ time that verdict flips. ``/s/<policy id>/<id>`` is the recipient page the
 lab's link check opens - the hub puts the group's policy id before the
 record id.
 
-``records/<id>`` is the route set the lab asked the hub for in
-HUB-API-REQUEST-read-a-record-you-do-not-own.md: read, unlock, fetch from and
-upload into a record another user owns. ``MOCK_HUB_ROOT`` is the lab's root
-folder; with it, a fetch writes the record's files there as the hub does
-through its own mount of the volume.
+A record another user owns is never in this user's ``items`` and the hub API
+answers 404 for it. It is reached through its link, as a recipient's browser
+reaches it (question board topic t01): the page at ``/s/<policy id>/<id>``,
+``/unlock`` (a form that sets the ``fs_unlock`` cookie), ``/d/<path>``,
+``/archive`` and ``/u`` (one raw file under ``X-Filename``). The hub rings no
+stream for another user's change, so a lab learns one by reading the link
+again. ``MOCK_HUB_ROOT`` is the lab's root folder; with it, a fetch of this
+user's own share writes its files there as the hub does through its own mount
+of the volume. A record made with ``tls`` is reached on a second listener
+over https, on a port the system picks, which presents the self-signed test
+certificate ``peer-a`` until ``/_control/certificate`` loads ``peer-b``.
 
 ``/_control/*`` is the test's own side door: reset the store, change the
 capabilities, the policy, the tunnel (its base, its delay and its ready
 verdict), the recipient page and the status a Cloudflare switch off answers,
-add an upload, add or close another user's record, ring the change stream,
-read the recorded calls.
+add an upload, add or close another user's record, swap the https
+certificate, ring the change stream, read the recorded calls.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
+import io
 import json
 import os
 import posixpath
+import ssl
+import zipfile
 from pathlib import Path
+from urllib.parse import quote, unquote
 
+import tornado.httpserver
 import tornado.ioloop
+import tornado.netutil
 import tornado.web
 from tornado.iostream import StreamClosedError
 
@@ -52,6 +65,11 @@ BASE = f"http://127.0.0.1:{PORT}"
 POLICY_ID = "mockpolicy"
 # the lab's root folder, which the hub reaches through its own mount
 ROOT = os.environ.get("MOCK_HUB_ROOT", "")
+# the https listener: the extension's self-signed test certificates, and the
+# base its port gives once it listens
+CERTIFICATES = Path(__file__).resolve().parent.parent / "jupyterlab_share_files_extension/tests/fixtures"
+TLS = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+TLS_BASE = ""
 
 
 ADD_SECONDS = 0.4
@@ -62,6 +80,7 @@ class Store:
         self.reset()
 
     def reset(self):
+        TLS.load_cert_chain(CERTIFICATES / "peer-a.pem")
         self.calls: list[dict] = []
         self.capabilities = {
             "allow_share": True, "allow_request": True,
@@ -95,9 +114,11 @@ class Store:
         self.uploads: dict[str, list[dict]] = {}
         # records other users own: never in this user's `items`
         self.foreign: list[dict] = []
-        # a record's password by id, and the grants an unlock minted
+        # a record's password by id, and what each fs_unlock cookie unlocked:
+        # (record id, the password it was given), so a changed password
+        # retires every cookie of the old one
         self.passwords: dict[str, str] = {}
-        self.grants: dict[str, str] = {}
+        self.cookies: dict[str, tuple[str, str]] = {}
         self.counter = 0
 
     def start_tunnel(self):
@@ -225,7 +246,7 @@ def _with_url(item: dict) -> dict:
     stored - the tunnel base while the record's tunnel switch is on and the
     connector is ready, the hub's own address otherwise."""
     on_tunnel = item.get("tunnel") and STORE.capabilities["tunnel_ready"]
-    base = STORE.tunnel_base.rstrip("/") if on_tunnel else BASE
+    base = TLS_BASE if item.get("tls") else STORE.tunnel_base.rstrip("/") if on_tunnel else BASE
     return {**item, "url": f"{base}/s/{POLICY_ID}/{item['id']}"}
 
 
@@ -469,123 +490,145 @@ class ShareFetch(_Hub):
         self.answer(200, {"path": dest})
 
 
-class _Record(_Hub):
-    """``records/<id>``: a record found by its id whoever owns it, behind the
-    grant its password earned."""
-
-    def record(self, id_):
-        """The record, or ``None`` with the refusal written."""
-        item = next((i for i in STORE.items + STORE.foreign if i["id"] == id_), None)
-        if item is None:
-            self.answer(404, {"status": 404, "message": "No such record"})
-            return None
-        if item.get("closed"):
-            self.answer(410, {"reason": "closed", "message": "The owner closed this record"})
-            return None
-        grant = self.request.headers.get("X-Fileshare-Grant", "")
-        if id_ in STORE.passwords and STORE.grants.get(grant) != id_:
-            self.answer(401, {"reason": "password_required", "message": "This record needs its password"})
-            return None
-        return item
+def _content(name: str) -> bytes:
+    """What a file of another user's record holds: its name, so a saved copy
+    shows which file it came from."""
+    return f"{name}\n".encode()
 
 
-class Record(_Record):
+def _page(item: dict, unlocked: bool) -> str:
+    """A record's page in the fileshare app's markup, as measured on the
+    live hub on 2026-09-23."""
+    root = f"/s/{POLICY_ID}/{item['id']}"
+    if not unlocked:
+        return (
+            '<html><body><div class="panel"><h1>Password required</h1>'
+            f'<form method="post" action="{root}/unlock"><input name="password" type="password"></form>'
+            "</div></body></html>"
+        )
+    title = html.escape(item["title"])
+    if item["kind"] == "request":
+        return (
+            f'<html><body><div class="panel"><h1>{title}</h1>'
+            f'<p class="sub">{item["owner"]} asked you to upload a file.</p>'
+            f"<script>(function(){{var cap={STORE.capabilities['max_upload_bytes']};}})();</script>"
+            "</div></body></html>"
+        )
+    rows = "".join(
+        f'<tr><td>{html.escape(f["name"])}</td><td class="size">{f["size"]} B</td>'
+        f'<td class="act"><a href="{root}/d/{quote(f["name"], safe="")}">Download</a></td></tr>'
+        for f in item["files"]
+    )
+    return (
+        f'<html><body><div class="panel"><h1>{title}</h1><p class="sub">Shared by {item["owner"]}</p>'
+        f"<table><tbody>{rows}</tbody></table>"
+        f'<p class="row"><a href="{root}/archive">Download all (.zip)</a></p></div></body></html>'
+    )
+
+
+class _Link(tornado.web.RequestHandler):
+    """A record's link on the hub's fileshare app: unauthenticated, as the
+    real one, and unlocked by the ``fs_unlock`` cookie."""
+
+    def prepare(self):
+        STORE.calls.append({
+            "method": self.request.method, "path": self.request.path, "body": "",
+            "auth": self.request.headers.get("Authorization", ""),
+            "filename": unquote(self.request.headers.get("X-Filename", "")),
+        })
+
+    def foreign(self, id_):
+        item = next((i for i in STORE.foreign if i["id"] == id_), None)
+        return item if item and not item.get("closed") else None
+
+    def unlocked(self, id_) -> bool:
+        return id_ not in STORE.passwords or STORE.cookies.get(self.get_cookie("fs_unlock") or "") == (
+            id_, STORE.passwords[id_])
+
+    def not_found(self):
+        self.set_status(404)
+        self.finish("<html><body><h1>Not found</h1></body></html>")
+
+    def refuse(self, code: int, slug: str):
+        self.set_status(code)
+        self.finish({"error": slug, "message": slug})
+
+
+class RecipientPage(_Link):
+    """The record's page. This user's own record answers ``page_status``
+    (what the lab's link check opens), another user's its page."""
+
     def get(self, id_):
-        item = self.record(id_)
+        item = self.foreign(id_)
         if item is not None:
-            self.answer(200, _with_url(item))
-
-
-class RecordUnlock(_Hub):
-    def post(self, id_):
-        if not any(i["id"] == id_ for i in STORE.items + STORE.foreign):
-            return self.answer(404, {"status": 404, "message": "No such record"})
-        if STORE.passwords.get(id_) != str(self.body().get("password") or ""):
-            return self.answer(403, {"reason": "password_wrong", "message": "Wrong password"})
-        grant = f"grant-{STORE.new_id()}"
-        STORE.grants[grant] = id_
-        self.answer(200, {"grant": grant, "expires_at": "2026-09-03T21:00:00Z"})
-
-
-class RecordFetch(_Record):
-    """POST records/<id>/fetch - as ``shares/<id>/fetch``; a ``name`` writes
-    that file, or that folder and all under it, at ``<dest>/<name>``."""
-
-    def post(self, id_):
-        item = self.record(id_)
-        if item is None:
-            return
-        if item["kind"] != "share":
-            return self.answer(400, {"status": 400, "message": "only a share is fetched"})
-        body = self.body()
-        dest, name = str(body.get("dest") or ""), str(body.get("name") or "")
-        if not dest or dest.startswith("/") or ".." in dest.split("/"):
-            return self.answer(400, {"status": 400, "message": "dest must be a directory inside the workspace"})
-        files = [f for f in item["files"] if not name or f["name"] == name or f["name"].startswith(name + "/")]
-        if name and not files:
-            return self.answer(404, {"reason": "unknown_entry", "message": f"No entry {name}"})
-        if not _write_files(dest, files):
-            return self.answer(400, {"reason": "bad_path", "message": "dest exists"})
-        self.answer(200, {"path": dest})
-
-
-class RecordUpload(_Record):
-    """POST records/<id>/upload - the caller's workspace paths into a
-    request, copied after the 202. While it runs the record carries
-    ``last_upload`` running with ``progress``, a quarter at the start and
-    three quarters half way, where the hub rings; a path holding
-    ``refuse-upload`` settles as refused ``over_cap``."""
-
-    def post(self, id_):
-        item = self.record(id_)
-        if item is None:
-            return
-        if item["kind"] != "request":
-            return self.answer(400, {"status": 400, "message": "only a request takes uploads"})
-        if (item.get("last_upload") or {}).get("state") == "running":
-            return self.answer(409, {"reason": "busy", "message": "An upload is already running"})
-        body = self.body()
-        paths = body.get("paths") or []
-        if not isinstance(paths, list) or not paths or not isinstance(body.get("exclude", []), list):
-            return self.answer(400, {"status": 400, "message": "paths must be a non-empty list"})
-        for p in paths:
-            if not isinstance(p, str) or not p or p.startswith("/") or ".." in p.split("/"):
-                return self.answer(400, {"status": 400, "message": "each path must be inside the workspace"})
-        item["last_upload"] = {"state": "running"}
-        item["progress"] = {"copied": 10, "total": 40}
-
-        def tick():
-            if (item.get("last_upload") or {}).get("state") == "running":
-                item["progress"] = {"copied": 30, "total": 40}
-                STORE.nudge()
-
-        def land():
-            item.pop("progress", None)
-            if any("refuse-upload" in p for p in paths):
-                item["last_upload"] = {"state": "refused", "reason": "over_cap"}
-            else:
-                item["last_upload"] = {"state": "done", "count": len(paths)}
-                STORE.uploads.setdefault(id_, []).extend(
-                    {"upload_id": STORE.new_id("u_"), "filename": posixpath.basename(p.rstrip("/")),
-                     "size": 42, "sha256": "0" * 64, "uploaded_at": "2026-09-03T21:00:00Z"}
-                    for p in paths
-                )
-            STORE.nudge()
-
-        tornado.ioloop.IOLoop.current().call_later(STORE.add_seconds / 2, tick)
-        tornado.ioloop.IOLoop.current().call_later(STORE.add_seconds, land)
-        self.answer(202)
-
-
-class RecipientPage(tornado.web.RequestHandler):
-    """The recipient page, unauthenticated as the real one: ``page_status``
-    for a record that exists, 404 for any other id."""
-
-    def get(self, id_):
-        STORE.calls.append({"method": "GET", "path": self.request.path, "body": "", "auth": ""})
+            return self.finish(_page(item, self.unlocked(id_)))
         exists = any(i["id"] == id_ for i in STORE.items)
         self.set_status(STORE.page_status if exists else 404)
         self.finish("<html><body>recipient page</body></html>")
+
+
+class LinkUnlock(_Link):
+    def post(self, id_):
+        if self.foreign(id_) is None:
+            return self.not_found()
+        if STORE.passwords.get(id_, "") != self.get_body_argument("password", ""):
+            self.set_status(403)
+            return self.finish("<html><body>That password did not match.</body></html>")
+        cookie = f"cookie-{STORE.new_id()}"
+        STORE.cookies[cookie] = (id_, STORE.passwords[id_])
+        self.set_cookie("fs_unlock", cookie, path=f"/s/{POLICY_ID}/{id_}", httponly=True)
+        self.redirect(f"/s/{POLICY_ID}/{id_}", status=303)
+
+
+class LinkDownload(_Link):
+    def get(self, id_, name):
+        item = self.foreign(id_)
+        if item is None or item["kind"] != "share":
+            return self.not_found()
+        if not self.unlocked(id_):
+            self.set_status(403)
+            return self.finish("<html><body>Password required</body></html>")
+        if not any(f["name"] == name for f in item["files"]):
+            return self.not_found()
+        self.set_header("Content-Type", "application/octet-stream")
+        self.finish(_content(name))
+
+
+class LinkArchive(_Link):
+    def get(self, id_):
+        item = self.foreign(id_)
+        if item is None or item["kind"] != "share" or not self.unlocked(id_):
+            return self.not_found()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for f in item["files"]:
+                zf.writestr(f["name"], _content(f["name"]))
+        self.set_header("Content-Type", "application/zip")
+        self.finish(buf.getvalue())
+
+
+class LinkUpload(_Link):
+    """One file per request, the raw body under ``X-Filename``; it lands
+    after ``add_seconds``, and a name holding ``refuse-upload`` is over the
+    request's limit."""
+
+    async def post(self, id_):
+        item = self.foreign(id_)
+        if item is None or item["kind"] != "request":
+            return self.not_found()
+        if not self.unlocked(id_):
+            return self.refuse(403, "password_required")
+        name = unquote(self.request.headers.get("X-Filename", ""))
+        if not name or "/" in name:
+            return self.refuse(400, "bad_filename")
+        if "refuse-upload" in name:
+            return self.refuse(413, "over_cap")
+        await asyncio.sleep(STORE.add_seconds)
+        STORE.uploads.setdefault(id_, []).append({
+            "upload_id": STORE.new_id("u_"), "filename": name, "size": len(self.request.body),
+            "sha256": "0" * 64, "uploaded_at": "2026-09-03T21:00:00Z",
+        })
+        self.finish({"ok": True, "filename": name, "size": len(self.request.body)})
 
 
 class Control(_Base):
@@ -643,28 +686,32 @@ class Control(_Base):
             STORE.foreign.append({
                 "id": id_, "kind": kind, "owner": str(body.get("owner") or "bob"),
                 "title": str(body.get("title") or "Their Record"), "state": "ready",
-                "files": [{"name": str(n), "size": 7, "sha256": "0" * 64} for n in (body.get("names") or [])],
-                "bytes": 7 * len(body.get("names") or []), "skipped": 0,
+                "files": [{"name": str(n), "size": len(_content(str(n))), "sha256": "0" * 64}
+                          for n in (body.get("names") or [])],
+                "skipped": 0,
                 "created_at": "2026-09-03T20:00:00Z", "expires_at": "2026-09-17T20:00:00Z",
                 "has_password": bool(body.get("password")), "tunnel": False,
+                "tls": bool(body.get("tls")),
             })
             if body.get("password"):
                 STORE.passwords[id_] = str(body["password"])
             return self.answer(200, {"id": id_, "url": _with_url(STORE.foreign[-1])["url"]})
+        if action == "certificate":
+            # the https listener presents another certificate from now on
+            name = "peer-b" if body.get("name") == "peer-b" else "peer-a"
+            TLS.load_cert_chain(CERTIFICATES / f"{name}.pem")
+            return self.answer(200, {"ok": True})
         if action == "password":
-            # the owner set or changed a record's password: the grants it
-            # minted stop working, as the hub's do
-            id_ = str(body.get("id") or "")
-            STORE.passwords[id_] = str(body.get("password") or "")
-            STORE.grants = {g: r for g, r in STORE.grants.items() if r != id_}
-            STORE.nudge()
+            # another user set or changed their record's password: the
+            # cookies of the old one stop working, and no stream rings
+            STORE.passwords[str(body.get("id") or "")] = str(body.get("password") or "")
             return self.answer(200, {"ok": True})
         if action == "close":
-            # the owner closed a record: its id answers 410 from now on
-            for item in STORE.items + STORE.foreign:
+            # another user closed their record: its link answers 404 from
+            # now on, and no stream rings
+            for item in STORE.foreign:
                 if item["id"] == str(body.get("id") or ""):
                     item["closed"] = True
-                    STORE.nudge()
                     return self.answer(200, {"ok": True})
             return self.answer(404, {"status": 404, "message": "No such record"})
         if action == "nudge":
@@ -717,16 +764,20 @@ def make_app():
         (rf"{prefix}/stream", Stream),
         (rf"{prefix}/requests/{ID}/uploads", Uploads),
         (rf"{prefix}/requests/{ID}/uploads/{ID}/fetch", Fetch),
-        (rf"{prefix}/records/{ID}", Record),
-        (rf"{prefix}/records/{ID}/unlock", RecordUnlock),
-        (rf"{prefix}/records/{ID}/fetch", RecordFetch),
-        (rf"{prefix}/records/{ID}/upload", RecordUpload),
         (rf"/s/{POLICY_ID}/{ID}", RecipientPage),
+        (rf"/s/{POLICY_ID}/{ID}/unlock", LinkUnlock),
+        (rf"/s/{POLICY_ID}/{ID}/d/(.+)", LinkDownload),
+        (rf"/s/{POLICY_ID}/{ID}/archive", LinkArchive),
+        (rf"/s/{POLICY_ID}/{ID}/u", LinkUpload),
         (r"/_control/([a-z]+)", Control),
     ])
 
 
 if __name__ == "__main__":
-    make_app().listen(PORT, address="127.0.0.1")
-    print(f"mock hub listening on {BASE}", flush=True)
+    app = make_app()
+    app.listen(PORT, address="127.0.0.1")
+    socks = tornado.netutil.bind_sockets(0, "127.0.0.1")
+    tornado.httpserver.HTTPServer(app, ssl_options=TLS).add_sockets(socks)
+    TLS_BASE = f"https://127.0.0.1:{socks[0].getsockname()[1]}"
+    print(f"mock hub listening on {BASE} and {TLS_BASE}", flush=True)
     tornado.ioloop.IOLoop.current().start()

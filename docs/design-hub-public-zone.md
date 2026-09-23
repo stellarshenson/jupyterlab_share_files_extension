@@ -12,7 +12,7 @@ The extension runs in one of two modes, decided once at server start. On a stand
 | `public/*` and `static/*` routes             | mounted                          | not mounted - jupyter_server answers 404                        |
 | Store directory                              | created on first use             | never created                                                   |
 | Per-user Cloudflare tunnel                   | optional                         | never started; the tunnel is the hub's                          |
-| Peer connections                             | yes                              | no                                                              |
+| Connections to another user's record         | through the peer lab's link      | through the hub record's link, read as a browser reads it       |
 | Fallback when the hub contract is incomplete | n/a                              | none - stays in hub mode, hub calls fail with `hub_unavailable` |
 
 The mode decision depends on the spawn variable alone. A missing API path or token never remounts the standalone routes - that would be the exact bypass hub mode exists to close.
@@ -66,7 +66,9 @@ galaxahub injects three things into every lab it manages; the extension reads th
 | `POST api/requests/<id>/uploads/<uid>/fetch` | `POST .../fetch {dest}`                                                                      | the lab picks a fresh directory under the folder the panel names                                             |
 | `GET api/generate-password`                  | none                                                                                         | local                                                                                                        |
 
-Not mounted, because the hub has no equivalent: removing a single upload, peer connections, tunnel setup and reset.
+Not mounted, because the hub has no equivalent: removing a single upload, tunnel setup and reset.
+
+A connection to another user's share or request does not go through the hub API, which answers 404 for a record the caller does not own. The lab server reads the record's public link - its page, `/unlock`, `/d/<path>`, `/archive` and `/u` - as a recipient's browser does, with no hub token.
 
 ## Editing a share
 
@@ -100,6 +102,7 @@ The hub tells a lab when any of its records changed (galaxahub ACC-FILE-2919); t
 - **Panel** - one `EventSource` per attached panel in hub mode; the timer is stopped while it stands. A ring schedules one fetch after 300ms so a burst costs one; the open and every reconnect fetch too, so a ring lost while disconnected is covered. A source the browser closed for good (a non-200 answer while the lab restarts behind the proxy) puts it on the timer until the next refresh reopens the stream
 - **Retry** - a hub that cannot be reached, or answers anything but a stream, is retried every 5s while a panel listens
 - **What rings** - the hub rings when a record changes, when its serving verdict flips, once a second while a transfer of the owner's runs, and when an add settles; the lab rings nothing of its own
+- **Connected rows** - the hub rings nothing when another user changes their record, so the panel reads connected rows on its poll interval, and once a second while it sends an upload into one
 - **Standalone** - unchanged: the timer
 
 ## Password policy
