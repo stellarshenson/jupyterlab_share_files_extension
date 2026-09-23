@@ -1,5 +1,28 @@
-# Makefile for Jupyterlab extensions version 1.40
+# Makefile for Jupyterlab extensions version 1.41
 # changelog:
+#   1.41 - increment_version moves off `build` and onto `publish`; `publish` gains
+#          `test`; the metadata commit and push happen BEFORE either registry is
+#          written to; `npm install` and package-lock.json are dropped.
+#          Measured on 2026-09-20 against jupyterlab_advanced_paste_content_extension.
+#          With increment_version on the build chain, a routine `make install`
+#          rewrote a deliberately pinned 1.0.0, and a build that FAILED in tsc still
+#          consumed the bump - 1.0.0 became 1.0.2 for one artefact that never
+#          existed. No published version can be rebuilt, because building it again
+#          produces the next one. The release path also never reached `test`: the
+#          string `test` appeared nowhere in publish's prerequisite chain, so jest,
+#          pytest and check_auth.py - the gate that exists to catch a handler
+#          missing @tornado.web.authenticated - could not block a release.
+#          `git push` ran AFTER both uploads and aborts outright on a repository
+#          with no remote, leaving npm and PyPI written and the operator reading a
+#          red target; and an npm success followed by a twine failure forks the two
+#          registries permanently, because npm never re-serves a consumed version.
+#          Committing first costs nothing when a later step fails.
+#          `$(NPM) install` ran immediately before `jlpm install`, writing a
+#          package-lock.json that nothing reads - CI installs with jlpm, and npm
+#          honours `overrides` rather than the `resolutions` these projects pin
+#          with. `git add` then named that file, and on a project which never
+#          produces it the add fails on an unmatched pathspec, so the commit and
+#          push never run at all.
 #   1.40 - publish stages yarn.lock in the post-publish commit. It staged only
 #          package.json and package-lock.json, and `git add package.json` takes every
 #          change in that file, so a dependency added since the last commit went out
@@ -139,8 +162,7 @@ increment_version: check_dependencies
 # bare `jupyter-builder build`: it emits no distribution at all, and after `clean` it
 # aborts with "Cannot find module lib/index.js" because it never runs tsc.
 ## build packages
-build: clean check_dependencies increment_version
-	$(NPM) install
+build: clean check_dependencies
 	jlpm install
 	jlpm prettier
 	python -m build
@@ -156,6 +178,12 @@ test: check_dependencies
 		pytest -vv -r ap; \
 	else \
 		echo "test: no $(PYTHON_NAME)/tests directory - skipping pytest"; \
+	fi
+	@if [ -f ".github/scripts/check_auth.py" ] && [ -d "$(PYTHON_NAME)/tests" ]; then \
+		echo "Checking every endpoint requires authentication..."; \
+		python .github/scripts/check_auth.py; \
+	else \
+		echo "test: no .github/scripts/check_auth.py - skipping the auth gate"; \
 	fi
 
 ## clean builds and installables
@@ -187,17 +215,27 @@ check_dependencies:
 		echo "All dependencies are installed."; \
 	fi
 
+# Order is load-bearing. increment_version runs here, not on build, so an ordinary
+# `make install` never rewrites a pinned version and every published version stays
+# rebuildable. test runs before install, so a red suite stops the release. The commit
+# and push happen before either registry is written to: a failure there costs nothing,
+# whereas npm permanently consumes a version it has accepted.
 ## publish package to npm and PyPI
-publish: check_dependencies install
+publish: check_dependencies increment_version test install
 	@ls dist/*.whl >/dev/null 2>&1 && ls dist/*.tar.gz >/dev/null 2>&1 || { \
 		echo "publish: dist/ holds no wheel or sdist - run make build first" >&2; \
 		exit 1; \
 	}
-	$(NPM) publish --access public
-	python -m twine upload dist/*
-	git add package.json package-lock.json yarn.lock
-	git commit -m "chore: post-publish $$($(NODE) -p "require('./package.json').version") package metadata"
+	git add package.json yarn.lock
+	git commit -m "chore: release $$($(NODE) -p "require('./package.json').version") package metadata"
 	git push
+	$(NPM) publish --access public
+	@python -m twine upload dist/* || { \
+		echo "publish: npm holds $$($(NODE) -p "require('./package.json').version") and PyPI does not." >&2; \
+		echo "Do NOT re-run publish - it would consume the next version on npm too." >&2; \
+		echo "Fix the credentials, then run: python -m twine upload dist/*" >&2; \
+		exit 1; \
+	}
 
 ## install required build dependencies into the project-local nodeenv (only what's missing)
 install_dependencies:
