@@ -556,10 +556,15 @@ class _Link(tornado.web.RequestHandler):
 
 class RecipientPage(_Link):
     """The record's page. This user's own record answers ``page_status``
-    (what the lab's link check opens), another user's its page."""
+    (what the lab's link check opens), another user's its page, or the
+    status ``_control/outage`` set for it."""
 
     def get(self, id_):
         item = self.foreign(id_)
+        if item is not None and item.get("page_status", 200) != 200:
+            # another user's page that does not answer for now
+            self.set_status(item["page_status"])
+            return self.finish("<html><body>unavailable</body></html>")
         if item is not None:
             return self.finish(_page(item, self.unlocked(id_)))
         exists = any(i["id"] == id_ for i in STORE.items)
@@ -736,6 +741,13 @@ class Control(_Base):
             return self.answer(200, {"base": STORE.tunnel_base, "delay": STORE.tunnel_delay,
                                      "registers": STORE.tunnel_registers,
                                      "ready": STORE.capabilities["tunnel_ready"]})
+        if action == "outage":
+            # another user's page answers this status until it is set to 200
+            for item in STORE.foreign:
+                if item["id"] == str(body.get("id") or ""):
+                    item["page_status"] = int(body.get("status") or 200)
+                    return self.answer(200, {"ok": True})
+            return self.answer(404, {"status": 404, "message": "No such record"})
         if action == "page":
             # the status the recipient page answers
             STORE.page_status = int(body.get("status") or 200)

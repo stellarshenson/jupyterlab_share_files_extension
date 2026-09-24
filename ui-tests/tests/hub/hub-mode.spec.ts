@@ -1935,7 +1935,7 @@ test('a password the owner changes after the connect is asked for again from the
 }) => {
   // ACC-HUBM-176: the connection works again once the new password is given
   const made = await foreign(request, {
-    title: 'Guarded',
+    title: 'Guarded quarterly figures',
     names: ['a.csv'],
     password: 'first'
   });
@@ -1944,7 +1944,7 @@ test('a password the owner changes after the connect is asked for again from the
   await connect(page, made.url);
   await dialog.locator('input[type="password"]').fill('first');
   await dialog.locator('button', { hasText: 'Connect' }).click();
-  const row = connected(page, 'Guarded');
+  const row = connected(page, 'Guarded quarterly figures');
   await expect(row).toHaveCount(1);
 
   // the hub rings no stream for another user's record: the panel's poll
@@ -1956,6 +1956,15 @@ test('a password the owner changes after the connect is asked for again from the
   // the row itself names the state, and its hover names the step
   const badge = row.locator('.jp-ShareFilesPanel-offline');
   await expect(badge).toHaveText('password changed');
+  // a label that wraps in a narrow sidebar stays inside its own row
+  const header = await row
+    .locator('.jp-ShareFilesPanel-itemHeader')
+    .boundingBox();
+  const label = await badge.boundingBox();
+  expect(label!.y).toBeGreaterThanOrEqual(header!.y);
+  expect(label!.y + label!.height).toBeLessThanOrEqual(
+    header!.y + header!.height
+  );
   await expect(badge).toHaveAttribute(
     'title',
     /^The owner set or changed this record's password - choose Connect Again/
@@ -2132,6 +2141,120 @@ test('disconnecting during an upload says the other files are not sent', async (
     .toBe(1);
   await page.contents.deleteFile('stop-a.txt');
   await page.contents.deleteFile('stop-b.txt');
+});
+
+test('an upload into a request its owner closes meanwhile says it ended', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-180
+  await request.post(`${HUB}/_control/add`, { data: { seconds: 2 } });
+  await page.contents.uploadContent('1', 'text', 'gone-a.txt');
+  await page.contents.uploadContent('2', 'text', 'gone-b.txt');
+  const made = await foreign(request, {
+    kind: 'request',
+    title: 'Vanishing Inbox'
+  });
+  await openPanel(page);
+  await connect(page, made.url);
+  const row = connected(page, 'Vanishing Inbox');
+  await expect(row).toHaveCount(1);
+
+  await dragOnto(page, 'gone-a.txt', row, ['gone-b.txt']);
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    'uploading'
+  );
+  await request.post(`${HUB}/_control/close`, { data: { id: made.id } });
+  await expect(row.locator('.jp-ShareFilesPanel-offline')).toHaveText('closed');
+  await expect
+    .poll(() =>
+      notes(
+        page,
+        'error',
+        'The upload to Vanishing Inbox ended: The owner closed this share or request, or it expired.'
+      )
+    )
+    .toBe(1);
+  // said once, not at every read of the closed row: two more polls read it
+  await setPollInterval(page, 2);
+  await page.waitForTimeout(4500);
+  expect(
+    await notes(page, 'error', 'The upload to Vanishing Inbox ended')
+  ).toBe(1);
+  await page.contents.deleteFile('gone-a.txt');
+  await page.contents.deleteFile('gone-b.txt');
+});
+
+test('a file over the request limit is named and nothing is sent', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-180: the request page states its limit; the lab reads it with
+  // the row and refuses before sending
+  await request.post(`${HUB}/_control/capabilities`, {
+    data: { max_upload_bytes: 2 }
+  });
+  await page.contents.uploadContent('too big', 'text', 'big-up.txt');
+  const made = await foreign(request, {
+    kind: 'request',
+    title: 'Small Inbox'
+  });
+  await openPanel(page);
+  await connect(page, made.url);
+  const row = connected(page, 'Small Inbox');
+  await expect(row).toHaveCount(1);
+
+  await dragOnto(page, 'big-up.txt', row);
+  await expect
+    .poll(() =>
+      notes(
+        page,
+        'warning',
+        'The upload was not sent: This request accepts files up to 2 B; big-up.txt is larger'
+      )
+    )
+    .toBe(1);
+  expect(await notes(page, 'error', 'Upload failed')).toBe(0);
+  const calls = (await (await request.get(`${HUB}/_control/calls`)).json())
+    .calls;
+  expect(calls.filter((c: any) => c.path.endsWith('/u'))).toEqual([]);
+  await page.contents.deleteFile('big-up.txt');
+});
+
+test('a drop onto a request that does not answer for now says the upload started', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-180: a plain 'offline' row still takes the upload
+  await page.contents.uploadContent('q', 'text', 'quiet-up.txt');
+  const made = await foreign(request, {
+    kind: 'request',
+    title: 'Quiet Inbox'
+  });
+  await openPanel(page);
+  await connect(page, made.url);
+  const row = connected(page, 'Quiet Inbox');
+  await expect(row).toHaveCount(1);
+  await setPollInterval(page, 2);
+  await request.post(`${HUB}/_control/outage`, {
+    data: { id: made.id, status: 503 }
+  });
+  const badge = row.locator('.jp-ShareFilesPanel-offline');
+  await expect(badge).toHaveText('offline');
+
+  await dragOnto(page, 'quiet-up.txt', row);
+  await expect
+    .poll(() => notes(page, 'info', 'The upload to Quiet Inbox has started.'))
+    .toBe(1);
+  // the record answers again: the end of the upload is announced
+  await request.post(`${HUB}/_control/outage`, {
+    data: { id: made.id, status: 200 }
+  });
+  await expect(badge).toHaveCount(0);
+  await expect
+    .poll(() => notes(page, 'success', '1 item(s) uploaded to Quiet Inbox'))
+    .toBe(1);
+  await page.contents.deleteFile('quiet-up.txt');
 });
 
 test('a drop onto a closed request says it was not sent', async ({

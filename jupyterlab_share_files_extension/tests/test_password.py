@@ -24,6 +24,7 @@ from jupyterlab_share_files_extension.storage import (
     generate_password,
     verify_password,
 )
+from jupyterlab_share_files_extension.tests._stubs import stub_handler
 
 
 # --------------------------------------------------------------------------- #
@@ -299,33 +300,7 @@ class _PeerResponse:
 
 def _connections_handler(workspace, body, peer_responses):
     """ConnectionsHandler with the network and Tornado plumbing stubbed."""
-    handler = object.__new__(routes.ConnectionsHandler)
-    handler.request = _FakeRequest()
-    # RequestHandler.settings is a read-only view of application.settings
-    handler.application = type(
-        "_App",
-        (),
-        {
-            "settings": {
-                "share_files_config": ShareFilesConfig(),
-                "base_url": "/",
-                "server_root_dir": str(workspace),
-            }
-        },
-    )()
-    handler._current_user = "tester"  # satisfies @tornado.web.authenticated
-    handler._json_body = body
-    handler.get_json_body = lambda: handler._json_body
-    handler.status = 200
-    handler.payload = None
-    handler.set_status = lambda code: setattr(handler, "status", code)
-    handler.write_json = lambda p: setattr(handler, "payload", p)
-
-    def _write_error(code, message, reason=""):
-        handler.status = code
-        handler.payload = {"error": message, "reason": reason} if reason else {"error": message}
-
-    handler.write_error_json = _write_error
+    handler = stub_handler(routes.ConnectionsHandler, workspace, request=_FakeRequest(), body=body)
     handler.fetched = []
 
     async def _peer_fetch(url, **kwargs):

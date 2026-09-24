@@ -78,7 +78,7 @@ jupyterlab_share_files set-password share AB23CD45 --clear
 
 ## Connections (other people's links)
 
-- **`connect <link>`** - subscribe to someone's share or upload to their request; prompts for the password if the peer requires one
+- **`connect <link> [--trust-certificate]`** - subscribe to someone's share or upload to their request. A password-protected link answers `password required`; connect it from the panel. If the link's host uses a certificate the system does not trust, such as a self-signed one, `connect` stops and shows the certificate's fingerprint; `--trust-certificate` trusts that certificate, prints the host and its fingerprint, and the connection keeps it until it is removed
 - **`disconnect <key>`** - remove a connection
 - **`pick-up <key> [names...] [--target-dir DIR]`** - save files from a connected share into your workspace (all files if no names given)
 - **`send-to-request <key> <paths...> [--uploader NAME]`** - upload files to a connected request

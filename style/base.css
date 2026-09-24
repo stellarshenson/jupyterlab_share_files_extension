@@ -329,7 +329,7 @@
   align-items: center;
   gap: 6px;
   padding: 0 8px;
-  height: 24px;
+  min-height: 24px;
   line-height: 24px;
   cursor: pointer;
   user-select: none;
@@ -771,6 +771,10 @@
   font-size: var(--jp-ui-font-size0);
   margin-left: 6px;
   text-transform: uppercase;
+
+  /* 'password changed' wraps in a narrow sidebar: a short line height keeps
+     the wrapped label compact, and the row header grows around it */
+  line-height: 1.2;
 }
 
 /* the certificate trust dialog's fingerprint: 95 characters without a space */

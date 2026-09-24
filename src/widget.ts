@@ -477,12 +477,27 @@ export class ShareFilesPanel extends Widget {
           ...cached,
           uploading: true
         });
+        if (this._state.offlineKeys.has(connectionKey)) {
+          // the row reads offline, so its meta does not show this upload
+          // now: say that it started
+          Notification.info(`The upload to ${cached.name} has started.`, {
+            autoClose: 8000
+          });
+        }
       }
       return true;
     } catch (err: any) {
-      Notification.error(`Upload failed: ${err.message || err}`, {
-        autoClose: 8000
-      });
+      if (this._hubMode && err?.response?.status === 413) {
+        // the lab read the request's limit and sent nothing: the same
+        // outcome as a row that takes no upload
+        Notification.warning(`The upload was not sent: ${err.message}`, {
+          autoClose: 8000
+        });
+      } else {
+        Notification.error(`Upload failed: ${err.message || err}`, {
+          autoClose: 8000
+        });
+      }
       return false;
     } finally {
       this._state.busyKeys.delete(connectionKey);
@@ -2532,8 +2547,8 @@ export class ShareFilesPanel extends Widget {
     downloadUrl: string
   ): Menu {
     const menu = new Menu({ commands: this._commands });
-    // on a hub the bytes go from the hub into the workspace, never through
-    // the lab to the browser (ACC-HUBM-175)
+    // on a hub a connected entry is saved into the workspace only: the hub
+    // routes mount no connections/<key>/download, so there is nothing to relay
     if (!this._hubMode) {
       menu.addItem({
         command: 'share-files-panel:download-remote-entry',
@@ -3654,6 +3669,21 @@ export class ShareFilesPanel extends Widget {
       // the badge tooltip.
       const reason = offlineReason(err);
       this._state.offlineReasons.set(conn.key, reason);
+      const data = this._state.connectionData.get(conn.key);
+      if (
+        this._hubMode &&
+        reason === hubReasonText('closed') &&
+        data?.kind === 'request' &&
+        data.uploading
+      ) {
+        // a record closed during an upload is read no more, so the end of
+        // the upload is said here, once; the row keeps saying closed. The
+        // last files may have landed just before the close, so it 'ended'
+        Notification.error(`The upload to ${data.name} ended: ${reason}`, {
+          autoClose: 8000
+        });
+        this._state.connectionData.set(conn.key, { ...data, uploading: false });
+      }
       // Log once per (link, reason) so a 15s poll does not flood the console,
       // while a peer that starts failing differently - or the same failure on
       // a new link - still gets its own line.

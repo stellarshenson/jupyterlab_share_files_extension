@@ -14,16 +14,17 @@ import hashlib
 import json
 import ssl
 import time
-import types
 from pathlib import Path
 
+import pytest
 import tornado.httpserver
 import tornado.netutil
 import tornado.web
 
-from jupyterlab_share_files_extension import routes
+from jupyterlab_share_files_extension import cli, routes
 from jupyterlab_share_files_extension.config import ShareFilesConfig
 from jupyterlab_share_files_extension.storage import ConnectionStore
+from jupyterlab_share_files_extension.tests._stubs import stub_handler
 
 FIXTURES = Path(__file__).parent / "fixtures"
 END = "-----END CERTIFICATE-----"
@@ -43,6 +44,13 @@ PEM_B, PRINT_B = _certificate("peer-b")
 PEM_C, PRINT_C = _certificate("peer-c")
 # a self-signed certificate that expired in 2001
 PEM_D, PRINT_D = _certificate("peer-d")
+
+
+@pytest.fixture(autouse=True)
+def _standalone(monkeypatch):
+    # the lab under test is a standalone one, also when the suite runs inside
+    # a lab a hub spawned
+    monkeypatch.delenv("SHARE_FILES_PUBLIC_ZONE", raising=False)
 
 
 class _Peer:
@@ -98,27 +106,7 @@ class _Peer:
 def _handler(cls, workspace, body=None, verify=True):
     """A handler of ``cls`` with no Tornado server: the JSON body and the
     answer are plain attributes, the peer fetches are real."""
-    handler = object.__new__(cls)
-    handler.request = types.SimpleNamespace(method="POST", headers={}, protocol="http", host="lab.local:8888")
-    handler.application = types.SimpleNamespace(settings={
-        "share_files_config": ShareFilesConfig(verify_peer_tls=verify),
-        "base_url": "/",
-        "server_root_dir": str(workspace),
-    })
-    handler._current_user = "tester"  # satisfies @tornado.web.authenticated
-    handler.get_json_body = lambda: body or {}
-    handler.status = 200
-    handler.payload = None
-    handler.set_status = lambda code: setattr(handler, "status", code)
-    handler.write_json = lambda p: setattr(handler, "payload", p)
-    handler.set_header = lambda name, value: None
-
-    def _write_error(code, message, reason=""):
-        handler.status = code
-        handler.payload = {"error": message, "reason": reason} if reason else {"error": message}
-
-    handler.write_error_json = _write_error
-    return handler
+    return stub_handler(cls, workspace, config=ShareFilesConfig(verify_peer_tls=verify), body=body or {})
 
 
 async def _connect(workspace, link, trust="", verify=True, password=""):
@@ -266,3 +254,32 @@ def test_a_host_that_does_not_answer_is_said_so_at_connect(tmp_path):
     link = f"https://127.0.0.1:{port}/user/bob/jupyterlab-share-files-extension/public/share/QQQQ22"
     handler = asyncio.run(_connect(tmp_path, link))
     assert (handler.status, handler.payload) == (502, {"error": "Could not reach the peer"})
+
+
+async def test_the_command_line_trusts_a_certificate_only_when_told(jp_fetch, jp_http_port, jp_base_url, jp_auth_header, monkeypatch, capsys):
+    # ACC-SHARE-182: the CLI against a real lab server and the https peer
+    monkeypatch.setenv("SHARE_FILES_BASE_URL", f"http://127.0.0.1:{jp_http_port}{jp_base_url}")
+    monkeypatch.setenv("SHARE_FILES_TOKEN", jp_auth_header["Authorization"].split()[-1])
+    peer = _Peer()
+    try:
+        with pytest.raises(RuntimeError) as refused:
+            await asyncio.to_thread(cli.connect, peer.request)
+        assert await asyncio.to_thread(cli.main, ["--json", "connect", peer.request, "--trust-certificate"]) == 0
+        connected = json.loads(capsys.readouterr().out)
+        stored = json.loads((await jp_fetch("jupyterlab-share-files-extension", "api", "connections")).body)
+        # the key holds the peer's https://; the CLI still reaches the connection by it
+        await asyncio.to_thread(cli.disconnect, connected["key"])
+        left = json.loads((await jp_fetch("jupyterlab-share-files-extension", "api", "connections")).body)
+        # a certificate that cannot be used even when trusted is still refused
+        peer.present("peer-d")
+        with pytest.raises(RuntimeError) as expired:
+            await asyncio.to_thread(cli.connect, peer.request, True)
+    finally:
+        peer.server.stop()
+    assert "presents a certificate this lab does not trust (self-signed certificate)" in str(refused.value)
+    assert f"Its SHA-256 fingerprint is {PRINT_A}" in str(refused.value)
+    assert "--trust-certificate" in str(refused.value)
+    assert connected["trusted_certificate"] == {"host": peer.host, "fingerprint": PRINT_A}
+    assert [(c["key"], c["certificate"]) for c in stored["connections"]] == [(connected["key"], PEM_A)]
+    assert left["connections"] == []
+    assert "cannot be used (certificate has expired)" in str(expired.value)

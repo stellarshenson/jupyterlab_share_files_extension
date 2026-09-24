@@ -1114,6 +1114,14 @@ _PAGES: dict[str, dict] = {}
 # the page states sizes in binary units: "5.0 GB" is 5 GiB
 _SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
 
+
+def _size_text(n: int) -> str:
+    """``n`` bytes in the largest unit that holds it, one decimal as the page
+    and the panel write sizes ('5.0 GB'); whole bytes as they are. Rounded
+    down, so a stated limit is never above the real one."""
+    unit = next(u for u in ("TB", "GB", "MB", "KB", "B") if n >= _SIZE_UNITS[u] or u == "B")
+    return f"{n} B" if unit == "B" else f"{n * 10 // _SIZE_UNITS[unit] / 10:.1f} {unit}"
+
 # the panel's answer for a link status other than 200; 401 is a page that
 # stays locked, so the owner set or changed the password since the connect
 _LINK_ANSWERS = {
@@ -1604,6 +1612,17 @@ class HubConnectionUploadHandler(_HubConnectionBase):
         files = self._files(paths)
         if files is None:
             return
+        # the request page the row was read from states its per-file limit:
+        # a file over it is named and nothing is sent, instead of the hub
+        # refusing it part way through. The limit comes first, the names
+        # last, because the panel's notice cuts a long message at its end
+        cap = (_PAGES.get(key) or {}).get("cap", 0)
+        big = [f.name for f in files if cap and f.stat().st_size > cap]
+        if big:
+            verb = "is" if len(big) == 1 else "are"
+            return self.write_error_json(
+                413, f"This request accepts files up to {_size_text(cap)}; {', '.join(big)} {verb} larger"
+            )
         state = _UPLOADS[key] = {
             "state": "running", "copied": 0, "total": sum(f.stat().st_size for f in files), "count": 0, "reason": "",
         }

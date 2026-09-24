@@ -2,26 +2,30 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
-## [Unreleased]
+## [1.2.53] - 2026-09-24
 
 ### Added
 
 - A link whose host presents a certificate the system does not trust, a self-signed one among them, opens a dialog at connect with the host, the reason and the SHA-256 fingerprint; Do Not Trust is the default. Trust keeps that one certificate with the connection until it is removed, and every fetch for the connection accepts that certificate only. A different certificate later marks the row "untrusted", and Connect Again asks about the new one. A certificate the lab could not use even once trusted, an expired one, is named at connect and not offered. Standalone and hub mode alike
+- `jupyterlab_share_files connect <link> --trust-certificate` trusts such a certificate from the command line, as Trust does in the panel, and prints the host and the fingerprint; without the flag, `connect` stops, shows the fingerprint and names the flag
 
 ### Changed
 
 - `c.ShareFilesConfig.verify_peer_tls = False` is no longer needed for a self-signed peer or hub; it now skips the check, and the question, for every peer
 - The Connect button is filled in the colour of the theme's icons instead of the accent blue, and it stays whole in a narrow sidebar
-
 - Hub mode: a connection to another user's share or request reads the record through the link its owner handed out, as a recipient's browser does, and sends it no hub token: the page, its unlock form, `/d/<path>`, `/archive` and `/u`. The hub answers 404 for a record the caller does not own, by design, so the `records/<id>` routes requested for 1.2.50 are withdrawn, and a connection now works on the live hub
 - Hub mode: a connection needs the whole link; an id alone, or a `/hub/s/` address, is refused with a sentence asking for the link
 - Hub mode: a connected share's bytes pass through the lab, streamed to disk within the peer download limit; a connected request's files go one per request under their own names, so a folder's files arrive without the folder, and an upload refusal names its reason
 - Hub mode: the panel reads connected rows again on its poll interval, and once a second while the lab sends an upload into one, because the hub signals no change to another user's record
 - Hub mode: a drop or paste onto a connected request whose row says closed, password changed or untrusted sends nothing and names the row's reason; disconnecting during an upload says that a file already on its way is still sent and no further file is
+- Hub mode: a file larger than the connected request's limit, as its page states it, is named with the limit, and nothing is sent; an upload into a request its owner closes meanwhile says it ended; an upload into a request that does not answer for now says it has started, and its end is said when the record answers again
 - Dependencies moved to the newest release inside their ranges (`@jupyterlab/*` 4.6.4, webpack 5.111.1, prettier 3.9.9); the Makefile follows the canonical 1.41, which increases the version on `make publish` only and runs the tests before it publishes
 
 ### Fixed
 
+- The `password changed` row label wraps inside its row in a narrow sidebar instead of spilling over the rows above and below
+- `jupyterlab_share_files connect` lists a share's entry names by reading them through the lab, so they appear for a protected, trusted or hub connection too; the bundled skill no longer claims that `connect` asks for a password
+- `disconnect`, `pick-up` and `send-to-request` reach a standalone connection by its key; the key holds the peer's `https://`, so it was not found before
 - A hub paste that is refused no longer also says it was pasted as a copy, and the cut stays on the panel clipboard for the next try; a paste that ends after a newer cut or copy leaves that one in place
 
 ## [1.2.50] - 2026-09-23

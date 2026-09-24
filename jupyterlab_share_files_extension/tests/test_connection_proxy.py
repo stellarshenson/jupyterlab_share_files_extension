@@ -12,13 +12,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import types
 
 import pytest
 import tornado.httputil
 
 from jupyterlab_share_files_extension import routes
-from jupyterlab_share_files_extension.config import ShareFilesConfig
 from jupyterlab_share_files_extension.storage import ConnectionStore
+from jupyterlab_share_files_extension.tests._stubs import stub_handler
 
 PEER_HOST = "https://peer.example.com"
 PEER_LINK = PEER_HOST + "/user/bob/jupyterlab-share-files-extension/public/share/QQQQ22"
@@ -61,29 +62,13 @@ def _handler(cls, workspace, *, password="", link=PEER_LINK, name="", max_gb="",
     entry = ConnectionStore(str(workspace)).add(
         "share", "QQQQ22", PEER_HOST, link=link, password=password
     )
-    handler = object.__new__(cls)
-    handler.request = type("_Req", (), {"method": "GET", "headers": {}})()
-    handler.application = type(
-        "_App",
-        (),
-        {
-            "settings": {
-                "share_files_config": ShareFilesConfig(),
-                "base_url": "/",
-                "server_root_dir": str(workspace),
-            }
-        },
-    )()
-    handler._current_user = "tester"
-    handler.status = 200
-    handler.payload = None
+    handler = stub_handler(cls, workspace, request=types.SimpleNamespace(method="GET", headers={}))
     handler.body = None
     handler.headers = {}
     handler.calls = []
     handler.chunks = []  # what the download handler streamed before finish
     handler.get_argument = lambda key, default="": {"name": name, "max_gb": max_gb}.get(key, default)
     handler.set_header = lambda k, v: handler.headers.__setitem__(k, v)
-    handler.write_json = lambda p: setattr(handler, "payload", p)
     handler.write = handler.chunks.append
 
     async def _flush():
@@ -98,12 +83,6 @@ def _handler(cls, workspace, *, password="", link=PEER_LINK, name="", max_gb="",
             handler.headers["Content-Type"] = kwargs["set_content_type"]
 
     handler.finish = _finish
-
-    def _write_error(code, message, reason=""):
-        handler.status = code
-        handler.payload = {"error": message, "reason": reason} if reason else {"error": message}
-
-    handler.write_error_json = _write_error
 
     async def _peer_fetch(url, **kwargs):
         handler.calls.append((url, kwargs))

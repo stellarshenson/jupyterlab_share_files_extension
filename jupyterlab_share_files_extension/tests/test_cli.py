@@ -103,6 +103,44 @@ def test_add_files_posts_paths_to_items_endpoint(monkeypatch):
     assert captured["call"] == ("POST", "api/shares/AB23/items", {"paths": ["a.txt", "b.txt"]})
 
 
+def test_connect_lists_a_share_s_entries_read_through_the_lab(monkeypatch):
+    # the lab holds the connection's password and certificate, so the names
+    # are read through it; a failed read leaves them out
+    calls = []
+    manifest = {"entries": [{"name": "a.txt"}]}
+
+    def fake(method, endpoint, body=None):
+        calls.append((method, endpoint))
+        if endpoint == "api/connections":
+            return {"key": "share:https://peer:AB23", "kind": "share", "name": "Theirs", "link": "https://peer/x"}
+        if manifest is None:
+            raise cli.ServerError("Server returned 502: Could not reach the peer", {})
+        return manifest
+
+    monkeypatch.setattr(cli, "_request", fake)
+    assert cli.connect("https://peer/x")["entries"] == ["a.txt"]
+    assert calls[-1] == ("GET", "api/connections/share%3Ahttps%3A%2F%2Fpeer%3AAB23/manifest")
+    manifest = None
+    assert "entries" not in cli.connect("https://peer/x")
+
+
+def test_a_standalone_connection_key_is_one_path_segment(monkeypatch):
+    # a standalone key holds the peer's https://, which the route's single
+    # segment only matches encoded
+    calls = []
+    monkeypatch.setattr(cli, "_request", lambda method, endpoint, body=None: calls.append((method, endpoint)) or {})
+    key = "request:https://peer:RQ77"
+    cli.disconnect(key)
+    cli.pick_up(key)
+    cli.send_to_request(key, ["a.txt"])
+    segment = "request%3Ahttps%3A%2F%2Fpeer%3ARQ77"
+    assert calls == [
+        ("DELETE", f"api/connections/{segment}"),
+        ("POST", f"api/connections/{segment}/save"),
+        ("POST", f"api/connections/{segment}/upload"),
+    ]
+
+
 def test_remove_files_encodes_names_as_query(monkeypatch):
     captured = {}
 

@@ -1786,6 +1786,31 @@ async def test_an_upload_refused_part_way_counts_the_files_that_landed(jp_fetch,
     assert fake_link.record(link)["uploads"] == [("a.txt", b"a")]
 
 
+def test_a_limit_is_written_as_the_page_writes_sizes():
+    # rounded down: 5,000,000,000 bytes are 4.66 GB, and '4.7 GB' would state
+    # a limit above the real one
+    assert [hub_routes._size_text(n) for n in (2, 1024, 1000 * 1024**2, 5 * 1024**3, 5_000_000_000)] == [
+        "2 B", "1.0 KB", "1000.0 MB", "5.0 GB", "4.6 GB"]
+
+
+async def test_a_file_over_the_request_s_limit_is_named_before_anything_is_sent(jp_fetch, fake_hub, fake_link, jp_root_dir):
+    # the page the row was read from states the limit: the lab names the file
+    # and the limit, and sends none of the chosen files
+    link = fake_link.add(kind="request", cap=2)
+    key = (await _connect(jp_fetch, link))["key"]
+    await _manifest(jp_fetch, key)
+    (jp_root_dir / "in").mkdir()
+    (jp_root_dir / "in/a.txt").write_bytes(b"a")
+    (jp_root_dir / "in/big.txt").write_bytes(b"too big")
+    before = len(fake_link.calls)
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["in"]})
+    assert err.value.code == 413
+    assert json.loads(err.value.response.body)["error"] == "This request accepts files up to 2 B; big.txt is larger"
+    assert [c for c in fake_link.calls[before:] if c[0] == "POST"] == []
+    assert (await _manifest(jp_fetch, key))["uploading"] is False
+
+
 async def test_an_upload_passes_over_a_link_that_leads_nowhere(jp_fetch, fake_hub, fake_link, jp_root_dir):
     link = fake_link.add(kind="request")
     key = (await _connect(jp_fetch, link))["key"]

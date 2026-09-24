@@ -98,6 +98,20 @@ def _ssl_context() -> Optional[ssl.SSLContext]:
     return None
 
 
+class ServerError(RuntimeError):
+    """A non-2xx answer from the extension API; ``payload`` is its JSON body."""
+
+    def __init__(self, message: str, payload: dict):
+        super().__init__(message)
+        self.payload = payload
+
+
+def _connection(key: str, *rest: str) -> str:
+    """The API path of a connection: the key holds the peer's ``https://``
+    on a standalone lab, so it is encoded as one path segment."""
+    return "/".join(["api/connections", urllib.parse.quote(key, safe=""), *rest])
+
+
 def _request(method: str, endpoint: str, body: Optional[dict] = None) -> Any:
     """Call the extension API and return parsed JSON.
 
@@ -117,12 +131,14 @@ def _request(method: str, endpoint: str, body: Optional[dict] = None) -> Any:
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")
         message = detail
+        payload: dict = {}
         try:
             parsed = json.loads(detail)
             message = parsed.get("error") or parsed.get("message") or detail
+            payload = parsed
         except (ValueError, AttributeError):
             pass
-        raise RuntimeError(f"Server returned {exc.code}: {message}") from None
+        raise ServerError(f"Server returned {exc.code}: {message}", payload) from None
     except urllib.error.URLError as exc:
         raise RuntimeError(
             f"Could not reach the Jupyter server at {_base_url()}: {exc.reason}"
@@ -133,21 +149,6 @@ def _request(method: str, endpoint: str, body: Optional[dict] = None) -> Any:
         return json.loads(raw)
     except ValueError:
         return raw
-
-
-def _fetch_public_json(link: str) -> Optional[dict]:
-    """Best-effort, unauthenticated GET of a peer's public manifest.
-
-    Mirrors the panel's `credentials: 'omit'` fetch - never sends the token, so
-    it cannot trigger JupyterHub's spawn-as-owner flow. Returns None on failure.
-    """
-    url = link.rstrip("/") + "/manifest"
-    try:
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, context=_ssl_context()) as resp:  # noqa: S310
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -237,26 +238,49 @@ def generate_password() -> dict:
     return _request("GET", "api/generate-password")
 
 
-def connect(link: str) -> dict:
+def connect(link: str, trust_certificate: bool = False) -> dict:
     """Connect to someone else's share or request link. Returns the connection
-    `key` used by other subcommands, plus - for a share - the entry names."""
-    c = _request("POST", "api/connections", {"link": link})
+    `key` used by other subcommands, plus - for a share - the entry names.
+
+    A host whose certificate the system does not trust is refused unless
+    ``trust_certificate`` is set: then the certificate the lab read is trusted,
+    as Trust in the panel's dialog does, and kept with the connection."""
+    trusted = None
+    try:
+        c = _request("POST", "api/connections", {"link": link})
+    except ServerError as exc:
+        cert = exc.payload.get("certificate")
+        if not cert:
+            raise
+        if not trust_certificate:
+            raise RuntimeError(
+                f"{exc}. Its SHA-256 fingerprint is {cert['fingerprint']}. "
+                "If you know this host and this certificate, run connect again with --trust-certificate"
+            ) from None
+        c = _request("POST", "api/connections", {"link": link, "trust": cert["fingerprint"]})
+        trusted = {"host": cert["host"], "fingerprint": cert["fingerprint"]}
     result = {
         "key": c.get("key"),
         "kind": c.get("kind"),
         "name": c.get("name") or c.get("id"),
         "link": c.get("link"),
     }
-    if c.get("kind") == "share" and c.get("link"):
-        manifest = _fetch_public_json(c["link"])
-        if manifest:
+    if trusted:
+        result["trusted_certificate"] = trusted
+    if c.get("kind") == "share" and c.get("key"):
+        # read through the lab, which holds the connection's password and
+        # certificate; the names are a courtesy, so a failed read omits them
+        try:
+            manifest = _request("GET", _connection(c["key"], "manifest"))
             result["entries"] = [e.get("name") for e in manifest.get("entries", [])]
+        except RuntimeError:
+            pass
     return result
 
 
 def disconnect(key: str) -> dict:
     """Remove a connection by its `key`."""
-    return _request("DELETE", f"api/connections/{key}")
+    return _request("DELETE", _connection(key))
 
 
 def close_share(share_id: str) -> dict:
@@ -336,7 +360,7 @@ def pick_up(
     body: dict = {"target_dir": target_dir}
     if names is not None:
         body["names"] = names
-    return _request("POST", f"api/connections/{key}/save", body)
+    return _request("POST", _connection(key, "save"), body)
 
 
 def send_to_request(key: str, paths: list[str], uploader: str = "") -> dict:
@@ -344,7 +368,7 @@ def send_to_request(key: str, paths: list[str], uploader: str = "") -> dict:
     optional label shown to the request's owner."""
     return _request(
         "POST",
-        f"api/connections/{key}/upload",
+        _connection(key, "upload"),
         {"paths": paths, "uploader": uploader},
     )
 
@@ -415,7 +439,7 @@ _HANDLERS = {
     "create-request": lambda a: create_request(a.name, _resolve_password(a)),
     "set-password": _cmd_set_password,
     "generate-password": lambda a: generate_password(),
-    "connect": lambda a: connect(a.link),
+    "connect": lambda a: connect(a.link, a.trust_certificate),
     "disconnect": lambda a: disconnect(a.key),
     "close-share": lambda a: close_share(a.id),
     "close-request": lambda a: close_request(a.id),
@@ -479,6 +503,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("connect", help="connect to a share or request link")
     p.add_argument("link")
+    p.add_argument(
+        "--trust-certificate",
+        action="store_true",
+        help="trust the certificate the link's host presents when the system does not",
+    )
 
     p = sub.add_parser("disconnect", help="remove a connection by key")
     p.add_argument("key")

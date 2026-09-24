@@ -28,8 +28,8 @@ import tornado.netutil
 import tornado.web
 
 from jupyterlab_share_files_extension import routes
-from jupyterlab_share_files_extension.config import ShareFilesConfig
 from jupyterlab_share_files_extension.storage import ConnectionStore, StorageError
+from jupyterlab_share_files_extension.tests._stubs import stub_handler
 
 PEER_HOST = "https://peer.example.com"
 PEER_LINK = PEER_HOST + "/user/bob/jupyterlab-share-files-extension/public/share/QQQQ22"
@@ -53,31 +53,7 @@ def _stub_handler(cls, workspace, body, kind, id_, link):
     """A handler of ``cls`` over one stored connection, no Tornado server:
     the JSON body and the answer are plain attributes."""
     entry = ConnectionStore(str(workspace)).add(kind, id_, PEER_HOST, link=link)
-    handler = object.__new__(cls)
-    handler.request = type("_Req", (), {"method": "POST", "headers": {}})()
-    handler.application = type(
-        "_App",
-        (),
-        {
-            "settings": {
-                "share_files_config": ShareFilesConfig(),
-                "base_url": "/",
-                "server_root_dir": str(workspace),
-            }
-        },
-    )()
-    handler._current_user = "tester"  # satisfies @tornado.web.authenticated
-    handler.get_json_body = lambda: body
-    handler.status = 200
-    handler.payload = None
-    handler.write_json = lambda p: setattr(handler, "payload", p)
-
-    def _write_error(code, message, reason=""):
-        handler.status = code
-        handler.payload = {"error": message, "reason": reason} if reason else {"error": message}
-
-    handler.write_error_json = _write_error
-    return handler, entry["key"]
+    return stub_handler(cls, workspace, body=body), entry["key"]
 
 
 def _save_handler(workspace, body, manifest, files=None, peer=None, link=PEER_LINK):
