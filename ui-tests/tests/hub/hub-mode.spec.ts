@@ -217,6 +217,75 @@ test('the panel offers the connect row and the Connected section', async ({
   ).toHaveText('Drag files here to share, or paste a link below');
 });
 
+test('the Connect button is the right end of the input and is disabled while the input is empty or holds only spaces', async ({
+  page,
+  request
+}) => {
+  // ACC-SHARE-183
+  const made = await foreign(request, {
+    title: 'Button State',
+    names: ['a.csv'],
+    password: 'pw'
+  });
+  await openPanel(page);
+  const input = page.locator(`${PANEL} .jp-ShareFilesPanel-connectInput`);
+  const button = page.locator(`${PANEL} .jp-ShareFilesPanel-connectButton`);
+  const fill = () =>
+    button.evaluate((b: Element) => getComputedStyle(b).backgroundColor);
+  const faded = async () =>
+    Number(await button.evaluate((b: Element) => getComputedStyle(b).opacity));
+  const clear = 'rgba(0, 0, 0, 0)';
+  // one control: the button starts on the input's right border, as tall
+  const i = (await input.boundingBox())!;
+  const b = (await button.boundingBox())!;
+  expect(Math.abs(b.x - (i.x + i.width - 1))).toBeLessThan(0.5);
+  expect(Math.abs(b.y - i.y)).toBeLessThan(0.5);
+  expect(Math.abs(b.height - i.height)).toBeLessThan(0.5);
+  // empty, or only spaces: a faded outline that does nothing
+  await expect(button).toBeDisabled();
+  expect(await fill()).toBe(clear);
+  expect(await faded()).toBeLessThan(1);
+  await input.fill('   ');
+  await expect(button).toBeDisabled();
+  // a link fills it
+  await input.fill(made.url);
+  await expect(button).toBeEnabled();
+  expect(await fill()).not.toBe(clear);
+  expect(await faded()).toBe(1);
+  // disabled while the connection is being made, whatever is typed, and
+  // still filled, faded, so the row does not look empty
+  const dialog = page.locator('.jp-Dialog');
+  await button.click();
+  await expect(dialog).toContainText('This link is password protected');
+  await expect(button).toBeDisabled();
+  await expect(button).toHaveAttribute('aria-busy', 'true');
+  expect(await fill()).not.toBe(clear);
+  expect(await faded()).toBeLessThan(1);
+  // the dialog holds the keyboard focus, so the edit is an input event
+  await input.evaluate((el: HTMLInputElement, url: string) => {
+    el.value = url;
+    el.dispatchEvent(new Event('input'));
+  }, made.url);
+  await expect(button).toBeDisabled();
+  // a connection that ends without a row keeps the link and the button
+  await dialog.locator('button', { hasText: 'Cancel' }).click();
+  await expect(dialog).toBeHidden();
+  // the click focused the button; the dialog gives the focus back to the
+  // input, not to the page
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue(made.url);
+  await expect(button).toBeEnabled();
+  await expect(button).toHaveAttribute('aria-busy', 'false');
+  // a connected link leaves the input, and the button is an outline again
+  await button.click();
+  await dialog.locator('input[type="password"]').fill('pw');
+  await dialog.locator('button', { hasText: 'Connect' }).click();
+  await expect(connected(page, 'Button State')).toHaveCount(1);
+  await expect(input).toHaveValue('');
+  await expect(button).toBeDisabled();
+  expect(await fill()).toBe(clear);
+});
+
 test('share rows show staging, ready and refused states from the hub', async ({
   page
 }) => {

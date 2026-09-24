@@ -2,6 +2,17 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.54] - 2026-09-24
+
+### Changed
+
+- The Connect button is the right end of the link input, with no gap between them. It is a faded outline and cannot be pressed while the input is empty or holds only spaces, is filled in the colour of the theme's icons once a link is in, and keeps its fill, faded, while a connection is being made
+- The disabled Connect button is faded by opacity, so it also looks disabled in the Dark High Contrast theme
+
+### Fixed
+
+- Pressing Connect from the keyboard keeps the focus in the link input; before, the focus dropped to the page, and a password or trust dialog returned it there
+
 ## [1.2.53] - 2026-09-24
 
 ### Added

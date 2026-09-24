@@ -1020,15 +1020,30 @@ export class ShareFilesPanel extends Widget {
     const connectBtn = document.createElement('button');
     connectBtn.className = 'jp-ShareFilesPanel-connectButton';
     connectBtn.textContent = 'Connect';
+    // usable only while the input holds more than spaces and no connection
+    // is being made; a value set from code fires no input event, so the end
+    // of a connection sets the state again
+    let connecting = false;
+    const syncConnect = () => {
+      connectBtn.disabled = connecting || !connectInput.value.trim();
+      connectBtn.setAttribute('aria-busy', String(connecting));
+    };
+    syncConnect();
+    connectInput.addEventListener('input', syncConnect);
     connectBtn.addEventListener('click', () => {
       const link = connectInput.value.trim();
       if (link) {
-        connectBtn.disabled = true;
+        // a disabled button drops the keyboard focus to the page, so the
+        // input takes it first, and a dialog the connection opens returns it
+        connectInput.focus();
+        connecting = true;
+        syncConnect();
         void this.connectToLink(link).then(connected => {
           if (connected) {
             connectInput.value = '';
           }
-          connectBtn.disabled = false;
+          connecting = false;
+          syncConnect();
         });
       }
     });
