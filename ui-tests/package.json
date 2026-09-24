@@ -11,7 +11,7 @@
     "test:livehub": "jlpm playwright test -c playwright.livehub.config.js"
   },
   "devDependencies": {
-    "@jupyterlab/galata": "^5.6.0",
-    "@playwright/test": "^1.62.0"
+    "@jupyterlab/galata": "^5.6.4",
+    "@playwright/test": "^1.63.0"
   }
 }

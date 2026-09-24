@@ -1221,6 +1221,24 @@ class ShareItemHandler(_Base):
         self.write_json({"ok": True})
 
 
+class ShareNameHandler(_Base):
+    """api/shares/<id>/name - PUT gives the share a new name; its id and its
+    link stay."""
+
+    @tornado.web.authenticated
+    def put(self, id_):
+        body = self.get_json_body() or {}
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return self.write_error_json(400, "Missing 'name'")
+        try:
+            manifest = self.share_store.rename(id_, name)
+        except NotFoundError as exc:
+            return self.write_error_json(404, str(exc))
+        manifest["link"] = _public_share_url(self, id_)
+        self.write_json(manifest)
+
+
 class ShareItemsHandler(_Base):
     @tornado.web.authenticated
     def post(self, id_):
@@ -2428,6 +2446,7 @@ def setup_route_handlers(web_app, config: ShareFilesConfig | None = None):
         (url_path_join(base_url, ns, "api", "shares"), SharesListHandler),
         (url_path_join(base_url, ns, "api", "shares", r"([A-Z2-7]{6,16})"), ShareItemHandler),
         (url_path_join(base_url, ns, "api", "shares", r"([A-Z2-7]{6,16})", "items"), ShareItemsHandler),
+        (url_path_join(base_url, ns, "api", "shares", r"([A-Z2-7]{6,16})", "name"), ShareNameHandler),
         # api/requests
         (url_path_join(base_url, ns, "api", "requests"), RequestsListHandler),
         (url_path_join(base_url, ns, "api", "requests", r"([A-Z2-7]{6,16})"), RequestItemHandler),

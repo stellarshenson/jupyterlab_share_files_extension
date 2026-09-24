@@ -50,8 +50,7 @@ const disconnectSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 2
 
 // standard Material Design "cloud" icon (JupyterLab ships none of its own).
 // No jp-icon3: its [fill] rule would repaint the cloud in the themed grey
-// and the state colour of the header icon (green on, blue waiting) would
-// never reach it.
+// and the accent a switch in flight takes would never reach it.
 const cloudSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
 <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/>
 </svg>`;
@@ -109,6 +108,15 @@ export const zipIcon = new LabIcon({
   name: 'share-files:zip',
   svgstr: zipSvg
 });
+// JupyterLab's own lock shape, under jp-icon3 where lockIcon carries
+// jp-icon4: that one reads darker than every other menu icon
+const passwordSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 23">
+<path class="jp-icon3" fill="#616161" d="M12 17a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h1V6a5 5 0 0 1 5-5 5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3"/>
+</svg>`;
+export const passwordIcon = new LabIcon({
+  name: 'share-files:password',
+  svgstr: passwordSvg
+});
 // same cloud silhouette as cloudSvg, but outline only (NO fill) - shown when
 // the tunnel is configured yet switched off (links are private). fill/stroke
 // live on the path and the themed jp-icon3 class is deliberately absent -
@@ -117,22 +125,9 @@ const cloudOffSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1 -1 26 2
 <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="4 3"/>
 </svg>`;
 
-// the filled cloud of a switch in flight. Where the system asks for reduced
-// motion the breath stops, and the stylesheet clips the fill to one diagonal
-// half and shows the outline, so the still icon reads as neither on nor off.
-// No jp-icon3, for the same reason as cloudSvg: the accent must reach it.
-const cloudSwitchingSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" overflow="visible">
-<path class="jp-ShareFilesPanel-cloudFill" fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/>
-<path class="jp-ShareFilesPanel-cloudEdge" fill="none" stroke="currentColor" stroke-width="1.5" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/>
-</svg>`;
-
 export const cloudIcon = new LabIcon({
   name: 'share-files:cloud',
   svgstr: cloudSvg
-});
-export const cloudSwitchingIcon = new LabIcon({
-  name: 'share-files:cloud-switching',
-  svgstr: cloudSwitchingSvg
 });
 export const cloudOffIcon = new LabIcon({
   name: 'share-files:cloud-off',

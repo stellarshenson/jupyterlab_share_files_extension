@@ -7,3 +7,7 @@ jupyterlab_share_files_extension
 .claude
 tmp
 graphify-out
+# pm-tools owns the trackers' format and `pm-tools check` gates it; prettier
+# would collapse the spaces inside a quoted log line
+docs/acc-crit.md
+docs/defects.md

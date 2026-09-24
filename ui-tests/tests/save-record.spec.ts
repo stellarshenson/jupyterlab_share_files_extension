@@ -50,7 +50,7 @@ test('a whole share saves into the current folder as its files', async ({
   await shareOf(page, 'Quarter Report', `${tmpPath}/q.txt`);
   await openPanel(page);
 
-  await rowMenu(page, 'Quarter Report', 'Save to Current Folder');
+  await rowMenu(page, 'Quarter Report', 'Download to Current Folder');
 
   // the folder is named after the record and holds the record's own files
   await expect
@@ -89,13 +89,13 @@ test('a second save lands beside the first, never over it', async ({
   await shareOf(page, 'Twice Over', `${tmpPath}/t.txt`);
   await openPanel(page);
 
-  await rowMenu(page, 'Twice Over', 'Save to Current Folder');
+  await rowMenu(page, 'Twice Over', 'Download to Current Folder');
   await expect
     .poll(() => page.contents.fileExists(`${tmpPath}/Twice-Over/t.txt`), {
       timeout: 15000
     })
     .toBe(true);
-  await rowMenu(page, 'Twice Over', 'Save to Current Folder');
+  await rowMenu(page, 'Twice Over', 'Download to Current Folder');
 
   // the first save is what the owner already looked at; the second takes the
   // next free name rather than writing over it
@@ -123,19 +123,90 @@ test('every entry of a share row and a share entry menu carries an icon', async 
   const header = item.locator('.jp-ShareFilesPanel-itemHeader');
   const items = page.locator('.lm-Menu .lm-Menu-item[data-type="command"]');
   const bare = items.filter({ hasNot: page.locator('.lm-Menu-itemIcon svg') });
+  // the download entries carry the download arrow, not the save disk
+  // (ACC-SAVE-187)
+  const pathOf = (label: string) =>
+    items
+      .filter({ hasText: label })
+      .locator('.lm-Menu-itemIcon svg path')
+      .first()
+      .getAttribute('d');
+  const ARROW = 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z';
   await header.click({ button: 'right' });
   await expect(items.first()).toBeVisible();
   expect(await bare.allTextContents()).toEqual([]);
+  expect(await pathOf('Download to Current Folder')).toBe(ARROW);
+  // the lock of Set Password is painted like the other menu icons, where
+  // JupyterLab's own lockIcon reads darker (ACC-SHARE-188)
+  const fillOf = (label: string) =>
+    items
+      .filter({ hasText: label })
+      .locator('.lm-Menu-itemIcon svg path')
+      .first()
+      .evaluate((el: Element) => getComputedStyle(el).fill);
+  expect(await fillOf('Set Password')).toBe(await fillOf('Copy Link'));
   await page.keyboard.press('Escape');
   await header.click();
   await item
     .locator('.jp-ShareFilesPanel-entry', { hasText: 'i.txt' })
     .click({ button: 'right' });
   await expect(items).toHaveText([
-    'Save to Current Folder',
+    'Download to Current Folder',
     'Show in File Browser',
     'Copy'
   ]);
   expect(await bare.allTextContents()).toEqual([]);
+  expect(await pathOf('Download to Current Folder')).toBe(ARROW);
   await page.keyboard.press('Escape');
+});
+
+test('a share is renamed from its menu and keeps its id and link', async ({
+  page,
+  tmpPath
+}) => {
+  // ACC-EDIT-189, ACC-EDIT-190, ACC-EDIT-192
+  await page.contents.uploadContent('r\n', 'text', `${tmpPath}/r.txt`);
+  const id = await shareOf(page, 'Before Name', `${tmpPath}/r.txt`);
+  const listed = () =>
+    page.evaluate(async (api: string) => {
+      const r = await fetch(`${api}/shares`);
+      return (await r.json()).shares as {
+        id: string;
+        name: string;
+        link: string;
+      }[];
+    }, API);
+  const before = (await listed()).find(s => s.id === id)!;
+  await openPanel(page);
+  const row = (name: string) =>
+    page.locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: name });
+
+  await rowMenu(page, 'Before Name', 'Rename Share...');
+  const dialog = page.locator('.jp-Dialog');
+  const input = dialog.locator('input');
+  // the dialog opens on the current name
+  await expect(input).toHaveValue('Before Name');
+  await input.fill('After Name');
+  await dialog.locator('button', { hasText: 'Rename' }).click();
+  await expect(row('After Name')).toBeVisible();
+  await expect(row('Before Name')).toHaveCount(0);
+  const after = (await listed()).find(s => s.id === id)!;
+  expect(after.name).toBe('After Name');
+  expect(after.link).toBe(before.link);
+  // a recipient holding the link still opens it
+  expect(
+    await page.evaluate(
+      async (link: string) => (await fetch(link)).status,
+      after.link
+    )
+  ).toBe(200);
+
+  // spaces alone are refused and the name stays
+  await rowMenu(page, 'After Name', 'Rename Share...');
+  await input.fill('   ');
+  await dialog.locator('button', { hasText: 'Rename' }).click();
+  await expect(
+    page.locator('.Toastify__toast', { hasText: "Missing 'name'" })
+  ).toBeVisible();
+  expect((await listed()).find(s => s.id === id)!.name).toBe('After Name');
 });

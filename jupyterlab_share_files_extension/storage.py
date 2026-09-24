@@ -486,12 +486,11 @@ class BaseStore:
     def _enrich(self, manifest: dict[str, Any], content_dir: Path) -> dict[str, Any]:
         """Decorate a stored manifest with fields derived from disk.
 
-        Stored manifests carry only the irreducible state (id, name, and -
-        for requests - last_seen_upload_at). Everything else - `kind`,
-        `slug`, `created_at`, the workspace-relative `path` - is computed
-        here at read time so the on-disk manifest stays portable: rename
-        the slug folder, move the upload root, copy it elsewhere, and the
-        store still picks up the right values.
+        `kind`, `slug` and `created_at` are derived here when the manifest
+        does not store them. A share renamed through ShareStore.rename stores
+        its `slug` and `created_at` in the sidecar, and a stored value takes
+        precedence over the derived one. The workspace-relative `path` is
+        always derived, so moving the upload root keeps it right.
         """
         id_ = manifest.get("id")
         manifest.setdefault("kind", "share" if self.subdir == "shares" else "request")
@@ -679,6 +678,25 @@ class ShareStore(BaseStore):
             raise NotFoundError(f"Share content missing: {id_}")
         for source in self._resolve_sources(source_paths):
             _copy_into(source, content_dir, self.excluded_names)
+        return self.get(id_)
+
+    def rename(self, id_: str, name: str) -> dict[str, Any]:
+        """Give the share a new name. The name and the slug are rewritten in
+        the sidecar in place; the folder keeps its path, so the file browser,
+        an open document and a download in progress are not cut off. The
+        stored slug names later downloads, and the id, and with it the link,
+        the password and the files stay.
+        """
+        manifest_path = self._manifest_path_for(id_)
+        if not manifest_path.exists():
+            raise NotFoundError(f"Not found: {id_}")
+        manifest = self._read_manifest(id_)
+        # the manifest's mtime stands for the creation time, and the write
+        # below would move it
+        manifest.setdefault("created_at", int(manifest_path.stat().st_mtime))
+        manifest["name"] = name
+        manifest["slug"] = _safe_name(name)
+        _atomic_write_json(manifest_path, manifest)
         return self.get(id_)
 
     def remove_items(self, id_: str, item_names: list[str]) -> dict[str, Any]:

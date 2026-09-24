@@ -92,22 +92,27 @@ test('a folder dropped on a share row is added with its contents', async ({
   expect(size).toBeGreaterThan(0);
 });
 
-test('the drop zone carries the same gap on all four sides', async ({
+test('the drop zone keeps 10px on three sides and 7px, half its old gap, above the link input', async ({
   page
 }) => {
   // ACC-DRAG-157: the zone used to sit with 8px above, 10px at the sides and
   // 4px below, and its text with 14px above and below against 10px at the
-  // sides
+  // sides; the gap down to the link input was 14px and is now half of that
+  // (owner, 2026-09-24)
   await openPanel(page);
   const zone = page.locator(`${PANEL} .jp-ShareFilesPanel-dropZone`);
   await expect(zone).toBeVisible();
+  await expect(zone).toHaveText('Drag files here to share');
   const spacing = await zone.evaluate((el: HTMLElement) => {
     const s = getComputedStyle(el);
+    const input = document.querySelector('.jp-ShareFilesPanel-connectInput')!;
     return {
-      margin: [s.marginTop, s.marginRight, s.marginBottom, s.marginLeft],
-      padding: [s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft]
+      margin: [s.marginTop, s.marginRight, s.marginLeft],
+      padding: [s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft],
+      gap: input.getBoundingClientRect().top - el.getBoundingClientRect().bottom
     };
   });
-  expect(new Set(spacing.margin).size).toBe(1);
+  expect(spacing.margin).toEqual(['10px', '10px', '10px']);
   expect(new Set(spacing.padding).size).toBe(1);
+  expect(spacing.gap).toBe(7);
 });

@@ -123,11 +123,11 @@ clicking it opens a setup popup with the same inputs as `cloudflare setup`
 (token, account id, public hostname, private base URL - each with a hint
 where to find the value):
 
-- **on** (`start`, filled cloud in the grey of the other header icons) - daemon running, generated links
+- **on** (`start`, filled cloud in the colour of the other header icons) - daemon running, generated links
   carry the public hostname
-- **off** (`stop`, dashed cloud in the same grey) - daemon stopped, links carry the
+- **off** (`stop`, dashed cloud in the same colour) - daemon stopped, links carry the
   private/request address
-- **connecting** - the filled cloud in the accent blue, breathing down to nothing and back, while a switch is in flight; where the system asks for reduced motion it holds still, filled on one side of a diagonal and an outline on the other
+- **connecting** - the filled cloud in the accent blue, breathing down to nothing and back, while a switch is in flight and for at least one whole breath of 2.4 s
 
 The toggle is read per request (mtime-cached config file), so it takes
 effect on the next request in either direction - no restart. The same

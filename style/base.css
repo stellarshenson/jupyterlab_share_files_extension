@@ -84,8 +84,9 @@
     background 80ms ease-out;
 }
 
-/* Cloud indicator - shown when a Cloudflare tunnel is configured; click
-   toggles public (tunnel on) vs private (tunnel off) links */
+/* Cloud indicator - shown once the server answers (in hub mode hidden while
+   the hub does not answer or the group has no tunnel); click toggles public
+   (tunnel on) vs private (tunnel off) links */
 .jp-ShareFilesPanel-cloudIndicator {
   display: flex;
   align-items: center;
@@ -94,16 +95,18 @@
   padding: 0 3px;
   cursor: pointer;
 
-  /* off, not configured, and on (the filled cloud) - the colour of the other
-     header icons; the glyph carries the state. Only the switch in flight
-     takes the accent (owner, 2026-09-24) */
-  color: var(--jp-ui-font-color2);
+  /* off, not configured, and on (the filled cloud) - the colour the other
+     header icons are painted in (.jp-icon3); the glyph carries the state.
+     Only the switch in flight takes the accent (owner, 2026-09-24) */
+  color: var(--jp-inverse-layout-color3);
 }
 
 .jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
   /* switch in flight - the filled cloud in the accent, breathing on the
      glyph itself with nothing drawn around it: it holds, fades fast to
-     nothing, holds, and comes back fast (owner, 2026-09-24) */
+     nothing, holds, and comes back fast (owner, 2026-09-24). A switch keeps
+     this look for at least one whole breath, CLOUD_BREATH_MS in
+     src/widget.ts, which matches the 2.4s here. */
   color: var(--jp-brand-color1);
   animation: share-files-breathe 2.4s cubic-bezier(0.8, 0, 0.2, 1) infinite;
 }
@@ -119,40 +122,9 @@
   animation: share-files-arrive 700ms ease-out 1;
 }
 
-.jp-ShareFilesPanel-cloudEdge {
-  /* the outline of the switching cloud, drawn only where the motion is
-     suppressed (below) */
-  display: none;
-}
-
 .jp-ShareFilesPanel-cloudIndicator:focus-visible {
   /* keyboard focus draws nothing around the icon (owner, 2026-09-24) */
   outline: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
-    /* switch in flight without motion: held still, filled on one side of a
-       diagonal and drawn as an outline on the other, in the accent (owner,
-       2026-09-24) */
-    animation: none;
-  }
-
-  .jp-ShareFilesPanel-cloudEdge {
-    display: inline;
-  }
-
-  .jp-ShareFilesPanel-cloudFill {
-    clip-path: polygon(0 0, 0 100%, 100% 100%);
-  }
-
-  .jp-ShareFilesPanel-cloudIndicator.jp-mod-active.jp-mod-arrived svg {
-    /* arrival without motion: nothing. The glyph turns from the accent to
-       the grey in the same frame, and the tooltip carries the state on
-       demand, so the glow is the cue's whole content and there is nothing to
-       hold in its place */
-    animation: none;
-  }
 }
 
 @keyframes share-files-arrive {
@@ -623,9 +595,10 @@
 
 /* Drop zone */
 .jp-ShareFilesPanel-dropZone {
-  /* one length on each: the gap around the zone and the gap inside it read
-     the same on all four sides */
-  margin: 10px;
+  /* 10px above and at the sides; below, the zone and the 4px top padding of
+     the link row leave 7px, half the 14px they left (owner, 2026-09-24).
+     The padding inside is one length on all four sides */
+  margin: 10px 10px 3px;
   padding: 14px;
   border: 1px dashed var(--jp-border-color2);
   border-radius: 4px;

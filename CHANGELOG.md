@@ -2,6 +2,26 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.58] - 2026-09-25
+
+### Added
+
+- A standalone share is renamed from its menu with "Rename Share...": the name and later downloads change, while its id, link, password, files and workspace folder stay. Hub mode offers no rename yet, because the hub has no route for it
+
+### Changed
+
+- Every "Save to Current Folder" menu entry reads "Download to Current Folder" and shows the download icon, on whole records and on single files
+- The drop zone reads "Drag files here to share" and sits 7px above the link input, half the gap it had
+- The panel has no reduced-motion handling: a switch in flight breathes whatever the system setting
+- Node packages move to the newest release within their major versions (TypeScript 5.9.3, lumino 2.x, galata 5.6.4); the Python build-tool minimums rise to hatchling 1.32, hatch-nodejs-version 0.4 and hatch-jupyter-builder 0.10
+
+### Fixed
+
+- A switch the server or hub answers at once shows the breathing cloud for one whole breath, where it showed a still blue cloud and then the result
+- The cloud icon, off and on, is painted in the colour of the other header icons, where it was a darker grey
+- The Set Password lock is painted like the other menu icons, where it was darker
+- A refresh that fails right after a switch no longer leaves the cloud icon switching
+
 ## [1.2.57] - 2026-09-24
 
 ### Changed

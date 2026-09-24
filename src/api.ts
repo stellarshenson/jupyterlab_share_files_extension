@@ -261,6 +261,18 @@ export function renameShareItem(
   });
 }
 
+/** Standalone: give a share a new name; its id and link stay. */
+export function renameShare(
+  s: ServerConnection.ISettings,
+  id: string,
+  name: string
+): Promise<IShare> {
+  return requestAPI(`api/shares/${id}/name`, s, {
+    ...jsonBody({ name }),
+    method: 'PUT'
+  });
+}
+
 // --------------------------------------------------------------------------- //
 // Requests
 // --------------------------------------------------------------------------- //

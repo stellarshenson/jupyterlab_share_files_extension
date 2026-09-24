@@ -129,7 +129,9 @@ test('a peer on another origin lists, saves and downloads its files under a defa
       /\/connections\/[^/]+\/save(\?|$)/.test(r.url())
     );
     await page
-      .locator('.lm-Menu .lm-Menu-item', { hasText: 'Save to Current Folder' })
+      .locator('.lm-Menu .lm-Menu-item', {
+        hasText: 'Download to Current Folder'
+      })
       .click();
     const saveResponse = await saving;
     expect(saveResponse.request().postDataJSON().max_gb).toBe(2);
@@ -143,7 +145,7 @@ test('a peer on another origin lists, saves and downloads its files under a defa
     await entry.click({ button: 'right' });
     const downloading = page.waitForEvent('download');
     await page
-      .locator('.lm-Menu .lm-Menu-item', { hasText: 'Download' })
+      .locator('.lm-Menu .lm-Menu-item', { hasText: /^Download$/ })
       .click();
     const download = await downloading;
     expect(download.url()).toContain('/connections/');
@@ -163,7 +165,7 @@ test('a peer on another origin lists, saves and downloads its files under a defa
     );
     await page
       .locator('.lm-Menu .lm-Menu-item', {
-        hasText: 'Save to Current Folder'
+        hasText: 'Download to Current Folder'
       })
       .click();
     const allResponse = await savingAll;

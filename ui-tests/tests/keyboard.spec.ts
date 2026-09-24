@@ -1,5 +1,7 @@
 import { expect, test } from '@jupyterlab/galata';
 
+import { readTrough, watchTrough } from './helpers/breath';
+
 /**
  * Keyboard access to the panel: the header cloud icon is a toggle button,
  * and a row header, a connection row and a connected peer's entry take focus
@@ -354,9 +356,21 @@ test('the cloud icon draws its state colour', async ({ page }) => {
   });
   await openPanel(page);
   const cloud = page.locator(`${PANEL} .jp-ShareFilesPanel-cloudIndicator`);
+  // ACC-CLOUD-160: off and on are painted in the colour of the other header
+  // icons, read from the New button's own icon - the button's text colour is
+  // a darker grey that no icon wears
+  const painted = () =>
+    page
+      .locator(`${PANEL} button[title="New share or request"] .jp-icon3`)
+      .evaluate((el: Element) => getComputedStyle(el).fill);
+  expect(
+    await cloud
+      .locator('svg path')
+      .evaluate((el: Element) => getComputedStyle(el).stroke)
+  ).toBe(await painted());
   await cloud.click();
   await expect(cloud).toHaveClass(/jp-mod-active/);
-  // the icon paints in the state colour of its container, not the themed grey
+  // the icon paints in the state colour of its container
   const colour = await cloud.evaluate(
     (el: HTMLElement) => getComputedStyle(el).color
   );
@@ -364,9 +378,9 @@ test('the cloud icon draws its state colour', async ({ page }) => {
     .locator('svg')
     .evaluate((el: SVGElement) => getComputedStyle(el).fill);
   expect(fill).toBe(colour);
-  // ACC-CLOUD-160: that colour is the grey the panel's other header icons
-  // wear, not the accent of a switch in flight (owner, 2026-09-24), and not
-  // a success green no other control carries
+  expect(colour).toBe(await painted());
+  // not the accent of a switch in flight (owner, 2026-09-24), and not a
+  // success green no other control carries
   const resolve = (name: string) =>
     page.evaluate((v: string) => {
       const probe = document.createElement('span');
@@ -376,13 +390,93 @@ test('the cloud icon draws its state colour', async ({ page }) => {
       probe.remove();
       return value;
     }, name);
-  expect(colour).toBe(
-    await page
-      .locator(`${PANEL} button[title="New share or request"]`)
-      .evaluate((el: HTMLElement) => getComputedStyle(el).color)
-  );
   expect(colour).not.toBe(await resolve('--jp-brand-color1'));
   expect(colour).not.toBe(await resolve('--jp-success-color1'));
+});
+
+test('a switch the server answers at once still shows one whole breath', async ({
+  page
+}) => {
+  // the server answers at once here, and the breath holds near full
+  // strength for its first half second, so without the hold the owner saw
+  // a still blue cloud and then the result
+  let active = false;
+  await page.route(`**${API}/info*`, async (route: any) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...json, tunnel_configured: true, tunnel_active: active }
+    });
+  });
+  await page.route(`**${API}/tunnel*`, async (route: any) => {
+    active = !!route.request().postDataJSON().active;
+    await route.fulfill({
+      json: {
+        tunnel_configured: true,
+        tunnel_active: active,
+        tunnel_autostart: false,
+        tunnel_running: active
+      }
+    });
+  });
+  await openPanel(page);
+  const selector = `${PANEL} .jp-ShareFilesPanel-cloudIndicator`;
+  const cloud = page.locator(selector);
+  await watchTrough(page, selector);
+  for (const [to, done] of [
+    ['on', /jp-mod-active/],
+    ['off', /^((?!jp-mod-active).)*$/]
+  ] as const) {
+    const started = Date.now();
+    await cloud.click();
+    await expect(cloud, `switching ${to}`).toHaveClass(/jp-mod-connecting/);
+    await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
+    await expect(cloud).toHaveClass(done);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2400);
+    // the glyph faded to nothing while the icon still showed the switch
+    expect(await readTrough(page), `switching ${to}`).toBeLessThan(0.05);
+  }
+});
+
+test('a switch whose refresh fails still settles the cloud icon', async ({
+  page
+}) => {
+  // the switch hands its settled look to the refresh after it; a refresh
+  // whose lists the server refuses must not leave the icon switching
+  let active = false;
+  let refuse = false;
+  await page.route(`**${API}/info*`, async (route: any) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...json, tunnel_configured: true, tunnel_active: active }
+    });
+  });
+  await page.route(`**${API}/tunnel*`, async (route: any) => {
+    active = !!route.request().postDataJSON().active;
+    refuse = true;
+    await route.fulfill({
+      json: {
+        tunnel_configured: true,
+        tunnel_active: active,
+        tunnel_autostart: false,
+        tunnel_running: active
+      }
+    });
+  });
+  await page.route(`**${API}/shares*`, async (route: any) =>
+    refuse
+      ? route.fulfill({ status: 500, json: { error: 'refused' } })
+      : route.fallback()
+  );
+  await openPanel(page);
+  const cloud = page.locator(`${PANEL} .jp-ShareFilesPanel-cloudIndicator`);
+  await cloud.click();
+  await expect(cloud).toHaveClass(/jp-mod-connecting/);
+  await expect(cloud).toHaveClass(/jp-mod-active/);
+  await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
 });
 
 /** A connected peer share, answered in the browser: the connection list and
@@ -470,10 +564,10 @@ test('a connected peer share opens its menus from the keyboard', async ({
   await expect(disconnectBtn).toHaveCSS('opacity', '1');
   await page.keyboard.press('Tab');
   await expect(entry).toBeFocused();
-  // Download, Save to Current Folder, then Copy: the second item saves
+  // Download, Download to Current Folder, then Copy: the second item saves
   await page.keyboard.press('Shift+F10');
   const save = page.locator('.lm-Menu .lm-Menu-item', {
-    hasText: 'Save to Current Folder'
+    hasText: 'Download to Current Folder'
   });
   await expect(save).toBeVisible();
   await page.keyboard.press('ArrowDown');
@@ -571,7 +665,7 @@ test("a file row of the owner's own share opens its menu from the keyboard", asy
   const entry = item.locator('.jp-ShareFilesPanel-entry', { hasText: file });
   await expect(entry).toHaveAttribute('tabindex', '0');
   const copyToCwd = page.locator('.lm-Menu .lm-Menu-item', {
-    hasText: 'Save to Current Folder'
+    hasText: 'Download to Current Folder'
   });
   for (const key of ['Shift+F10', 'ContextMenu']) {
     await entry.focus();

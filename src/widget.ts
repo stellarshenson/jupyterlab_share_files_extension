@@ -6,7 +6,12 @@
  * row-level context menus via Lumino's Menu and CommandRegistry.
  */
 
-import { Dialog, Notification, showDialog } from '@jupyterlab/apputils';
+import {
+  Dialog,
+  InputDialog,
+  Notification,
+  showDialog
+} from '@jupyterlab/apputils';
 import { IDocumentManager } from '@jupyterlab/docmanager';
 import { Contents, ServerConnection } from '@jupyterlab/services';
 import {
@@ -15,10 +20,8 @@ import {
   editIcon,
   filterIcon,
   launchIcon,
-  lockIcon,
   MenuSvg,
-  pasteIcon,
-  saveIcon
+  pasteIcon
 } from '@jupyterlab/ui-components';
 import { CommandRegistry } from '@lumino/commands';
 import { MimeData } from '@lumino/coreutils';
@@ -52,6 +55,7 @@ import {
   removeConnection,
   removeRequestUpload,
   removeShareItems,
+  renameShare,
   renameShareItem,
   resetTunnel,
   saveFromConnection,
@@ -68,13 +72,13 @@ import {
   closeIcon,
   cloudIcon,
   cloudOffIcon,
-  cloudSwitchingIcon,
   disconnectIcon,
   downloadIcon,
   fileIcon,
   folderIcon,
   inboxIcon,
   linkIcon,
+  passwordIcon,
   refreshIcon,
   shareIcon,
   trashIcon,
@@ -91,6 +95,8 @@ import {
 } from './types';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = 15;
+// one breath of the switching cloud: share-files-breathe in style/base.css
+const CLOUD_BREATH_MS = 2400;
 const MIN_POLL_INTERVAL_SECONDS = 2;
 /** Hub mode: how long the panel waits after a ring before fetching, so a
  * burst of rings costs one fetch. */
@@ -583,6 +589,9 @@ export class ShareFilesPanel extends Widget {
           console.debug('Share Files: server reachable again');
         }
       } catch (err: any) {
+        // draw the icon from the last-good state: a switch hands its settled
+        // look to this refresh, and a failed one must not leave it switching
+        this._updateCloudIndicator();
         // A dropped fetch (offline, tab suspended, server restarting) throws
         // ServerConnection.NetworkError - a TypeError subclass - whereas a real
         // HTTP error is a ServerConnection.ResponseError (extends Error). Ride
@@ -602,9 +611,8 @@ export class ShareFilesPanel extends Widget {
           this._networkOffline = false;
           console.error('Share Files: refresh failed', err);
           if (err?.reason === 'hub_unavailable') {
-            // the icon is hidden while the hub does not answer; a clicked
-            // Refresh says so
-            this._updateCloudIndicator();
+            // the icon, drawn above, is hidden while the hub does not answer;
+            // a clicked Refresh says so
             if (spin) {
               Notification.warning(hubReasonText('hub_unavailable'), {
                 autoClose: 5000
@@ -1019,8 +1027,7 @@ export class ShareFilesPanel extends Widget {
     // bottom drop zone
     this._dropZone = document.createElement('div');
     this._dropZone.className = 'jp-ShareFilesPanel-dropZone';
-    this._dropZone.textContent =
-      'Drag files here to share, or paste a link below';
+    this._dropZone.textContent = 'Drag files here to share';
     root.appendChild(this._dropZone);
 
     // connect row
@@ -2914,7 +2921,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:set-password', {
-        icon: lockIcon,
+        icon: passwordIcon,
         label: args =>
           args.hasPassword ? 'Change Password...' : 'Set Password...',
         execute: args => {
@@ -2924,6 +2931,11 @@ export class ShareFilesPanel extends Widget {
             void this._changePasswordFlow(kind, id);
           }
         }
+      });
+      c.addCommand('share-files-panel:rename-share', {
+        icon: editIcon,
+        label: 'Rename Share...',
+        execute: args => this._renameShare(String(args.id || ''))
       });
       c.addCommand('share-files-panel:delete-share', {
         icon: trashIcon,
@@ -2989,8 +3001,8 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:save-remote-entry', {
-        icon: saveIcon,
-        label: 'Save to Current Folder',
+        icon: downloadIcon,
+        label: 'Download to Current Folder',
         execute: args => {
           const key = String(args.key || '');
           const name = String(args.name || '');
@@ -3000,14 +3012,14 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:save-hub-entry', {
-        icon: saveIcon,
-        label: 'Save to Current Folder',
+        icon: downloadIcon,
+        label: 'Download to Current Folder',
         execute: args =>
           this.saveHubEntryFlow(String(args.id || ''), String(args.name || ''))
       });
       c.addCommand('share-files-panel:save-hub-upload', {
-        icon: saveIcon,
-        label: 'Save to Current Folder',
+        icon: downloadIcon,
+        label: 'Download to Current Folder',
         execute: args => {
           const req = this._state.requests.find(r => r.id === args.id);
           for (const uploader of req?.uploaders || []) {
@@ -3039,8 +3051,8 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:copy-entry-to-cwd', {
-        icon: saveIcon,
-        label: 'Save to Current Folder',
+        icon: downloadIcon,
+        label: 'Download to Current Folder',
         execute: args => {
           const path = String(args.path || '');
           const name = String(args.name || '');
@@ -3051,8 +3063,8 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:save-connection', {
-        icon: saveIcon,
-        label: 'Save to Current Folder',
+        icon: downloadIcon,
+        label: 'Download to Current Folder',
         execute: args => {
           void this.saveConnectionFlow(
             String(args.key || ''),
@@ -3079,8 +3091,8 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:save-record', {
-        icon: saveIcon,
-        label: 'Save to Current Folder',
+        icon: downloadIcon,
+        label: 'Download to Current Folder',
         execute: args => {
           void this.saveRecordFlow(
             args.kind === 'requests' ? 'requests' : 'shares',
@@ -3437,6 +3449,13 @@ export class ShareFilesPanel extends Widget {
       args: { kind: 'shares', id: share.id, name: share.name }
     });
     menu.addItem({ type: 'separator' });
+    if (!this._hubMode) {
+      // the hub has no route that renames a share (ACC-EDIT-193)
+      menu.addItem({
+        command: 'share-files-panel:rename-share',
+        args: { id: share.id }
+      });
+    }
     menu.addItem({
       command: 'share-files-panel:set-password',
       args: { kind: 'share', id: share.id, hasPassword: !!share.has_password }
@@ -3652,6 +3671,29 @@ export class ShareFilesPanel extends Widget {
       await deleteShare(this._serverSettings, id);
     } catch (err: any) {
       Notification.error(`Could not delete: ${err.message || err}`, {
+        autoClose: 8000
+      });
+    }
+    await this.refresh();
+  }
+
+  private async _renameShare(id: string): Promise<void> {
+    const name = this._state.shares.find(s => s.id === id)?.name ?? '';
+    const restore = this._keepFocus();
+    const result = await InputDialog.getText({
+      title: 'Rename Share',
+      label: 'New name',
+      text: name,
+      okLabel: 'Rename'
+    });
+    restore();
+    if (!result.button.accept || result.value === name) {
+      return;
+    }
+    try {
+      await renameShare(this._serverSettings, id, result.value ?? '');
+    } catch (err: any) {
+      Notification.error(`Could not rename: ${err.message || err}`, {
         autoClose: 8000
       });
     }
@@ -4587,7 +4629,8 @@ export class ShareFilesPanel extends Widget {
   }
 
   /** Render the header cloud icon from the server-reported tunnel state:
-   * hidden when no tunnel is configured; the filled cloud when the tunnel is
+   * the dashed silhouette when no tunnel is configured (a click opens the
+   * setup); the filled cloud when the tunnel is
    * on (public links); dashed silhouette when off (private links); the
    * filled cloud breathing in the accent while connecting. Hub mode draws
    * the looks of `hubTunnelLook`. */
@@ -4679,15 +4722,15 @@ export class ShareFilesPanel extends Widget {
       look.look === 'on'
         ? cloudIcon
         : look.look === 'pending'
-          ? cloudSwitchingIcon
+          ? cloudIcon
           : cloudOffIcon;
     el.appendChild(this._svgNode(icon.svgstr));
     el.title = look.title;
   }
 
   /** Click on the cloud icon: switch between public links (tunnel up) and
-   * private links (tunnel down). Breathes blue while connecting; in hub mode
-   * also while switching off, and while the hub's tunnel is coming up. */
+   * private links (tunnel down). Breathes blue while a switch is in flight,
+   * either way, and in hub mode while the hub's tunnel is coming up. */
   private async _toggleTunnel(): Promise<void> {
     if (this._tunnelToggling) {
       return;
@@ -4721,25 +4764,31 @@ export class ShareFilesPanel extends Widget {
       this._cloudIndicator!.classList.remove('jp-mod-active');
       this._cloudIndicator!.classList.add('jp-mod-connecting');
       this._cloudIndicator!.innerHTML = '';
-      this._cloudIndicator!.appendChild(
-        this._svgNode(cloudSwitchingIcon.svgstr)
-      );
+      this._cloudIndicator!.appendChild(this._svgNode(cloudIcon.svgstr));
       this._cloudIndicator!.title = active
         ? 'Switching Cloudflare sharing off'
         : 'Switching Cloudflare sharing on';
     }
+    const breath = new Promise<void>(resolve =>
+      window.setTimeout(resolve, CLOUD_BREATH_MS)
+    );
     try {
       const state = await setTunnel(this._serverSettings, { active: !active });
       if (this._state.info) {
         this._state.info = { ...this._state.info, ...state };
       }
+      // a switch the server answers at once would end before the breath has
+      // faded at all, so the switching look stays for one whole breath
+      await breath;
     } catch (err: any) {
       this._noteCloudSwitchFailure(err);
     } finally {
       this._tunnelToggling = false;
     }
-    this._updateCloudIndicator();
-    // Links in the panel change host with the toggle - refresh them.
+    // Links in the panel change host with the toggle - refresh them. The
+    // refresh redraws the icon from records read after the switch; drawing it
+    // here would read the records from before it, whose hub switch-on shows
+    // the off look until the refresh lands
     await this.refresh();
   }
 

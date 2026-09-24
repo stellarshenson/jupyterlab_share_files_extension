@@ -1,5 +1,6 @@
 import { expect, test } from '@jupyterlab/galata';
 
+import { readTrough, watchTrough } from '../helpers/breath';
 import { dragOnto } from '../helpers/drag';
 
 /**
@@ -221,7 +222,7 @@ test('the panel offers the connect row and the Connected section', async ({
   ).toBeVisible();
   await expect(
     page.locator(`${PANEL} .jp-ShareFilesPanel-dropZone`)
-  ).toHaveText('Drag files here to share, or paste a link below');
+  ).toHaveText('Drag files here to share');
 });
 
 test('the Connect button is the right end of the input and is disabled while the input is empty or holds only spaces', async ({
@@ -308,7 +309,7 @@ test('every entry of the share, request and New menus carries an icon', async ({
   expect(await menuOf(page, header('Iconed Share'))).toEqual([
     'Copy Link',
     'Open in Browser',
-    'Save to Current Folder',
+    'Download to Current Folder',
     'Save as Zip',
     'Set Password...',
     'Delete Share'
@@ -316,7 +317,7 @@ test('every entry of the share, request and New menus carries an icon', async ({
   expect(await menuOf(page, header('Iconed Request'))).toEqual([
     'Copy Link',
     'Open in Browser',
-    'Save to Current Folder',
+    'Download to Current Folder',
     'Save as Zip',
     'Set Password...',
     'Delete Request'
@@ -687,10 +688,12 @@ test('a recipient upload is fetched into the workspace through the hub', async (
   await expect(upload).toBeVisible();
   // the save is the row's menu item, not a button on the row
   await expect(upload.locator('button')).toHaveCount(0);
-  expect(await menuOf(page, upload)).toEqual(['Save to Current Folder']);
+  expect(await menuOf(page, upload)).toEqual(['Download to Current Folder']);
   await upload.click({ button: 'right' });
   await page
-    .locator('.lm-Menu .lm-Menu-item', { hasText: 'Save to Current Folder' })
+    .locator('.lm-Menu .lm-Menu-item', {
+      hasText: 'Download to Current Folder'
+    })
     .click();
   // The proof is the hub's side: the fetch arrived with the lab token and a
   // fresh destination under the file browser's folder. (The success toast
@@ -1072,21 +1075,14 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
   expect(on.data.shares[0].link).toBe(
     `${TUNNEL}/s/${POLICY}/${created.data.id}`
   );
+  const filled = await cloud.locator('svg').innerHTML();
 
   await request.post(`${HUB}/_control/tunnel`, { data: { ready: false } });
   await expect(cloud).toHaveClass(/jp-mod-connecting/);
   await expect(cloud).toHaveAttribute('aria-pressed', 'mixed');
   await expect(cloud).not.toHaveClass(/jp-mod-active/);
-  // waiting is a solid cloud in the accent (owner, 2026-09-24): the whole
-  // fill shows, and the outline drawn only under reduced motion does not
-  const halves = () =>
-    cloud.evaluate(el => [
-      getComputedStyle(el.querySelector('.jp-ShareFilesPanel-cloudFill')!)
-        .clipPath,
-      getComputedStyle(el.querySelector('.jp-ShareFilesPanel-cloudEdge')!)
-        .display
-    ]);
-  expect(await halves()).toEqual(['none', 'none']);
+  // waiting is the filled cloud of on, in the accent (owner, 2026-09-24)
+  expect(await cloud.locator('svg').innerHTML()).toBe(filled);
   const [waitColor, accent] = await page.evaluate(() => {
     const probe = document.createElement('span');
     probe.style.color = 'var(--jp-brand-color1)';
@@ -1097,9 +1093,9 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
     return [getComputedStyle(el).color, value];
   });
   expect(waitColor).toBe(accent);
-  // waiting for a tunnel breathes: a slow ease in and out, not a blink. The
-  // hub takes about 90 seconds to bring one up, and a fast flicker over that
-  // long reads as an alarm rather than as waiting.
+  // waiting for a tunnel breathes, one breath every 2.4 s rather than a
+  // blink: the hub takes about 90 seconds to bring one up, and a fast
+  // flicker over that long reads as an alarm rather than as waiting
   const breath = await cloud.evaluate(el => {
     const cs = getComputedStyle(el);
     return {
@@ -1121,18 +1117,11 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
   expect(await cloud.evaluate(el => getComputedStyle(el).boxShadow)).toBe(
     'none'
   );
-  // where the system asks for reduced motion the accent cloud holds still,
-  // filled on one side of a diagonal and an outline on the other, still
-  // with nothing drawn around it
+  // the panel has no reduced-motion look (owner, 2026-09-24): where the
+  // system asks for reduced motion the cloud breathes all the same
   await page.emulateMedia({ reducedMotion: 'reduce' });
   expect(await cloud.evaluate(el => getComputedStyle(el).animationName)).toBe(
-    'none'
-  );
-  const [clip, edge] = await halves();
-  expect(clip).toContain('polygon');
-  expect(edge).not.toBe('none');
-  expect(await cloud.evaluate(el => getComputedStyle(el).boxShadow)).toBe(
-    'none'
+    'share-files-breathe'
   );
   await page.emulateMedia({ reducedMotion: null });
   // the record is still switched on at the hub - only the hub's tunnel
@@ -1168,14 +1157,45 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
       { message: 'the icon settles once the arrival cue has run' }
     )
     .toBe('none none');
+  // the colour the other header icons are painted in, read from the New
+  // button's own icon: the button's text colour is a darker grey that no
+  // icon wears
   const [iconColor, headerColor] = await page.evaluate(() => {
-    const button = document.querySelector(
-      'button[title="New share or request"]'
+    const painted = document.querySelector(
+      'button[title="New share or request"] .jp-icon3'
     )!;
-    const el = document.querySelector('.jp-ShareFilesPanel-cloudIndicator')!;
-    return [getComputedStyle(el).color, getComputedStyle(button).color];
+    const el = document.querySelector(
+      '.jp-ShareFilesPanel-cloudIndicator svg'
+    )!;
+    return [getComputedStyle(el).fill, getComputedStyle(painted).fill];
   });
   expect(iconColor).toBe(headerColor);
+});
+
+test('a switch the hub answers at once still shows one whole breath', async ({
+  page,
+  request
+}) => {
+  // the hub answers a switch in milliseconds when its tunnel is up, and the
+  // breath holds near full strength for its first half second, so the owner
+  // saw a still blue cloud and then the result
+  await request.post(`${HUB}/_control/tunnel`, { data: { ready: true } });
+  await api(page, 'POST', `${API}/shares`, {
+    name: 'breath-one',
+    paths: ['a.txt']
+  });
+  await openPanel(page);
+  await refreshPanel(page);
+  const cloud = page.locator(CLOUD);
+  await expect(cloud).not.toHaveClass(/jp-mod-active/);
+  await watchTrough(page, CLOUD);
+  const started = Date.now();
+  await cloud.click();
+  await expect(cloud).toHaveClass(/jp-mod-connecting/);
+  await expect(cloud).toHaveClass(/jp-mod-active/);
+  expect(Date.now() - started).toBeGreaterThanOrEqual(2400);
+  // the glyph faded to nothing while the icon still showed the switch
+  expect(await readTrough(page)).toBeLessThan(0.05);
 });
 
 test('the icon does not wait for a tunnel no record asked for', async ({
@@ -1551,13 +1571,13 @@ test('a whole hub share is saved by the hub, as files or as a zip', async ({
   await row().click({ button: 'right' });
   const menu = page.locator('.lm-Menu');
   await expect(
-    menu.locator('.lm-Menu-item', { hasText: 'Save to Current Folder' })
+    menu.locator('.lm-Menu-item', { hasText: 'Download to Current Folder' })
   ).toBeVisible();
   await expect(
     menu.locator('.lm-Menu-item', { hasText: 'Save as Zip' })
   ).toBeVisible();
   await menu
-    .locator('.lm-Menu-item', { hasText: 'Save to Current Folder' })
+    .locator('.lm-Menu-item', { hasText: 'Download to Current Folder' })
     .click();
 
   const fetches = async () =>
@@ -1617,13 +1637,15 @@ test('a file of a hub share saves to the current folder from its menu', async ({
   await expect(entry.locator('button')).toHaveCount(1);
   await expect(entry.locator('button[title="Remove"]')).toHaveCount(1);
   expect(await menuOf(page, entry)).toEqual([
-    'Save to Current Folder',
+    'Download to Current Folder',
     'Rename',
     'Remove from Share'
   ]);
   await entry.click({ button: 'right' });
   await page
-    .locator('.lm-Menu .lm-Menu-item', { hasText: 'Save to Current Folder' })
+    .locator('.lm-Menu .lm-Menu-item', {
+      hasText: 'Download to Current Folder'
+    })
     .click();
 
   await expect
@@ -1941,12 +1963,12 @@ test('a connected share saves a file, a folder, the whole and a zip into the cur
   // nothing to the browser
   expect(await menuOf(page, header)).toEqual([
     'Open in Browser',
-    'Save to Current Folder',
+    'Download to Current Folder',
     'Save as Zip',
     'Disconnect'
   ]);
   expect(await menuOf(page, entry('a.csv'))).toEqual([
-    'Save to Current Folder',
+    'Download to Current Folder',
     'Copy'
   ]);
 
@@ -1961,11 +1983,11 @@ test('a connected share saves a file, a folder, the whole and a zip into the cur
         message: `${path} lands in the current folder`
       })
       .toBe(true);
-  await pick(entry('a.csv'), 'Save to Current Folder');
+  await pick(entry('a.csv'), 'Download to Current Folder');
   await lands('a.csv');
-  await pick(entry('d/'), 'Save to Current Folder');
+  await pick(entry('d/'), 'Download to Current Folder');
   await lands('d/x.txt');
-  await pick(header, 'Save to Current Folder');
+  await pick(header, 'Download to Current Folder');
   await lands('Their-Share/d/x.txt');
   await pick(header, 'Save as Zip');
   await lands('Their-Share.zip');

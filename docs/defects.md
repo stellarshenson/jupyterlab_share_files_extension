@@ -265,6 +265,7 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - log: 2026-09-21T07:09:57Z @kj added
   - log: 2026-09-21T07:49:34Z @kj closed
   - log: 2026-09-24T17:11:46Z @kj owner 2026-09-24: the held ring is removed. Pending is now the filled cloud in the accent and off the dashed cloud in grey, so under reduced motion they differ by the glyph as well as the colour
+  - log: 2026-09-24T18:54:03Z @kj owner 2026-09-24: the panel has no reduced-motion look at all; the prefers-reduced-motion block and the diagonal-split glyph are removed, and the cloud breathes whatever the system asks. Pending is the filled cloud in the accent and off the dashed cloud in the icon colour
 - [x] `DEF-PANEL-93` **the hub's empty-share refusal sentence is written twice** - MINOR; MINOR; the all-excluded refusal sentence exists once in `storage.py` for a standalone lab and again in `hub_routes.py` for a hub, reading identically today and free to drift tomorrow. Hub mode holds no ShareStore, so one canonical sentence needs a module-level helper - a new mechanism for a duplication that harms nobody yet, which is why it was not taken during the review
   - evidence: storage.all_excluded_message is the one source of the sentence, used by the store and by hub_routes._kept_paths; pytest 398 passed 8 skipped
   - repro: read the two refusal strings side by side; change one and no test notices the other still says the old words
@@ -312,6 +313,23 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - root-cause: 2026-09-23T11:13:26Z @kj connectToLink refreshed the lists and returned; nothing opened the section or brought the row into view
   - log: 2026-09-23T11:13:26Z @kj added
   - log: 2026-09-23T11:14:26Z @kj closed
+- [x] `DEF-PANEL-126` **A switch that lands at once never shows the breath** - MINOR; In hub mode a switch the hub answers at once ends the switching look within milliseconds; the breath holds near full strength for its first half second, so the owner sees a still blue cloud and then the result, and never a breath
+  - evidence: _toggleTunnel holds the switching look for CLOUD_BREATH_MS; galata server and hub 'answers at once' tests: lowest opacity under 0.05, at least 2400 ms; a mutant without the hold fails both; green 2026-09-24: mock hub 55, standalone 38, pytest 494, jest 45
+  - test-tags: FUNCTIONAL
+  - repro: Hub lab with its tunnel up: click the cloud icon; the blue filled cloud shows for the length of the POST and turns grey without fading
+  - root-cause: 2026-09-24T19:50:44Z @kj _toggleTunnel released the switching look as soon as api/tunnel answered, and share-files-breathe on cubic-bezier(0.8, 0, 0.2, 1) stays above opacity 0.95 for its first 0.36 s
+  - log: 2026-09-24T18:53:54Z @kj added
+  - log: 2026-09-24T19:43:01Z @kj edited test-tags added "FUNCTIONAL"
+  - log: 2026-09-24T19:50:44Z @kj root-cause updated "2026-09-24T18:53:54Z @kj _toggleTunnel released the switching look as soon as api/tunnel answered, and share-files-breathe on cubic-bezier(0.8, 0, 0.2, 1) stays above 0.95 opacity for its first 0.36 s" -> "_toggleTunnel released the switching look as soon as api/tunnel answered, and share-files-breathe on cubic-bezier(0.8, 0, 0.2, 1) stays above opacity 0.95 for its first 0.36 s"
+  - log: 2026-09-24T19:50:44Z @kj closed: fixed
+- [x] `DEF-PANEL-127` **The cloud icon is darker than the other header icons** - MINOR; The cloud icon, off and on, is painted in --jp-ui-font-color2 while the other header icons are painted in --jp-inverse-layout-color3 through JupyterLab's .jp-icon3 rule, so on the owner's dark theme it reads 128,135,144 beside 189,189,189
+  - evidence: the cloud base colour is --jp-inverse-layout-color3; galata keyboard.spec.ts and hub-mode.spec.ts compare it with the New button's .jp-icon3 fill; a --jp-ui-font-color2 mutant fails both; green 2026-09-24: mock hub 55, standalone 38, pytest 494, jest 45
+  - test-tags: FUNCTIONAL
+  - repro: Open the panel on the dark theme and compare the cloud with the + and funnel icons
+  - root-cause: 2026-09-24T18:53:55Z @kj the stylesheet took the header buttons' text colour, which paints no icon; the galata test compared with that same text colour, so it passed
+  - log: 2026-09-24T18:53:55Z @kj added
+  - log: 2026-09-24T19:43:01Z @kj edited test-tags added "FUNCTIONAL"
+  - log: 2026-09-24T19:50:44Z @kj closed: fixed
 
 ## Public sharing `PUBLIC`
 
