@@ -2,6 +2,15 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.57] - 2026-09-24
+
+### Changed
+
+- The header cloud icon shows Cloudflare sharing on as the filled cloud in the grey of the other header icons; only a switch in flight takes the accent blue
+- A switch in flight is the filled cloud in the accent, holding, fading fast to nothing and coming back over 2.4 s. Where the system asks for reduced motion it holds still, filled on one side of a diagonal and an outline on the other
+- No ring, rectangle or focus outline is drawn around the cloud icon in any state: hub sharing on with no tunnel asked for shows the dashed cloud with no ring, and the arrival of the tunnel glows in the cloud's own shape
+- Hub mode: while the hub does not answer, the cloud icon is hidden instead of showing an orange crossed-out cloud
+
 ## [1.2.56] - 2026-09-24
 
 ### Changed

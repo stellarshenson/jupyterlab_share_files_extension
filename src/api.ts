@@ -391,14 +391,16 @@ export function linkCheckText(res: ILinkCheck, shown = ''): string {
  * still in flight. The look follows the lab's stored default and the hub's
  * tunnel: on only while both hold, pending while the default is on and the
  * hub's tunnel is not up yet, armed while the default is on and no record
- * (`wanted`) asks the hub for a tunnel, off otherwise. `hidden` is a group policy with no tunnel at all - the icon is not shown.
+ * (`wanted`) asks the hub for a tunnel, off otherwise. `hidden` is a hub
+ * that does not answer or a group policy with no tunnel at all - the icon is
+ * not shown.
  * A click switches off when the icon reads pressed, on otherwise. */
 export function hubTunnelLook(
   info: IExtensionInfo,
   switching: '' | 'on' | 'off',
   wanted = true
 ): {
-  look: 'on' | 'off' | 'armed' | 'pending' | 'unreachable' | 'hidden';
+  look: 'on' | 'off' | 'armed' | 'pending' | 'hidden';
   pressed: boolean | 'mixed';
   title: string;
 } {
@@ -409,20 +411,13 @@ export function hubTunnelLook(
       title: `Switching Cloudflare sharing ${switching}`
     };
   }
-  if (!info.hub?.available) {
-    return {
-      look: 'unreachable',
-      pressed: false,
-      title: 'Hub unavailable\nCloudflare state unknown'
-    };
-  }
-  if (!info.tunnel_available) {
+  if (!info.hub?.available || !info.tunnel_available) {
     return { look: 'hidden', pressed: false, title: '' };
   }
   if (info.tunnel_default && !info.tunnel_ready && !wanted) {
     // the hub starts its tunnel for a record that asks for one, and no record
     // does: nothing is on the way, so the icon stays still (DEF-PANEL-89). The
-    // silhouette stays - the accent cloud is the hub's confirmation
+    // silhouette stays - the filled cloud is the hub's confirmation
     return {
       look: 'armed',
       pressed: true,

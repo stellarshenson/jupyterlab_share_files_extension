@@ -64,10 +64,17 @@ function watchArrivals(page: any): Promise<void> {
     const w = window as any;
     w.__arrivals = 0;
     w.__wasOn = false;
+    w.__glow = '';
     new MutationObserver(() => {
       const on = !!document.querySelector(`${sel}.jp-mod-arrived`);
       if (on && !w.__wasOn) {
         w.__arrivals += 1;
+        // the cue is a glow of the glyph, not a ring around the element
+        const icon = document.querySelector(sel)!;
+        w.__glow =
+          getComputedStyle(icon.querySelector('svg')!).animationName +
+          ' ' +
+          getComputedStyle(icon).boxShadow;
       }
       w.__wasOn = on;
     }).observe(document.documentElement, {
@@ -1023,6 +1030,9 @@ test('the hub bringing its tunnel up moves the icon from pending to on, with no 
   await expect
     .poll(() => arrivals(page), { message: 'the arrival is marked once' })
     .toBe(1);
+  expect(await page.evaluate(() => (window as any).__glow)).toBe(
+    'share-files-arrive none'
+  );
   // and both hand out the tunnel link
   for (const p of [page, other]) {
     await item(p).locator('button[title="Copy link"]').click();
@@ -1067,6 +1077,26 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
   await expect(cloud).toHaveClass(/jp-mod-connecting/);
   await expect(cloud).toHaveAttribute('aria-pressed', 'mixed');
   await expect(cloud).not.toHaveClass(/jp-mod-active/);
+  // waiting is a solid cloud in the accent (owner, 2026-09-24): the whole
+  // fill shows, and the outline drawn only under reduced motion does not
+  const halves = () =>
+    cloud.evaluate(el => [
+      getComputedStyle(el.querySelector('.jp-ShareFilesPanel-cloudFill')!)
+        .clipPath,
+      getComputedStyle(el.querySelector('.jp-ShareFilesPanel-cloudEdge')!)
+        .display
+    ]);
+  expect(await halves()).toEqual(['none', 'none']);
+  const [waitColor, accent] = await page.evaluate(() => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--jp-brand-color1)';
+    document.body.appendChild(probe);
+    const value = getComputedStyle(probe).color;
+    probe.remove();
+    const el = document.querySelector('.jp-ShareFilesPanel-cloudIndicator')!;
+    return [getComputedStyle(el).color, value];
+  });
+  expect(waitColor).toBe(accent);
   // waiting for a tunnel breathes: a slow ease in and out, not a blink. The
   // hub takes about 90 seconds to bring one up, and a fast flicker over that
   // long reads as an alarm rather than as waiting.
@@ -1080,17 +1110,31 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
   });
   expect(breath.name).toBe('share-files-breathe');
   expect(breath.seconds).toBeGreaterThanOrEqual(2);
-  expect(breath.timing).toContain('ease-in-out');
-  // the glyph itself breathes, with no ring around it: a pulsed ring read as
-  // a box (owner, 2026-09-24)
+  expect(breath.timing).toContain('cubic-bezier');
+  // the glyph itself breathes, sharp and down to nothing, with no ring
+  // around it: a pulsed ring read as a box (owner, 2026-09-24)
   await expect
     .poll(() => cloud.evaluate(el => Number(getComputedStyle(el).opacity)), {
-      message: 'the glyph dims as it breathes'
+      message: 'the glyph fades to nothing as it breathes'
     })
-    .toBeLessThan(0.9);
+    .toBeLessThan(0.05);
   expect(await cloud.evaluate(el => getComputedStyle(el).boxShadow)).toBe(
     'none'
   );
+  // where the system asks for reduced motion the accent cloud holds still,
+  // filled on one side of a diagonal and an outline on the other, still
+  // with nothing drawn around it
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  expect(await cloud.evaluate(el => getComputedStyle(el).animationName)).toBe(
+    'none'
+  );
+  const [clip, edge] = await halves();
+  expect(clip).toContain('polygon');
+  expect(edge).not.toBe('none');
+  expect(await cloud.evaluate(el => getComputedStyle(el).boxShadow)).toBe(
+    'none'
+  );
+  await page.emulateMedia({ reducedMotion: null });
   // the record is still switched on at the hub - only the hub's tunnel
   // moved - and its link fell back to the hub's own address
   const dropped = await api(page, 'GET', `${API}/shares`);
@@ -1104,33 +1148,34 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
   await expect(cloud).toHaveClass(/jp-mod-active/);
   await expect(cloud).toHaveAttribute('aria-pressed', 'true');
   await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
-  // established is a still, solid glyph in the panel's own accent - the
-  // colour its other header icons take when active, never one of its own.
+  // established is a still glyph in the grey the panel's other header icons
+  // wear; only the switch in flight takes the accent (owner, 2026-09-24).
   // The arrival cue runs once over 700 ms as the tunnel lands
   // (DEF-PANEL-104), so what is asserted is that the icon comes to rest, not
   // that it never moved
   await expect
     .poll(
       () =>
-        page.evaluate(
-          () =>
-            getComputedStyle(
-              document.querySelector('.jp-ShareFilesPanel-cloudIndicator')!
-            ).animationName
-        ),
+        page.evaluate(() => {
+          const el = document.querySelector(
+            '.jp-ShareFilesPanel-cloudIndicator'
+          )!;
+          return [
+            getComputedStyle(el).animationName,
+            getComputedStyle(el.querySelector('svg')!).animationName
+          ].join(' ');
+        }),
       { message: 'the icon settles once the arrival cue has run' }
     )
-    .toBe('none');
-  const [iconColor, accentColor] = await page.evaluate(() => {
-    const probe = document.createElement('span');
-    probe.style.color = 'var(--jp-brand-color1)';
-    document.body.appendChild(probe);
-    const accent = getComputedStyle(probe).color;
-    probe.remove();
+    .toBe('none none');
+  const [iconColor, headerColor] = await page.evaluate(() => {
+    const button = document.querySelector(
+      'button[title="New share or request"]'
+    )!;
     const el = document.querySelector('.jp-ShareFilesPanel-cloudIndicator')!;
-    return [getComputedStyle(el).color, accent];
+    return [getComputedStyle(el).color, getComputedStyle(button).color];
   });
-  expect(iconColor).toBe(accentColor);
+  expect(iconColor).toBe(headerColor);
 });
 
 test('the icon does not wait for a tunnel no record asked for', async ({
@@ -1148,6 +1193,8 @@ test('the icon does not wait for a tunnel no record asked for', async ({
   await expect(cloud).toHaveAttribute('title', /no tunnel up yet/);
   await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
   await expect(cloud).not.toHaveClass(/jp-mod-active/);
+  // and no ring around it (owner, 2026-09-24)
+  await expect(cloud).toHaveCSS('box-shadow', 'none');
 });
 
 test('a group policy with no tunnel at all does not show the icon', async ({
@@ -1342,40 +1389,29 @@ test('every cloud icon tooltip is two lines at most', async ({
   await request.post(`${HUB}/_control/tunnel`, { data: { ready: true } });
   await expect(cloud).toHaveClass(/jp-mod-active/);
   await read(); // on
-  await hubOutage(page);
-  await refreshPanel(page);
-  await expect(cloud).toHaveClass(/jp-mod-unreachable/);
-  await read(); // hub unreachable
   // each state says something of its own, in two lines at most
-  expect(new Set(titles).size).toBe(4);
+  expect(new Set(titles).size).toBe(3);
   for (const title of titles) {
     expect(title.split('\n').length, title).toBeLessThanOrEqual(2);
   }
 });
 
-test('a clicked Refresh during a hub outage warns once and the icon shows the hub unreachable', async ({
+test('a clicked Refresh during a hub outage warns once and the icon is hidden', async ({
   page,
   request
 }) => {
   await openPanel(page);
   await refreshPanel(page);
   const cloud = page.locator(CLOUD);
-  await expect(cloud).not.toHaveClass(/jp-mod-unreachable/);
+  await expect(cloud).toBeVisible();
   await hubOutage(page);
   await refreshPanel(page);
   await expect
     .poll(() => notes(page, 'warning', 'The hub could not be reached'))
     .toBe(1);
-  // its own look: not the off silhouette, not on
-  await expect(cloud).toHaveClass(/jp-mod-unreachable/);
-  await expect(cloud).not.toHaveClass(/jp-mod-active/);
-  await expect(cloud).toHaveAttribute('title', /^Hub unavailable/);
-  // and its own colour: the icon paints in the state colour, not the grey
-  expect(
-    await cloud.locator('svg').evaluate((el: SVGElement) => {
-      return getComputedStyle(el).fill;
-    })
-  ).toBe(await cloud.evaluate((el: HTMLElement) => getComputedStyle(el).color));
+  // with no hub there is nothing to switch, so there is no icon
+  // (owner, 2026-09-24)
+  await expect(cloud).toBeHidden();
   // a background refresh (a ring from the hub) stays quiet
   await request.post(`${HUB}/_control/nudge`);
   await page.waitForTimeout(1500);
@@ -1399,7 +1435,10 @@ test('the keyboard switches the cloud icon and opens a row context menu', async 
   await page.locator(`${PANEL} button[title="New share or request"]`).focus();
   await page.keyboard.press('Tab');
   await expect(cloud).toBeFocused();
-  await expect(cloud).toHaveCSS('outline-style', 'solid');
+  // keyboard focus draws nothing around the icon (owner, 2026-09-24)
+  await expect(cloud).toHaveCSS('outline-style', 'none');
+  await expect(cloud).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(cloud).toHaveCSS('box-shadow', 'none');
   await page.keyboard.press('Enter');
   await expect(cloud).toHaveClass(/jp-mod-active/);
   await expect(cloud).toHaveAttribute('aria-pressed', 'true');

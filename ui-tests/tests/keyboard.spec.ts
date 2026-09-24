@@ -65,7 +65,10 @@ test('the cloud icon switches from the keyboard', async ({ page }) => {
   await page.locator(`${PANEL} button[title="New share or request"]`).focus();
   await page.keyboard.press('Tab');
   await expect(cloud).toBeFocused();
-  await expect(cloud).toHaveCSS('outline-style', 'solid');
+  // keyboard focus draws nothing around the icon (owner, 2026-09-24)
+  await expect(cloud).toHaveCSS('outline-style', 'none');
+  await expect(cloud).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(cloud).toHaveCSS('box-shadow', 'none');
   await page.keyboard.press('Enter');
   await expect(cloud).toHaveClass(/jp-mod-active/);
   await expect(cloud).toHaveAttribute('aria-pressed', 'true');
@@ -250,13 +253,14 @@ test('every cloud icon tooltip is short and two lines at most', async ({
   await cloud.click();
   await expect(cloud).toHaveClass(/jp-mod-connecting/);
   await read(); // connecting
-  // ACC-CLOUD-162: connecting and on carry the same accent, so the glyph is
-  // what separates them - the dashed silhouette against the filled cloud
-  const switching = await cloud.locator('svg').innerHTML();
+  // ACC-CLOUD-162: connecting and on draw the same filled cloud, so the
+  // colour and the breath separate them - the accent against the grey
+  const colourOf = () => cloud.evaluate(el => getComputedStyle(el).color);
+  const switching = await colourOf();
   answer();
   await expect(cloud).toHaveClass(/jp-mod-active/);
   await read(); // on
-  expect(await cloud.locator('svg').innerHTML()).not.toBe(switching);
+  expect(await colourOf()).not.toBe(switching);
   expect(new Set(titles).size).toBe(4);
   for (const title of titles) {
     const lines = title.split('\n');
@@ -360,8 +364,9 @@ test('the cloud icon draws its state colour', async ({ page }) => {
     .locator('svg')
     .evaluate((el: SVGElement) => getComputedStyle(el).fill);
   expect(fill).toBe(colour);
-  // ACC-CLOUD-160: that colour is the accent the panel's other header icons
-  // take when active, not a success green no other control carries
+  // ACC-CLOUD-160: that colour is the grey the panel's other header icons
+  // wear, not the accent of a switch in flight (owner, 2026-09-24), and not
+  // a success green no other control carries
   const resolve = (name: string) =>
     page.evaluate((v: string) => {
       const probe = document.createElement('span');
@@ -371,7 +376,12 @@ test('the cloud icon draws its state colour', async ({ page }) => {
       probe.remove();
       return value;
     }, name);
-  expect(colour).toBe(await resolve('--jp-brand-color1'));
+  expect(colour).toBe(
+    await page
+      .locator(`${PANEL} button[title="New share or request"]`)
+      .evaluate((el: HTMLElement) => getComputedStyle(el).color)
+  );
+  expect(colour).not.toBe(await resolve('--jp-brand-color1'));
   expect(colour).not.toBe(await resolve('--jp-success-color1'));
 });
 

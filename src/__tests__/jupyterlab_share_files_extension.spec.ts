@@ -217,8 +217,8 @@ describe('hub cloud icon', () => {
     expect(looks.hidden.look).toBe('hidden');
   });
 
-  it('reads unreachable while the hub does not answer', () => {
-    expect(looks.unreachable.look).toBe('unreachable');
+  it('hides the icon while the hub does not answer', () => {
+    expect(looks.unreachable.look).toBe('hidden');
     expect(looks.unreachable.pressed).toBe(false);
   });
 

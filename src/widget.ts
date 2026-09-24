@@ -68,7 +68,7 @@ import {
   closeIcon,
   cloudIcon,
   cloudOffIcon,
-  cloudUnreachableIcon,
+  cloudSwitchingIcon,
   disconnectIcon,
   downloadIcon,
   fileIcon,
@@ -602,7 +602,8 @@ export class ShareFilesPanel extends Widget {
           this._networkOffline = false;
           console.error('Share Files: refresh failed', err);
           if (err?.reason === 'hub_unavailable') {
-            // the icon shows the hub unreachable; a clicked Refresh says so
+            // the icon is hidden while the hub does not answer; a clicked
+            // Refresh says so
             this._updateCloudIndicator();
             if (spin) {
               Notification.warning(hubReasonText('hub_unavailable'), {
@@ -958,7 +959,7 @@ export class ShareFilesPanel extends Widget {
       }
     );
     // cloud indicator - shown when a Cloudflare tunnel is configured.
-    // The header accent when the tunnel is on (public links), dashed
+    // The filled cloud when the tunnel is on (public links), dashed
     // silhouette when off (private links); clicking toggles between the two.
     this._cloudIndicator = document.createElement('span');
     this._cloudIndicator.className = 'jp-ShareFilesPanel-cloudIndicator';
@@ -4586,11 +4587,10 @@ export class ShareFilesPanel extends Widget {
   }
 
   /** Render the header cloud icon from the server-reported tunnel state:
-   * hidden when no tunnel is configured; the accent cloud when the tunnel is
+   * hidden when no tunnel is configured; the filled cloud when the tunnel is
    * on (public links); dashed silhouette when off (private links); the
-   * breathing accent silhouette while connecting - on and connecting carry
-   * the same accent, so the glyph is what separates them where the motion is
-   * suppressed. Hub mode draws the looks of `hubTunnelLook`. */
+   * filled cloud breathing in the accent while connecting. Hub mode draws
+   * the looks of `hubTunnelLook`. */
   private _updateCloudIndicator(): void {
     if (!this._cloudIndicator) {
       return;
@@ -4637,8 +4637,9 @@ export class ShareFilesPanel extends Widget {
       : 'Cloudflare sharing off - private links\nClick to switch it on';
   }
 
-  /** Hub mode: draw one look of the header cloud icon. A group policy with
-   * no tunnel has nothing to switch, so the icon is not shown at all. */
+  /** Hub mode: draw one look of the header cloud icon. A hub that does not
+   * answer or a group policy with no tunnel has nothing to switch, so the
+   * icon is not shown at all. */
   private _drawHubCloud(look: ReturnType<typeof hubTunnelLook>): void {
     const el = this._cloudIndicator!;
     if (look.look === 'hidden') {
@@ -4648,8 +4649,9 @@ export class ShareFilesPanel extends Widget {
     el.style.display = 'flex';
     // The wait for a hub tunnel runs about 90 seconds, and until now the only
     // signal at the end of it was the breathing stopping and the glyph
-    // changing shape - an owner who looked away had nothing to look back at
-    // (DEF-PANEL-104). One ring expands and fades when the tunnel lands.
+    // changing colour - an owner who looked away had nothing to look back at
+    // (DEF-PANEL-104). One glow grows out of the glyph and fades when the
+    // tunnel lands.
     // Keyed on the arrival itself, `pending` to `on`, and on nothing else: a
     // panel opened with the tunnel already up has no arrival to mark, and a
     // Refresh redraws the icon through whatever look the rebuilt rows give
@@ -4671,21 +4673,20 @@ export class ShareFilesPanel extends Widget {
     el.classList.toggle('jp-mod-active', look.look === 'on');
     el.classList.toggle('jp-mod-connecting', look.look === 'pending');
     el.classList.toggle('jp-mod-armed', look.look === 'armed');
-    el.classList.toggle('jp-mod-unreachable', look.look === 'unreachable');
     el.setAttribute('aria-pressed', String(look.pressed));
     el.innerHTML = '';
     const icon =
       look.look === 'on'
         ? cloudIcon
-        : look.look === 'unreachable'
-          ? cloudUnreachableIcon
+        : look.look === 'pending'
+          ? cloudSwitchingIcon
           : cloudOffIcon;
     el.appendChild(this._svgNode(icon.svgstr));
     el.title = look.title;
   }
 
   /** Click on the cloud icon: switch between public links (tunnel up) and
-   * private links (tunnel down). Blinks blue while connecting; in hub mode
+   * private links (tunnel down). Breathes blue while connecting; in hub mode
    * also while switching off, and while the hub's tunnel is coming up. */
   private async _toggleTunnel(): Promise<void> {
     if (this._tunnelToggling) {
@@ -4720,7 +4721,9 @@ export class ShareFilesPanel extends Widget {
       this._cloudIndicator!.classList.remove('jp-mod-active');
       this._cloudIndicator!.classList.add('jp-mod-connecting');
       this._cloudIndicator!.innerHTML = '';
-      this._cloudIndicator!.appendChild(this._svgNode(cloudOffIcon.svgstr));
+      this._cloudIndicator!.appendChild(
+        this._svgNode(cloudSwitchingIcon.svgstr)
+      );
       this._cloudIndicator!.title = active
         ? 'Switching Cloudflare sharing off'
         : 'Switching Cloudflare sharing on';

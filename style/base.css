@@ -91,103 +91,77 @@
   align-items: center;
   justify-content: center;
   margin-left: 2px;
-
-  /* the vertical padding and the radius are the ring's, not the glyph's: the
-     connecting state draws a 1px inset ring, and with no vertical padding it
-     sits hard against the 14px glyph as a square-cornered rectangle beside
-     header buttons that are 20x20 with a 2px radius */
-  padding: 1px 3px;
-  border-radius: 2px;
+  padding: 0 3px;
   cursor: pointer;
 
-  /* tunnel off / not configured - dashed no-fill silhouette; same colour
-     as the other header icons (the dash + no fill carry the meaning) */
+  /* off, not configured, and on (the filled cloud) - the colour of the other
+     header icons; the glyph carries the state. Only the switch in flight
+     takes the accent (owner, 2026-09-24) */
   color: var(--jp-ui-font-color2);
 }
 
-.jp-ShareFilesPanel-cloudIndicator.jp-mod-active {
-  /* tunnel on - links are public. The accent the panel's other header icons
-     take when active, on the header's own background: the glyph reads at
-     3.97:1 on the light theme and 3.22:1 on the dark one, where a filled
-     chip behind it would drop it to 2.45:1 and 1.98:1, under the 3:1 bar
-     a non-text control has to clear. */
-  color: var(--jp-brand-color1);
-}
-
 .jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
-  /* switch in flight - the accent on the dashed silhouette, breathing: a
-     slow ease in and out rather than a blink, because the wait for a hub
-     tunnel runs about 90 seconds and a fast flicker reads as an alarm over
-     that long. "On" carries the same accent on the filled cloud, so the
-     glyph is what tells the two apart where the motion is suppressed.
-     The breath is on the glyph itself, by the owner's instruction of
-     2026-09-24: a ring pulsed around it read as a box. At the trough the
-     glyph sits under the 3:1 bar a non-text control has to hold
-     (DEF-PANEL-103). */
+  /* switch in flight - the filled cloud in the accent, breathing on the
+     glyph itself with nothing drawn around it: it holds, fades fast to
+     nothing, holds, and comes back fast (owner, 2026-09-24) */
   color: var(--jp-brand-color1);
-  animation: share-files-breathe 2.4s ease-in-out infinite;
+  animation: share-files-breathe 2.4s cubic-bezier(0.8, 0, 0.2, 1) infinite;
 }
 
-.jp-ShareFilesPanel-cloudIndicator.jp-mod-active.jp-mod-arrived {
-  /* the tunnel has just landed: one ring expands out of the icon and fades,
-     once. The wait runs about 90 seconds, so an owner who looked away had
-     only a 14px glyph changing shape to look back at (DEF-PANEL-104). The
-     ring grows outside the element rather than pulsing the glyph, which
-     holds the glyph at full strength and over the 3:1 contrast a non-text
-     control has to clear (DEF-PANEL-103). It rides on top of the colour
-     jp-mod-active sets in the same frame, so the state itself never waits
-     on the animation.
-     Qualified on jp-mod-active, and this is load-bearing: a tunnel that
-     drops inside the 700ms leaves the icon connecting with this class still
-     on it, and an unqualified rule would win on source order and replace
-     the breath with a ring that never repeats. */
+.jp-ShareFilesPanel-cloudIndicator.jp-mod-active.jp-mod-arrived svg {
+  /* the tunnel has just landed: a glow in the cloud's own outline grows out
+     of the glyph and fades, once. The wait runs about 90 seconds, so an
+     owner who looked away had only a 14px glyph changing colour to look back
+     at (DEF-PANEL-104). The glow is a drop shadow of the glyph, so no
+     rectangle is drawn around the icon (owner, 2026-09-24).
+     Qualified on jp-mod-active: a tunnel that drops inside the 700ms leaves
+     the class on a connecting icon, which must not glow. */
   animation: share-files-arrive 700ms ease-out 1;
 }
 
-.jp-ShareFilesPanel-cloudIndicator.jp-mod-armed {
-  /* hub mode: the default is on and no record asks for a tunnel. The ring in
-     the base grey separates it from off without a colour; the accent and the
-     filled cloud stay the hub's confirmation */
-  box-shadow: inset 0 0 0 1px currentcolor;
+.jp-ShareFilesPanel-cloudEdge {
+  /* the outline of the switching cloud, drawn only where the motion is
+     suppressed (below) */
+  display: none;
 }
 
 .jp-ShareFilesPanel-cloudIndicator:focus-visible {
-  /* keyboard focus - the brand colour reads on both themes */
-  outline: 1px solid var(--jp-brand-color1);
-}
-
-.jp-ShareFilesPanel-cloudIndicator.jp-mod-unreachable {
-  /* hub mode: the hub cannot be reached - struck-through cloud; warn-color0
-     keeps the glyph over the 3:1 non-text bar in the light theme */
-  color: var(--jp-warn-color0);
+  /* keyboard focus draws nothing around the icon (owner, 2026-09-24) */
+  outline: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
-    /* switch in flight without motion: the glyph at full strength inside a
-       held ring. Off carries the same dashed silhouette, so the ring is what
-       tells the two apart without asking the reader to see a colour
-       (DEF-PANEL-92) */
+    /* switch in flight without motion: held still, filled on one side of a
+       diagonal and drawn as an outline on the other, in the accent (owner,
+       2026-09-24) */
     animation: none;
-    box-shadow: inset 0 0 0 1px currentcolor;
   }
 
-  .jp-ShareFilesPanel-cloudIndicator.jp-mod-active.jp-mod-arrived {
-    /* arrival without motion: nothing. The glyph changes from the dashed
-       silhouette to the filled cloud and takes the accent in the same frame,
-       and the tooltip carries the state on demand, so the ring is the cue's
-       whole content and there is nothing to hold in its place */
+  .jp-ShareFilesPanel-cloudEdge {
+    display: inline;
+  }
+
+  .jp-ShareFilesPanel-cloudFill {
+    clip-path: polygon(0 0, 0 100%, 100% 100%);
+  }
+
+  .jp-ShareFilesPanel-cloudIndicator.jp-mod-active.jp-mod-arrived svg {
+    /* arrival without motion: nothing. The glyph turns from the accent to
+       the grey in the same frame, and the tooltip carries the state on
+       demand, so the glow is the cue's whole content and there is nothing to
+       hold in its place */
     animation: none;
   }
 }
 
 @keyframes share-files-arrive {
   from {
-    box-shadow: 0 0 0 0 var(--jp-brand-color1);
+    filter: drop-shadow(0 0 1px currentcolor);
   }
 
   to {
-    box-shadow: 0 0 0 5px transparent;
+    filter: drop-shadow(0 0 6px transparent);
   }
 }
 
@@ -198,7 +172,7 @@
   }
 
   50% {
-    opacity: 0.5;
+    opacity: 0;
   }
 }
 
