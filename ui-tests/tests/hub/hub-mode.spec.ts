@@ -1075,17 +1075,22 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
     return {
       name: cs.animationName,
       seconds: Number.parseFloat(cs.animationDuration),
-      timing: cs.animationTimingFunction,
-      opacity: cs.opacity
+      timing: cs.animationTimingFunction
     };
   });
   expect(breath.name).toBe('share-files-breathe');
   expect(breath.seconds).toBeGreaterThanOrEqual(2);
   expect(breath.timing).toContain('ease-in-out');
-  // the breath is on the ring, never the glyph's own opacity: dimming a
-  // 14 px accent glyph puts it under the 3:1 bar a non-text control has to
-  // hold, and no opacity below 1.0 clears it (DEF-PANEL-103)
-  expect(breath.opacity).toBe('1');
+  // the glyph itself breathes, with no ring around it: a pulsed ring read as
+  // a box (owner, 2026-09-24)
+  await expect
+    .poll(() => cloud.evaluate(el => Number(getComputedStyle(el).opacity)), {
+      message: 'the glyph dims as it breathes'
+    })
+    .toBeLessThan(0.9);
+  expect(await cloud.evaluate(el => getComputedStyle(el).boxShadow)).toBe(
+    'none'
+  );
   // the record is still switched on at the hub - only the hub's tunnel
   // moved - and its link fell back to the hub's own address
   const dropped = await api(page, 'GET', `${API}/shares`);

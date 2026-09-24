@@ -282,6 +282,7 @@ The Cloudflare tunnel exposing share and request links beyond the hub, and the p
   - log: 2026-09-20T16:03:37Z @kj added
   - log: 2026-09-20T16:14:07Z @kj closed
   - log: 2026-09-22T13:24:14Z @kj owner 2026-09-22: waiting for a tunnel breathes rather than blinks. The animation is share-files-breathe, 2.4s ease-in-out, dipping to opacity 0.5 where the blink was 0.9s dipping to 0.25 - a hub tunnel takes about 90 seconds to come up and a fast flicker over that long reads as an alarm. Established stays a still, solid glyph in --jp-brand-color1, the colour the panel's other header icons take when active. Gated in ui-tests/tests/hub/hub-mode.spec.ts: the waiting icon's computed animation name, a duration of at least 2s and an ease-in-out timing; the established icon's computed colour equals the accent resolved through a probe element, with animationName none
+  - log: 2026-09-24T14:06:15Z @kj owner 2026-09-24: waiting breathes on the glyph in the accent, opacity 1 to 0.5, with no ring around it; the ring breath of DEF-PANEL-103 is reverted. Gated in ui-tests/tests/hub/hub-mode.spec.ts: animation name, duration of at least 2s, ease-in-out, opacity dipping under 0.9, box-shadow none
 
 ## Hover tooltip `HOVER`
 

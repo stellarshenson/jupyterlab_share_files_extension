@@ -2,6 +2,12 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.56] - 2026-09-24
+
+### Changed
+
+- While a tunnel comes up, the header cloud icon itself breathes in the accent blue, fading to half strength and back over 2.4 s; the ring that pulsed around it, which read as a box, is removed. Where the system asks for reduced motion, the icon stays still at full strength inside a thin ring
+
 ## [1.2.55] - 2026-09-24
 
 ### Added

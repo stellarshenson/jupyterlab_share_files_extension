@@ -120,12 +120,10 @@
      tunnel runs about 90 seconds and a fast flicker reads as an alarm over
      that long. "On" carries the same accent on the filled cloud, so the
      glyph is what tells the two apart where the motion is suppressed.
-     The breath is on the ring, not the glyph's own opacity: dimming the
-     glyph puts it at 1.92:1 in the light theme and 1.79:1 in the dark one
-     at the trough, and even at opacity 0.8 only 2.97:1 and 2.57:1, so no
-     value below 1.0 clears the 3:1 bar a non-text control has to hold
-     (DEF-PANEL-103). The ring is the same one the motion-suppressed rule
-     below draws, held rather than pulsed. */
+     The breath is on the glyph itself, by the owner's instruction of
+     2026-09-24: a ring pulsed around it read as a box. At the trough the
+     glyph sits under the 3:1 bar a non-text control has to hold
+     (DEF-PANEL-103). */
   color: var(--jp-brand-color1);
   animation: share-files-breathe 2.4s ease-in-out infinite;
 }
@@ -166,8 +164,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .jp-ShareFilesPanel-cloudIndicator.jp-mod-connecting {
-    /* switch in flight without motion: the same ring the breath pulses,
-       held. Off carries the same dashed silhouette, so the ring is what
+    /* switch in flight without motion: the glyph at full strength inside a
+       held ring. Off carries the same dashed silhouette, so the ring is what
        tells the two apart without asking the reader to see a colour
        (DEF-PANEL-92) */
     animation: none;
@@ -196,11 +194,11 @@
 @keyframes share-files-breathe {
   0%,
   100% {
-    box-shadow: inset 0 0 0 1px transparent;
+    opacity: 1;
   }
 
   50% {
-    box-shadow: inset 0 0 0 1px currentcolor;
+    opacity: 0.5;
   }
 }
 
