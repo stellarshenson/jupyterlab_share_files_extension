@@ -9,7 +9,17 @@
 import { Dialog, Notification, showDialog } from '@jupyterlab/apputils';
 import { IDocumentManager } from '@jupyterlab/docmanager';
 import { Contents, ServerConnection } from '@jupyterlab/services';
-import { checkIcon, copyIcon, filterIcon } from '@jupyterlab/ui-components';
+import {
+  checkIcon,
+  copyIcon,
+  editIcon,
+  filterIcon,
+  launchIcon,
+  lockIcon,
+  MenuSvg,
+  pasteIcon,
+  saveIcon
+} from '@jupyterlab/ui-components';
 import { CommandRegistry } from '@lumino/commands';
 import { MimeData } from '@lumino/coreutils';
 import { Drag } from '@lumino/dragdrop';
@@ -63,10 +73,12 @@ import {
   downloadIcon,
   fileIcon,
   folderIcon,
+  inboxIcon,
   linkIcon,
   refreshIcon,
   shareIcon,
-  trashIcon
+  trashIcon,
+  zipIcon
 } from './icons';
 import {
   ICertificate,
@@ -1442,7 +1454,6 @@ export class ShareFilesPanel extends Widget {
             },
             0,
             drillIn,
-            undefined,
             `share:${share.id}/${entry.name}`
           )
         );
@@ -1588,8 +1599,9 @@ export class ShareFilesPanel extends Widget {
       : `The last upload stopped${landed} - ${reason}`;
   }
 
-  /** One file or folder of a hub share: remove, rename (F2 and the menu),
-   * open a folder, and move by dragging a row onto a folder row. */
+  /** One file or folder of a hub share: save a file and rename (the menu,
+   * F2 renames too), remove, open a folder, and move by dragging a row onto
+   * a folder row. */
   private _renderHubEntryRow(
     shareId: string,
     fullName: string,
@@ -1597,16 +1609,19 @@ export class ShareFilesPanel extends Widget {
   ): HTMLElement {
     const key = `share:${shareId}/${fullName}`;
     const remove = () => void this._removeHubEntry(shareId, fullName);
-    // a hub entry carries no workspace path, so its context menu has no file
-    // to reach and the row's own button is the save (ACC-SAVE-170)
-    const save =
-      entry.type === 'directory'
-        ? undefined
-        : () => void this.saveHubEntryFlow(shareId, fullName);
-    const row = this._renderEntryRow(entry, remove, 0, undefined, save, key);
+    const row = this._renderEntryRow(entry, remove, 0, undefined, key);
     row.classList.add('jp-mod-clickable');
     const menu = (evt: MouseEvent): Menu => {
-      const m = new Menu({ commands: this._commands });
+      const m = new MenuSvg({ commands: this._commands });
+      // a hub entry carries no workspace path: the save reads the file from
+      // the hub (ACC-SAVE-170)
+      if (entry.type !== 'directory') {
+        m.addItem({
+          command: 'share-files-panel:save-hub-entry',
+          args: { id: shareId, name: fullName }
+        });
+        m.addItem({ type: 'separator' });
+      }
       m.addItem({
         command: 'share-files-panel:rename-hub-entry',
         args: { id: shareId, name: fullName }
@@ -2103,16 +2118,7 @@ export class ShareFilesPanel extends Widget {
         const key = `request:${req.id}/${uploader.hash || uploader.name}/${entry.name}`;
         const row = this._hubMode
           ? // the bytes sit on the hub's volume: fetch them in, never remove
-            this._renderEntryRow(
-              entry,
-              undefined,
-              1,
-              undefined,
-              () => {
-                void this._fetchUploadFlow(req, entry);
-              },
-              key
-            )
+            this._renderHubUploadRow(req, entry, key)
           : this._renderEntryRow(
               entry,
               () => {
@@ -2123,7 +2129,6 @@ export class ShareFilesPanel extends Widget {
                 );
               },
               1,
-              undefined,
               undefined,
               key
             );
@@ -2561,7 +2566,7 @@ export class ShareFilesPanel extends Widget {
     entry: IShareEntry,
     downloadUrl: string
   ): Menu {
-    const menu = new Menu({ commands: this._commands });
+    const menu = new MenuSvg({ commands: this._commands });
     // on a hub a connected entry is saved into the workspace only: the hub
     // routes mount no connections/<key>/download, so there is nothing to relay
     if (!this._hubMode) {
@@ -2601,12 +2606,37 @@ export class ShareFilesPanel extends Widget {
     document.body.removeChild(a);
   }
 
+  /** One upload under a hub request: the menu saves it into the current
+   * folder; the bytes sit on the hub's volume, so nothing removes it here. */
+  private _renderHubUploadRow(
+    req: IRequest,
+    entry: IShareEntry,
+    key: string
+  ): HTMLElement {
+    const row = this._renderEntryRow(entry, undefined, 1, undefined, key);
+    const menu = (evt: MouseEvent): Menu => {
+      const m = new MenuSvg({ commands: this._commands });
+      m.addItem({
+        command: 'share-files-panel:save-hub-upload',
+        args: { id: req.id, uploadId: entry.upload_id || '' }
+      });
+      m.open(evt.clientX, evt.clientY);
+      return m;
+    };
+    row.addEventListener('contextmenu', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      menu(evt);
+    });
+    this._attachKeyboardMenu(row, key, menu);
+    return row;
+  }
+
   private _renderEntryRow(
     entry: IShareEntry,
     onRemove?: () => void,
     indentLevel = 0,
     onOpenFolder?: (entry: IShareEntry) => void,
-    onFetch?: () => void,
     // names the row's button across a re-render (see `_byFocusKey`); rows
     // without a button need none
     focusKey?: string
@@ -2644,18 +2674,6 @@ export class ShareFilesPanel extends Widget {
       btn.addEventListener('click', ev => {
         ev.stopPropagation();
         onRemove();
-      });
-      row.appendChild(btn);
-    }
-    if (onFetch) {
-      const btn = document.createElement('button');
-      btn.className = 'jp-ShareFilesPanel-entryRemove jp-mod-fetch';
-      btn.title = 'Save to Current Folder';
-      btn.dataset.focusKey = `${focusKey}/fetch`;
-      btn.appendChild(this._svgNode(downloadIcon.svgstr));
-      btn.addEventListener('click', ev => {
-        ev.stopPropagation();
-        onFetch();
       });
       row.appendChild(btn);
     }
@@ -2841,7 +2859,7 @@ export class ShareFilesPanel extends Widget {
     if (!entry.path) {
       return undefined;
     }
-    const menu = new Menu({ commands: this._commands });
+    const menu = new MenuSvg({ commands: this._commands });
     menu.addItem({
       command: 'share-files-panel:copy-entry-to-cwd',
       args: { path: entry.path, name: entry.name }
@@ -2874,6 +2892,7 @@ export class ShareFilesPanel extends Widget {
     const c = this._commands;
     if (!c.hasCommand('share-files-panel:copy-link')) {
       c.addCommand('share-files-panel:copy-link', {
+        icon: linkIcon,
         label: 'Copy Link',
         execute: args => {
           const link = String(args.link || '');
@@ -2894,6 +2913,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:set-password', {
+        icon: lockIcon,
         label: args =>
           args.hasPassword ? 'Change Password...' : 'Set Password...',
         execute: args => {
@@ -2905,6 +2925,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:delete-share', {
+        icon: trashIcon,
         label: 'Delete Share',
         execute: args => {
           const id = String(args.id || '');
@@ -2912,11 +2933,13 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:rename-hub-entry', {
+        icon: editIcon,
         label: 'Rename',
         execute: args =>
           this._renameHubEntry(String(args.id || ''), String(args.name || ''))
       });
       c.addCommand('share-files-panel:remove-hub-entry', {
+        icon: closeIcon,
         label: 'Remove from Share',
         execute: args => {
           void this._removeHubEntry(
@@ -2926,6 +2949,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:delete-request', {
+        icon: trashIcon,
         label: 'Delete Request',
         execute: args => {
           const id = String(args.id || '');
@@ -2933,6 +2957,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:disconnect', {
+        icon: disconnectIcon,
         label: 'Disconnect',
         execute: args => {
           const key = String(args.key || '');
@@ -2942,6 +2967,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:open-link', {
+        icon: launchIcon,
         label: 'Open in Browser',
         execute: args => {
           const link = String(args.link || '');
@@ -2951,6 +2977,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:download-remote-entry', {
+        icon: downloadIcon,
         label: 'Download',
         execute: args => {
           const url = String(args.url || '');
@@ -2961,6 +2988,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:save-remote-entry', {
+        icon: saveIcon,
         label: 'Save to Current Folder',
         execute: args => {
           const key = String(args.key || '');
@@ -2970,13 +2998,36 @@ export class ShareFilesPanel extends Widget {
           }
         }
       });
+      c.addCommand('share-files-panel:save-hub-entry', {
+        icon: saveIcon,
+        label: 'Save to Current Folder',
+        execute: args =>
+          this.saveHubEntryFlow(String(args.id || ''), String(args.name || ''))
+      });
+      c.addCommand('share-files-panel:save-hub-upload', {
+        icon: saveIcon,
+        label: 'Save to Current Folder',
+        execute: args => {
+          const req = this._state.requests.find(r => r.id === args.id);
+          for (const uploader of req?.uploaders || []) {
+            const entry = uploader.entries.find(
+              e => e.upload_id === args.uploadId
+            );
+            if (req && entry) {
+              return this._fetchUploadFlow(req, entry);
+            }
+          }
+        }
+      });
       c.addCommand('share-files-panel:new-share', {
+        icon: shareIcon,
         label: 'New Share',
         execute: () => {
           void this.createShareFlow([]);
         }
       });
       c.addCommand('share-files-panel:new-request', {
+        icon: inboxIcon,
         label: 'New Request',
         // offered whatever the grant: a refused request answers with the
         // hub's own sentence from createRequestFlow, which the owner can
@@ -2987,6 +3038,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:copy-entry-to-cwd', {
+        icon: saveIcon,
         label: 'Save to Current Folder',
         execute: args => {
           const path = String(args.path || '');
@@ -2998,7 +3050,8 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:save-connection', {
-        label: 'Save Record to Current Folder',
+        icon: saveIcon,
+        label: 'Save to Current Folder',
         execute: args => {
           void this.saveConnectionFlow(
             String(args.key || ''),
@@ -3007,13 +3060,15 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:connect-again', {
+        icon: refreshIcon,
         label: 'Connect Again...',
         execute: args => {
           void this.connectToLink(String(args.link || ''));
         }
       });
       c.addCommand('share-files-panel:save-connection-zip', {
-        label: 'Save Record as Zip',
+        icon: zipIcon,
+        label: 'Save as Zip',
         execute: args => {
           void this.saveConnectionFlow(
             String(args.key || ''),
@@ -3023,7 +3078,8 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:save-record', {
-        label: 'Save Record to Current Folder',
+        icon: saveIcon,
+        label: 'Save to Current Folder',
         execute: args => {
           void this.saveRecordFlow(
             args.kind === 'requests' ? 'requests' : 'shares',
@@ -3034,7 +3090,8 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:save-record-zip', {
-        label: 'Save Record as Zip',
+        icon: zipIcon,
+        label: 'Save as Zip',
         execute: args => {
           void this.saveRecordFlow(
             args.kind === 'requests' ? 'requests' : 'shares',
@@ -3045,6 +3102,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:show-entry-in-browser', {
+        icon: folderIcon,
         label: 'Show in File Browser',
         execute: args => {
           const path = String(args.path || '');
@@ -3060,6 +3118,7 @@ export class ShareFilesPanel extends Widget {
       // `filebrowser:paste` hook in the plugin). Remote entries are copy-only -
       // their bytes live on a peer, so there is no cut.
       c.addCommand('share-files-panel:copy-remote-entry', {
+        icon: copyIcon,
         label: 'Copy',
         execute: args => {
           const key = String(args.key || '');
@@ -3077,6 +3136,7 @@ export class ShareFilesPanel extends Widget {
       // Copy a local panel entry (own-share file / request upload) onto the
       // clipboard so it can be pasted into the file browser's current folder.
       c.addCommand('share-files-panel:copy-local-entry', {
+        icon: copyIcon,
         label: 'Copy',
         execute: args => {
           const path = String(args.path || '');
@@ -3091,6 +3151,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:paste-into-share', {
+        icon: pasteIcon,
         label: 'Paste',
         execute: args => {
           const id = String(args.id || '');
@@ -3108,6 +3169,7 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:paste-into-request', {
+        icon: pasteIcon,
         label: 'Paste',
         execute: args => {
           const key = String(args.key || '');
@@ -3341,7 +3403,7 @@ export class ShareFilesPanel extends Widget {
   }
 
   private _openShareContextMenu(evt: MouseEvent, share: IShare): Menu {
-    const menu = new Menu({ commands: this._commands });
+    const menu = new MenuSvg({ commands: this._commands });
     menu.addItem({
       command: 'share-files-panel:copy-link',
       args: { link: share.link, kind: 'share', id: share.id }
@@ -3388,7 +3450,7 @@ export class ShareFilesPanel extends Widget {
   }
 
   private _openRequestContextMenu(evt: MouseEvent, req: IRequest): Menu {
-    const menu = new Menu({ commands: this._commands });
+    const menu = new MenuSvg({ commands: this._commands });
     menu.addItem({
       command: 'share-files-panel:copy-link',
       args: { link: req.link, kind: 'request', id: req.id }
@@ -3427,7 +3489,7 @@ export class ShareFilesPanel extends Widget {
   }
 
   private _openConnectionContextMenu(evt: MouseEvent, conn: IConnection): Menu {
-    const menu = new Menu({ commands: this._commands });
+    const menu = new MenuSvg({ commands: this._commands });
     const data = this._state.connectionData.get(conn.key);
     // the stored link when no read has succeeded since the page loaded
     const link = (data && data.link) || conn.link || '';
@@ -3474,7 +3536,7 @@ export class ShareFilesPanel extends Widget {
   }
 
   private _openNewMenu(evt: MouseEvent): void {
-    const menu = new Menu({ commands: this._commands });
+    const menu = new MenuSvg({ commands: this._commands });
     if (this._settings.enableShares) {
       menu.addItem({ command: 'share-files-panel:new-share' });
     }

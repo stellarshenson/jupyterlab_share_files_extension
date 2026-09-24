@@ -286,6 +286,41 @@ test('the Connect button is the right end of the input and is disabled while the
   expect(await fill()).toBe(clear);
 });
 
+test('every entry of the share, request and New menus carries an icon', async ({
+  page
+}) => {
+  await api(page, 'POST', `${API}/shares`, { name: 'Iconed Share', paths: [] });
+  await api(page, 'POST', `${API}/requests`, { name: 'Iconed Request' });
+  await openPanel(page);
+  await refreshPanel(page);
+  const header = (name: string) =>
+    page
+      .locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: name })
+      .locator('.jp-ShareFilesPanel-itemHeader');
+  // menuOf fails on an entry without an icon
+  expect(await menuOf(page, header('Iconed Share'))).toEqual([
+    'Copy Link',
+    'Open in Browser',
+    'Save to Current Folder',
+    'Save as Zip',
+    'Set Password...',
+    'Delete Share'
+  ]);
+  expect(await menuOf(page, header('Iconed Request'))).toEqual([
+    'Copy Link',
+    'Open in Browser',
+    'Save to Current Folder',
+    'Save as Zip',
+    'Set Password...',
+    'Delete Request'
+  ]);
+  await page.locator(`${PANEL} button[title="New share or request"]`).click();
+  const items = page.locator('.lm-Menu .lm-Menu-item[data-type="command"]');
+  await expect(items).toHaveCount(2);
+  await expect(items.locator('.lm-Menu-itemIcon svg')).toHaveCount(2);
+  await page.keyboard.press('Escape');
+});
+
 test('share rows show staging, ready and refused states from the hub', async ({
   page
 }) => {
@@ -639,10 +674,17 @@ test('a recipient upload is fetched into the workspace through the hub', async (
     '1 upload'
   );
   await row.locator('.jp-ShareFilesPanel-itemHeader').click();
-  await expect(row.locator('.jp-ShareFilesPanel-entryName')).toHaveText(
-    'report.csv'
-  );
-  await row.locator('button[title="Save to Current Folder"]').click();
+  const upload = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'report.csv'
+  });
+  await expect(upload).toBeVisible();
+  // the save is the row's menu item, not a button on the row
+  await expect(upload.locator('button')).toHaveCount(0);
+  expect(await menuOf(page, upload)).toEqual(['Save to Current Folder']);
+  await upload.click({ button: 'right' });
+  await page
+    .locator('.lm-Menu .lm-Menu-item', { hasText: 'Save to Current Folder' })
+    .click();
   // The proof is the hub's side: the fetch arrived with the lab token and a
   // fresh destination under the file browser's folder. (The success toast
   // is not asserted - a notification extension may render it differently.)
@@ -1465,13 +1507,13 @@ test('a whole hub share is saved by the hub, as files or as a zip', async ({
   await row().click({ button: 'right' });
   const menu = page.locator('.lm-Menu');
   await expect(
-    menu.locator('.lm-Menu-item', { hasText: 'Save Record to Current Folder' })
+    menu.locator('.lm-Menu-item', { hasText: 'Save to Current Folder' })
   ).toBeVisible();
   await expect(
-    menu.locator('.lm-Menu-item', { hasText: 'Save Record as Zip' })
+    menu.locator('.lm-Menu-item', { hasText: 'Save as Zip' })
   ).toBeVisible();
   await menu
-    .locator('.lm-Menu-item', { hasText: 'Save Record to Current Folder' })
+    .locator('.lm-Menu-item', { hasText: 'Save to Current Folder' })
     .click();
 
   const fetches = async () =>
@@ -1492,9 +1534,7 @@ test('a whole hub share is saved by the hub, as files or as a zip', async ({
   // the zip goes through the same route, into a staging folder the lab packs
   // from and then removes
   await row().click({ button: 'right' });
-  await menu
-    .locator('.lm-Menu-item', { hasText: 'Save Record as Zip' })
-    .click();
+  await menu.locator('.lm-Menu-item', { hasText: 'Save as Zip' }).click();
   await expect
     .poll(async () => (await fetches()).length, {
       message: 'the zip is packed from a second fetch'
@@ -1505,7 +1545,7 @@ test('a whole hub share is saved by the hub, as files or as a zip', async ({
   );
 });
 
-test('a file of a hub share saves to the current folder from its own row', async ({
+test('a file of a hub share saves to the current folder from its menu', async ({
   page,
   request
 }) => {
@@ -1529,9 +1569,18 @@ test('a file of a hub share saves to the current folder from its own row', async
     hasText: 'picked.csv'
   });
   await expect(entry).toBeVisible();
-  const save = entry.locator('button[title="Save to Current Folder"]');
-  await expect(save).toHaveCount(1);
-  await save.click();
+  // the save is the row's menu item; the row's one button removes
+  await expect(entry.locator('button')).toHaveCount(1);
+  await expect(entry.locator('button[title="Remove"]')).toHaveCount(1);
+  expect(await menuOf(page, entry)).toEqual([
+    'Save to Current Folder',
+    'Rename',
+    'Remove from Share'
+  ]);
+  await entry.click({ button: 'right' });
+  await page
+    .locator('.lm-Menu .lm-Menu-item', { hasText: 'Save to Current Folder' })
+    .click();
 
   await expect
     .poll(
@@ -1582,6 +1631,11 @@ async function menuOf(page: any, target: any): Promise<string[]> {
   const items = page.locator('.lm-Menu .lm-Menu-itemLabel');
   await expect(items.first()).toBeVisible();
   const labels = (await items.allTextContents()).filter((t: string) => t);
+  // every entry of a panel menu carries an icon
+  const bare = page
+    .locator('.lm-Menu .lm-Menu-item[data-type="command"]')
+    .filter({ hasNot: page.locator('.lm-Menu-itemIcon svg') });
+  expect(await bare.allTextContents()).toEqual([]);
   await page.keyboard.press('Escape');
   return labels;
 }
@@ -1843,8 +1897,8 @@ test('a connected share saves a file, a folder, the whole and a zip into the cur
   // nothing to the browser
   expect(await menuOf(page, header)).toEqual([
     'Open in Browser',
-    'Save Record to Current Folder',
-    'Save Record as Zip',
+    'Save to Current Folder',
+    'Save as Zip',
     'Disconnect'
   ]);
   expect(await menuOf(page, entry('a.csv'))).toEqual([
@@ -1867,9 +1921,9 @@ test('a connected share saves a file, a folder, the whole and a zip into the cur
   await lands('a.csv');
   await pick(entry('d/'), 'Save to Current Folder');
   await lands('d/x.txt');
-  await pick(header, 'Save Record to Current Folder');
+  await pick(header, 'Save to Current Folder');
   await lands('Their-Share/d/x.txt');
-  await pick(header, 'Save Record as Zip');
+  await pick(header, 'Save as Zip');
   await lands('Their-Share.zip');
   // the message names what landed, as the save of an own record does
   await expect

@@ -2,6 +2,17 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.55] - 2026-09-24
+
+### Added
+
+- Every entry of the panel's menus shows an icon, at the size JupyterLab's own menus use; Save as Zip has a zipped-folder icon
+
+### Changed
+
+- Hub mode: a file of a share and an upload under a request save into the current folder from the row's menu; the row no longer carries a download-icon button
+- The whole-record saves on a share, request or connected share read "Save to Current Folder" and "Save as Zip", without "Record"
+
 ## [1.2.54] - 2026-09-24
 
 ### Changed

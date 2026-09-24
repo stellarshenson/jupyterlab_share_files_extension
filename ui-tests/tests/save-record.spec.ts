@@ -50,7 +50,7 @@ test('a whole share saves into the current folder as its files', async ({
   await shareOf(page, 'Quarter Report', `${tmpPath}/q.txt`);
   await openPanel(page);
 
-  await rowMenu(page, 'Quarter Report', 'Save Record to Current Folder');
+  await rowMenu(page, 'Quarter Report', 'Save to Current Folder');
 
   // the folder is named after the record and holds the record's own files
   await expect
@@ -71,7 +71,7 @@ test('a whole share saves into the current folder as one zip', async ({
   await shareOf(page, 'Zipped Report', `${tmpPath}/z.txt`);
   await openPanel(page);
 
-  await rowMenu(page, 'Zipped Report', 'Save Record as Zip');
+  await rowMenu(page, 'Zipped Report', 'Save as Zip');
 
   await expect
     .poll(() => page.contents.fileExists(`${tmpPath}/Zipped-Report.zip`), {
@@ -89,13 +89,13 @@ test('a second save lands beside the first, never over it', async ({
   await shareOf(page, 'Twice Over', `${tmpPath}/t.txt`);
   await openPanel(page);
 
-  await rowMenu(page, 'Twice Over', 'Save Record to Current Folder');
+  await rowMenu(page, 'Twice Over', 'Save to Current Folder');
   await expect
     .poll(() => page.contents.fileExists(`${tmpPath}/Twice-Over/t.txt`), {
       timeout: 15000
     })
     .toBe(true);
-  await rowMenu(page, 'Twice Over', 'Save Record to Current Folder');
+  await rowMenu(page, 'Twice Over', 'Save to Current Folder');
 
   // the first save is what the owner already looked at; the second takes the
   // next free name rather than writing over it
@@ -108,4 +108,34 @@ test('a second save lands beside the first, never over it', async ({
   expect(await page.contents.fileExists(`${tmpPath}/Twice-Over/t.txt`)).toBe(
     true
   );
+});
+
+test('every entry of a share row and a share entry menu carries an icon', async ({
+  page,
+  tmpPath
+}) => {
+  await page.contents.uploadContent('icon\n', 'text', `${tmpPath}/i.txt`);
+  await shareOf(page, 'Iconed', `${tmpPath}/i.txt`);
+  await openPanel(page);
+  const item = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Iconed'
+  });
+  const header = item.locator('.jp-ShareFilesPanel-itemHeader');
+  const items = page.locator('.lm-Menu .lm-Menu-item[data-type="command"]');
+  const bare = items.filter({ hasNot: page.locator('.lm-Menu-itemIcon svg') });
+  await header.click({ button: 'right' });
+  await expect(items.first()).toBeVisible();
+  expect(await bare.allTextContents()).toEqual([]);
+  await page.keyboard.press('Escape');
+  await header.click();
+  await item
+    .locator('.jp-ShareFilesPanel-entry', { hasText: 'i.txt' })
+    .click({ button: 'right' });
+  await expect(items).toHaveText([
+    'Save to Current Folder',
+    'Show in File Browser',
+    'Copy'
+  ]);
+  expect(await bare.allTextContents()).toEqual([]);
+  await page.keyboard.press('Escape');
 });

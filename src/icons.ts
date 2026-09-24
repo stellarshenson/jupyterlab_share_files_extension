@@ -101,6 +101,14 @@ export const disconnectIcon = new LabIcon({
   name: 'share-files:disconnect',
   svgstr: disconnectSvg
 });
+// standard Material Design "folder_zip" icon, for the menu's Save as Zip
+const zipSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="jp-icon3">
+<path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-2 6h-2v2h2v2h-2v2h-2v-2h2v-2h-2v-2h2v-2h-2V8h2v2h2v2z"/>
+</svg>`;
+export const zipIcon = new LabIcon({
+  name: 'share-files:zip',
+  svgstr: zipSvg
+});
 // same cloud silhouette as cloudSvg, but outline only (NO fill) - shown when
 // the tunnel is configured yet switched off (links are private). fill/stroke
 // live on the path and the themed jp-icon3 class is deliberately absent -

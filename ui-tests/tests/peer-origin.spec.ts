@@ -163,7 +163,7 @@ test('a peer on another origin lists, saves and downloads its files under a defa
     );
     await page
       .locator('.lm-Menu .lm-Menu-item', {
-        hasText: 'Save Record to Current Folder'
+        hasText: 'Save to Current Folder'
       })
       .click();
     const allResponse = await savingAll;
@@ -186,7 +186,7 @@ test('a peer on another origin lists, saves and downloads its files under a defa
       /\/connections\/[^/]+\/save(\?|$)/.test(r.url())
     );
     await page
-      .locator('.lm-Menu .lm-Menu-item', { hasText: 'Save Record as Zip' })
+      .locator('.lm-Menu .lm-Menu-item', { hasText: 'Save as Zip' })
       .click();
     const zipResponse = await savingZip;
     expect(zipResponse.request().postDataJSON().archive).toBe('zip');

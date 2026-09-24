@@ -574,12 +574,6 @@
   color: var(--jp-error-color1);
 }
 
-/* the hub-mode Fetch button shares the reveal rules above; it downloads,
-   so it hovers in the brand colour, not delete's red */
-.jp-ShareFilesPanel-entryRemove.jp-mod-fetch:hover {
-  color: var(--jp-brand-color1);
-}
-
 .jp-ShareFilesPanel-entryRemove svg {
   width: 11px;
   height: 11px;
