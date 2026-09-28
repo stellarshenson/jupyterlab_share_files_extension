@@ -1,8 +1,8 @@
 /**
  * The lowest opacity the header cloud icon shows while it reads switching.
  *
- * One breath of the switching cloud lasts 2.4 s, and the glyph is nearly
- * invisible for only about half a second of it. A poll from the test runner
+ * One breath of the switching cloud lasts 1.6 s, and the glyph is nearly
+ * invisible for under half a second of it. A poll from the test runner
  * lands a few times a second and misses that window, so the page records the
  * opacity itself on every animation frame.
  */

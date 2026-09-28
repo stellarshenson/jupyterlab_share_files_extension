@@ -2,6 +2,18 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.59] - 2026-09-28
+
+### Added
+
+- The repository carries an agent skill for the `jupyterlab_share_files` CLI at `.agents/skills/jupyterlab-share-files/SKILL.md`, where agents that read `.agents/skills` find it in a clone; the README gives the `ln -s` line that links it into Claude Code
+
+### Changed
+
+- A switch in flight breathes every 1.6 s instead of 2.4 s, and a switch shows that look for at least one whole 1.6 s breath
+- The `install-claude-skill` CLI command is removed: the skill is no longer shipped inside the Python package, so there is nothing for the command to copy
+- The Makefile follows the canonical 1.43: `make install` raises the patch version, and `make publish` still raises it exactly once
+
 ## [1.2.58] - 2026-09-25
 
 ### Added

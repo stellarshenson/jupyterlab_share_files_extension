@@ -106,9 +106,9 @@
      glyph itself with nothing drawn around it: it holds, fades fast to
      nothing, holds, and comes back fast (owner, 2026-09-24). A switch keeps
      this look for at least one whole breath, CLOUD_BREATH_MS in
-     src/widget.ts, which matches the 2.4s here. */
+     src/widget.ts, which matches the 1.6s here. */
   color: var(--jp-brand-color1);
-  animation: share-files-breathe 2.4s cubic-bezier(0.8, 0, 0.2, 1) infinite;
+  animation: share-files-breathe 1.6s cubic-bezier(0.8, 0, 0.2, 1) infinite;
 }
 
 .jp-ShareFilesPanel-cloudIndicator.jp-mod-active.jp-mod-arrived svg {

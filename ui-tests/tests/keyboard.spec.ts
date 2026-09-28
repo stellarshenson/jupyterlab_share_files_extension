@@ -433,7 +433,7 @@ test('a switch the server answers at once still shows one whole breath', async (
     await expect(cloud, `switching ${to}`).toHaveClass(/jp-mod-connecting/);
     await expect(cloud).not.toHaveClass(/jp-mod-connecting/);
     await expect(cloud).toHaveClass(done);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(2400);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1600);
     // the glyph faded to nothing while the icon still showed the switch
     expect(await readTrough(page), `switching ${to}`).toBeLessThan(0.05);
   }

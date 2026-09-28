@@ -96,7 +96,7 @@ import {
 
 const DEFAULT_POLL_INTERVAL_SECONDS = 15;
 // one breath of the switching cloud: share-files-breathe in style/base.css
-const CLOUD_BREATH_MS = 2400;
+const CLOUD_BREATH_MS = 1600;
 const MIN_POLL_INTERVAL_SECONDS = 2;
 /** Hub mode: how long the panel waits after a ring before fetching, so a
  * burst of rings costs one fetch. */

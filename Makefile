@@ -1,5 +1,13 @@
-# Makefile for Jupyterlab extensions version 1.41
+# Makefile for Jupyterlab extensions version 1.43
 # changelog:
+#   1.43 - the auth gate in `test` loads the source tree being released, not the wheel
+#          the last `make install` left in site-packages: `python script.py` puts only
+#          the script's own directory on sys.path, and `publish` runs `test` before
+#          `install`, so the gate checked the previous build.
+#   1.42 - increment_version moves from `publish` onto `install`, so every
+#          `make install` raises the patch version again, as it did through 1.40.
+#          `publish` reaches it through `install` and still raises it exactly once;
+#          `make build` alone leaves the version as it is. Requested on 2026-09-25.
 #   1.41 - increment_version moves off `build` and onto `publish`; `publish` gains
 #          `test`; the metadata commit and push happen BEFORE either registry is
 #          written to; `npm install` and package-lock.json are dropped.
@@ -167,8 +175,8 @@ build: clean check_dependencies
 	jlpm prettier
 	python -m build
 
-## install package
-install: build
+## install package - raises the patch version first, so the build carries the new one
+install: increment_version build
 	pip install dist/*.whl --force-reinstall
 
 ## run tests
@@ -181,7 +189,7 @@ test: check_dependencies
 	fi
 	@if [ -f ".github/scripts/check_auth.py" ] && [ -d "$(PYTHON_NAME)/tests" ]; then \
 		echo "Checking every endpoint requires authentication..."; \
-		python .github/scripts/check_auth.py; \
+		PYTHONPATH=$(CURDIR) python .github/scripts/check_auth.py; \
 	else \
 		echo "test: no .github/scripts/check_auth.py - skipping the auth gate"; \
 	fi
@@ -215,13 +223,12 @@ check_dependencies:
 		echo "All dependencies are installed."; \
 	fi
 
-# Order is load-bearing. increment_version runs here, not on build, so an ordinary
-# `make install` never rewrites a pinned version and every published version stays
-# rebuildable. test runs before install, so a red suite stops the release. The commit
+# Order is load-bearing. The version is raised once, by install. test runs before
+# install, so a red suite stops the release before the version moves. The commit
 # and push happen before either registry is written to: a failure there costs nothing,
 # whereas npm permanently consumes a version it has accepted.
 ## publish package to npm and PyPI
-publish: check_dependencies increment_version test install
+publish: check_dependencies test install
 	@ls dist/*.whl >/dev/null 2>&1 && ls dist/*.tar.gz >/dev/null 2>&1 || { \
 		echo "publish: dist/ holds no wheel or sdist - run make build first" >&2; \
 		exit 1; \

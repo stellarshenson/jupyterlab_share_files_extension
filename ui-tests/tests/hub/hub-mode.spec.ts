@@ -1093,7 +1093,7 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
     return [getComputedStyle(el).color, value];
   });
   expect(waitColor).toBe(accent);
-  // waiting for a tunnel breathes, one breath every 2.4 s rather than a
+  // waiting for a tunnel breathes, one breath every 1.6 s rather than a
   // blink: the hub takes about 90 seconds to bring one up, and a fast
   // flicker over that long reads as an alarm rather than as waiting
   const breath = await cloud.evaluate(el => {
@@ -1105,7 +1105,7 @@ test('the hub dropping its tunnel moves the icon from on to pending, with no cli
     };
   });
   expect(breath.name).toBe('share-files-breathe');
-  expect(breath.seconds).toBeGreaterThanOrEqual(2);
+  expect(breath.seconds).toBeGreaterThanOrEqual(1.6);
   expect(breath.timing).toContain('cubic-bezier');
   // the glyph itself breathes, sharp and down to nothing, with no ring
   // around it: a pulsed ring read as a box (owner, 2026-09-24)
@@ -1193,7 +1193,7 @@ test('a switch the hub answers at once still shows one whole breath', async ({
   await cloud.click();
   await expect(cloud).toHaveClass(/jp-mod-connecting/);
   await expect(cloud).toHaveClass(/jp-mod-active/);
-  expect(Date.now() - started).toBeGreaterThanOrEqual(2400);
+  expect(Date.now() - started).toBeGreaterThanOrEqual(1600);
   // the glyph faded to nothing while the icon still showed the switch
   expect(await readTrough(page)).toBeLessThan(0.05);
 });

@@ -127,7 +127,7 @@ where to find the value):
   carry the public hostname
 - **off** (`stop`, dashed cloud in the same colour) - daemon stopped, links carry the
   private/request address
-- **connecting** - the filled cloud in the accent blue, breathing down to nothing and back, while a switch is in flight and for at least one whole breath of 2.4 s
+- **connecting** - the filled cloud in the accent blue, breathing down to nothing and back, while a switch is in flight and for at least one whole breath of 1.6 s
 
 The toggle is read per request (mtime-cached config file), so it takes
 effect on the next request in either direction - no restart. The same
