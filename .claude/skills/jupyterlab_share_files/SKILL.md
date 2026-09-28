@@ -1,1 +1,0 @@
-../../../jupyterlab_share_files_extension/resources/skills/jupyterlab_share_files/SKILL.md

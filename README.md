@@ -120,12 +120,15 @@ jupyterlab_share_files close-request <id>
 jupyterlab_share_files pick-up <key> [names...] [--target-dir DIR]
 jupyterlab_share_files send-to-request <key> <paths...> [--uploader NAME]
 jupyterlab_share_files list-request-uploads <id>
-jupyterlab_share_files install-claude-skill
 ```
 
 If a link's host uses a self-signed certificate, `connect` stops and shows the certificate's fingerprint. If you know the host and the certificate, run `connect <link> --trust-certificate`: it connects, prints the host and the certificate's fingerprint, and the connection keeps that certificate until you remove it, as Trust does in the panel.
 
-`install-claude-skill` installs the bundled Claude skill (a usage guide for this CLI) into `~/.claude/skills/jupyterlab_share_files/`, asking for confirmation before writing.
+The repository carries an agent skill, [`.agents/skills/jupyterlab-share-files/SKILL.md`](.agents/skills/jupyterlab-share-files/SKILL.md). It tells an agent how to run each command, which commands put a password or a long listing into its output, and what each error asks for next. Agents that read `.agents/skills` find it in a clone of this repository; to make it available to Claude Code everywhere, link it into the skills directory from the clone:
+
+```bash
+ln -s "$PWD/.agents/skills/jupyterlab-share-files" ~/.claude/skills/jupyterlab-share-files
+```
 
 ## Cloudflare tunnel sharing
 
