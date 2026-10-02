@@ -2,6 +2,12 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.64] - 2026-10-02
+
+### Added
+
+- Switching the cloud icon on while there is no share and no request shows the warning "Cloudflare sharing is on, but there is no share or request to expose yet", in standalone and hub mode. The switch still goes on, so in hub mode the next share or request gets a public link
+
 ## [1.2.63] - 2026-10-02
 
 ### Added

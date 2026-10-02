@@ -79,6 +79,78 @@ test('the cloud icon switches from the keyboard', async ({ page }) => {
   await expect(cloud).toHaveAttribute('aria-pressed', 'false');
 });
 
+test('a switch on with no share and no request warns that nothing is exposed', async ({
+  page
+}) => {
+  // ACC-CLOUD-199, ACC-CLOUD-200. Tests run side by side on one server, so
+  // the two lists are answered in the browser: empty first, then one share
+  const NOTHING = 'no share or request to expose yet';
+  const warnings = async () =>
+    (await page.notifications).filter(
+      (n: any) => n.type === 'warning' && n.message.includes(NOTHING)
+    ).length;
+  let active = false;
+  let shares: unknown[] = [];
+  await page.route(`**${API}/info*`, async (route: any) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...json, tunnel_configured: true, tunnel_active: active }
+    });
+  });
+  await page.route(`**${API}/tunnel*`, async (route: any) => {
+    active = !!route.request().postDataJSON().active;
+    await route.fulfill({
+      json: {
+        tunnel_configured: true,
+        tunnel_active: active,
+        tunnel_autostart: false,
+        tunnel_running: active
+      }
+    });
+  });
+  await page.route(new RegExp(`${API}/shares(\\?.*)?$`), (route: any) =>
+    route.fulfill({ json: { shares } })
+  );
+  await page.route(new RegExp(`${API}/requests(\\?.*)?$`), (route: any) =>
+    route.fulfill({ json: { requests: [] } })
+  );
+  await openPanel(page);
+  const cloud = page.locator(`${PANEL} .jp-ShareFilesPanel-cloudIndicator`);
+
+  // nothing shared: the switch goes on and says that it exposes nothing
+  await cloud.click();
+  await expect(cloud).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(warnings).toBe(1);
+  // a switch off says nothing
+  await cloud.click();
+  await expect(cloud).toHaveAttribute('aria-pressed', 'false');
+  expect(await warnings()).toBe(1);
+
+  // one share in the panel: the switch on has something to expose and says
+  // nothing
+  shares = [
+    {
+      id: 'AAAAAAAA',
+      name: 'exposed-one',
+      link: 'http://localhost/public/share/AAAAAAAA',
+      entries: [],
+      created_at: 0
+    }
+  ];
+  await page.locator(`${PANEL} button[title="Refresh"]`).click();
+  await expect(
+    page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+      hasText: 'exposed-one'
+    })
+  ).toBeVisible();
+  await cloud.click();
+  // the icon reads on only after the refresh, which follows the decision
+  await expect(cloud).toHaveAttribute('aria-pressed', 'true');
+  expect(await warnings()).toBe(1);
+});
+
 test('a share row opens its context menu from the keyboard and gets the focus back', async ({
   page
 }) => {

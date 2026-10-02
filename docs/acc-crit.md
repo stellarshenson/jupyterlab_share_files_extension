@@ -320,6 +320,22 @@ The Cloudflare tunnel exposing share and request links beyond the hub, and the p
   - log: 2026-09-30T11:12:13Z @kj added; reason: the body names the wait, the fallback and the later switch, each a separate check
   - log: 2026-09-30T11:53:21Z @kj adversarial review SHIP in 2 rounds; pytest 495 passed 8 skipped; open until a share copying over 30 s is checked on the DEV hub
   - log: 2026-10-01T13:03:39Z @kj closed
+- [x] `ACC-CLOUD-199` **Switch on with nothing to expose warns** - MEDIUM; switching the cloud icon on while the user has no share and no request shows the warning 'Cloudflare sharing is on, but there is no share or request to expose yet'; standalone and hub mode
+  - evidence: galata: keyboard.spec.ts 'a switch on with no share and no request warns' (standalone) and hub-mode.spec.ts 'the icon does not wait for a tunnel' (mock hub) count one warning, aria-pressed true; both fail on the old code; standalone 40 passed, mock hub 58 passed
+  - test: empty panel, click the cloud icon; assert one warning with that text and aria-pressed true
+  - test-tags: FUNCTIONAL
+  - mechanism: 2026-10-02T16:20:59Z @kj _toggleTunnel decides right after the server accepts a switch on and the breath ends, before the refresh, on the lists the panel holds; a second click is still refused then, so the warning cannot follow a switch off; the switch itself is unchanged
+  - mechanism: 2026-10-02T15:57:07Z @kj _toggleTunnel checks the lists the refresh read after a switch on the server accepted; the switch itself is unchanged, so hub mode still arms the default for the next record
+  - log: 2026-10-02T15:57:07Z @kj added
+  - log: 2026-10-02T16:28:04Z @kj review architect, bug-hunter, ux-designer, slop-hunter: SHIP in three rounds; a late decision let the toast follow a switch off, so the decision moved before the refresh; deferred: one false toast for a share made by the CLI or a second tab within one poll
+  - log: 2026-10-02T16:28:06Z @kj closed
+- [x] `ACC-CLOUD-200` **Edge: no warning when there is something to expose** - LOW; the warning of ACC-CLOUD-199 is not shown when a share or a request exists, on a switch off, or when the switch on failed
+  - evidence: same two galata cases: the count stays 1 after a switch off and after a switch on with a share in the panel; a mutant without the shares check fails both with 2; a refused switch on skips the warning by statement order, not tested
+  - related: ACC-CLOUD-199 - the warning this bounds
+  - test: one share, click the cloud icon on and off; assert no warning with that text
+  - test-tags: FUNCTIONAL
+  - log: 2026-10-02T15:57:12Z @kj added
+  - log: 2026-10-02T16:28:09Z @kj closed
 
 ## Hover tooltip `HOVER`
 

@@ -4787,6 +4787,20 @@ export class ShareFilesPanel extends Widget {
       // a switch the server answers at once would end before the breath has
       // faded at all, so the switching look stays for one whole breath
       await breath;
+      // a switch on with nothing shared exposes nothing, and in hub mode no
+      // tunnel comes up for it: say so, or the owner waits for a public link.
+      // Said here, while a second click is still refused, so it cannot land
+      // after a switch off
+      if (
+        !active &&
+        !this._state.shares.length &&
+        !this._state.requests.length
+      ) {
+        Notification.warning(
+          'Cloudflare sharing is on, but there is no share or request to expose yet',
+          { autoClose: 8000 }
+        );
+      }
     } catch (err: any) {
       this._noteCloudSwitchFailure(err);
     } finally {

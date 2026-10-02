@@ -1314,6 +1314,22 @@ test('the icon does not wait for a tunnel no record asked for', async ({
   await expect(cloud).not.toHaveClass(/jp-mod-active/);
   // and no ring around it (owner, 2026-09-24)
   await expect(cloud).toHaveCSS('box-shadow', 'none');
+  // ACC-CLOUD-199: the switch says why no tunnel is on the way
+  const NOTHING = 'no share or request to expose yet';
+  await expect.poll(() => notes(page, 'warning', NOTHING)).toBe(1);
+  // ACC-CLOUD-200: a switch off says nothing
+  await cloud.click();
+  // the title of the switch in flight gives way to the one of the off look
+  await expect(cloud).toHaveAttribute('title', /Click to switch it on/);
+  expect(await notes(page, 'warning', NOTHING)).toBe(1);
+  // nor does a switch on with a share to expose
+  await api(page, 'POST', `${API}/shares`, { name: 'exposed-one', paths: [] });
+  await refreshPanel(page);
+  await cloud.click();
+  // the settled title is drawn by the refresh, which follows the decision
+  await expect(cloud).toHaveAttribute('title', /Click to switch it off/);
+  await expect(cloud).not.toHaveClass(/jp-mod-armed/);
+  expect(await notes(page, 'warning', NOTHING)).toBe(1);
 });
 
 test('a group policy with no tunnel at all does not show the icon', async ({
