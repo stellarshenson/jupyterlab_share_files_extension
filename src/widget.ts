@@ -370,7 +370,11 @@ export class ShareFilesPanel extends Widget {
         paths,
         password
       );
-      const copied = await this._copyLinkToClipboard(share.link);
+      // a share the hub is still copying has only its hub-network link yet;
+      // its Cloudflare link comes when the copy is done (DEF-HUB-128)
+      const copied =
+        share.tunnel_reason !== 'tunnel_pending' &&
+        (await this._copyLinkToClipboard(share.link));
       Notification.update({
         id: pending,
         message: `Share "${share.name}" created${copied ? ' - link copied' : ''}`,

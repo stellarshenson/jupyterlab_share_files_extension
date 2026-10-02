@@ -370,6 +370,8 @@ export function hubReasonText(slug: string): string {
       'Your group policy has Cloudflare turned off - links work on the hub network only.',
     tunnel_not_switched_on:
       'The hub did not switch this record on - its link works on the hub network only.',
+    tunnel_pending:
+      'The hub is still copying the files. The share gets its Cloudflare link when the copy is done - copy the link from its row then.',
     policy_conflict:
       'Two groups claim file sharing on this hub - ask the administrator.'
   };

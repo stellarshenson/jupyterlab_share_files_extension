@@ -115,6 +115,16 @@ TUNNEL_KEY = "hub_tunnel"
 # hub_unavailable
 NOT_ON_REASON = "tunnel_not_switched_on"
 
+# The hub refuses a switch on with `busy` while it still copies the record's
+# files (seen on the DEV hub 2026-09-30), and a create's switch follows its
+# 202 at once. The create asks again once a second for this many seconds, so
+# a small share leaves with its Cloudflare link (DEF-HUB-128); a record still
+# copying after that carries PENDING_REASON, and the list read after the copy
+# lands switches it on (`_reconcile_tunnel`).
+SWITCH_WAIT_SECONDS = 30
+SWITCH_RETRY_SECONDS = 1
+PENDING_REASON = "tunnel_pending"
+
 
 # --------------------------------------------------------------------------- #
 # Pure translation (unit-tested without a server)
@@ -468,11 +478,26 @@ class _HubBase(_Base):
         the toggle says so. A refusal turns the toggle off and rides on the
         row as ``tunnel_reason`` so the panel can say why the link stayed on
         the hub's network; the switched-on row's url is read back from the
-        hub, which composes it."""
+        hub, which composes it. A `busy` answer is asked again for
+        SWITCH_WAIT_SECONDS; a record still busy then is PENDING_REASON."""
         if not tunnel_default():
             return row
         code, data = await self._set_tunnel(kind, row["id"], True)
+        deadline = time.monotonic() + SWITCH_WAIT_SECONDS
+        while isinstance(data, dict) and data.get("reason") == "busy":
+            if time.monotonic() >= deadline:
+                return {**row, "tunnel_reason": PENDING_REASON}
+            await asyncio.sleep(SWITCH_RETRY_SECONDS)
+            if not tunnel_default():
+                # switched off while the hub copied: nothing to switch on
+                return row
+            code, data = await self._set_tunnel(kind, row["id"], True)
         if code == 204:
+            if not tunnel_default():
+                # switched off while this write was in flight: take it back,
+                # for the reason `_reconcile_tunnel` gives
+                await self._set_tunnel(kind, row["id"], False)
+                return row
             for item in await self._items_quiet():
                 if item.get("id") == row["id"]:
                     return {**row, "tunnel": True, "link": self._link(item.get("url", ""))}
@@ -1148,6 +1173,13 @@ def parse_hub_link(text: str) -> tuple[str, str]:
     return f"{parsed.scheme}://{parsed.netloc}{path}", match.group(1)
 
 
+def _origin(url: str) -> tuple:
+    """Scheme, lower-case host and port of ``url``, the scheme's default port
+    filled in: ``https://Host`` and ``https://host:443`` are one origin."""
+    parsed = urlparse(url)
+    return parsed.scheme, parsed.hostname, parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
+
+
 def _size(text: str) -> int:
     match = re.fullmatch(r"\s*([\d.]+)\s*([KMGT]?B)\s*", text)
     return int(float(match.group(1)) * _SIZE_UNITS[match.group(2)]) if match else 0
@@ -1294,6 +1326,15 @@ class _HubConnectionBase(_HubBase):
     def _rel(self, path: Path) -> str:
         return path.relative_to(Path(self.workspace_root)).as_posix()
 
+    def _address(self, link: str) -> str:
+        """Where this server reads ``link``: as pasted, or for a link on the
+        host the browser reached this lab on - this hub's own - its path at
+        the hub API origin. That is the hub's proxy, which a net-isolated lab
+        still reaches when the public address is closed to it (DEF-HUB-129)."""
+        if _origin(link) == _origin(_request_origin(self)):
+            return hub_api_origin() + urlparse(link).path
+        return link
+
     def _cookie(self, conn: dict) -> dict:
         value = _COOKIES.get((conn["link"], conn.get("password", "")))
         return {"Cookie": f"{UNLOCK_COOKIE}={value}"} if value else {}
@@ -1303,7 +1344,7 @@ class _HubConnectionBase(_HubBase):
         cookie a 303 sets; returns the link's status."""
         link, password = conn["link"], conn.get("password", "")
         resp = await self._peer_fetch(
-            link + "/unlock",
+            self._address(link) + "/unlock",
             method="POST",
             body=urlencode({"password": password}),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -1334,13 +1375,13 @@ class _HubConnectionBase(_HubBase):
         link's own, or 401 for a page that stays locked. Raises
         ``PeerUnavailable`` when the link cannot be reached."""
         certificate = conn.get("certificate", "")
-        resp = await self._peer_fetch(conn["link"], headers=self._cookie(conn), certificate=certificate)
+        resp = await self._peer_fetch(self._address(conn["link"]), headers=self._cookie(conn), certificate=certificate)
         page = read_page(resp.body.decode("utf-8", "replace")) if resp.code == 200 else None
         if page is not None and page["locked"] and conn.get("password"):
             code = await self._unlock(conn)
             if code != 303:
                 return (401 if code == 403 else code), {}
-            resp = await self._peer_fetch(conn["link"], headers=self._cookie(conn), certificate=certificate)
+            resp = await self._peer_fetch(self._address(conn["link"]), headers=self._cookie(conn), certificate=certificate)
             page = read_page(resp.body.decode("utf-8", "replace")) if resp.code == 200 else None
         if page is None:
             return resp.code, {}
@@ -1365,7 +1406,7 @@ class _HubConnectionBase(_HubBase):
         with open(path, "wb") as spool:
             for _ in range(_RETRIES):
                 resp = await self._peer_fetch(
-                    conn["link"] + "/" + suffix, spool=spool, max_bytes=max_bytes, headers=self._cookie(conn),
+                    self._address(conn["link"]) + "/" + suffix, spool=spool, max_bytes=max_bytes, headers=self._cookie(conn),
                     certificate=conn.get("certificate", ""),
                 )
                 if resp.code != 429:
@@ -1408,7 +1449,9 @@ class HubConnectionsHandler(_HubConnectionBase):
         # Connect Again sends no password: the connection's own is tried, and
         # only by _read, on a page that still asks for one
         password = typed or stored.get("password", "")
-        certificate = await self._connect_certificate(link, str(body.get("trust") or ""), stored.get("certificate", ""))
+        certificate = await self._connect_certificate(
+            self._address(link), str(body.get("trust") or ""), stored.get("certificate", "")
+        )
         if certificate is None:
             return
         conn = {"link": link, "id": id_, "password": password, "certificate": certificate}
@@ -1704,7 +1747,7 @@ class HubConnectionUploadHandler(_HubConnectionBase):
             state["copied"] = start
             try:
                 await _post_file(
-                    client, conn["link"] + "/u", path, path.name,
+                    client, self._address(conn["link"]) + "/u", path, path.name,
                     validate_cert=self.verify_peer_tls, headers=self._cookie(conn), progress=sent,
                     certificate=conn.get("certificate", ""),
                 )

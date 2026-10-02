@@ -59,6 +59,7 @@ exclude = [".github", "binder"]
 "jupyterlab_share_files_extension/labextension" = "share/jupyter/labextensions/jupyterlab_share_files_extension"
 "install.json" = "share/jupyter/labextensions/jupyterlab_share_files_extension/install.json"
 "jupyter-config/server-config" = "etc/jupyter/jupyter_server_config.d"
+".agents/skills/jupyterlab-share-files-extension" = "share/jupyter/agents/skills/jupyterlab-share-files-extension"
 
 [tool.hatch.build.hooks.version]
 path = "jupyterlab_share_files_extension/_version.py"

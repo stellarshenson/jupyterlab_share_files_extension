@@ -166,6 +166,66 @@ def test_runtime_error_prints_to_stderr_and_exits_1(monkeypatch, capsys):
 
 
 # --------------------------------------------------------------------------- #
+# --help is what an agent runs the commands from
+# --------------------------------------------------------------------------- #
+
+
+def _subcommands(parser, path=()):
+    """Every subcommand parser under ``parser``, with its command path."""
+    import argparse
+
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, child in action.choices.items():
+                yield (*path, name), child
+                yield from _subcommands(child, (*path, name))
+
+
+def test_every_subcommand_help_says_what_it_does_and_shows_an_example():
+    commands = dict(_subcommands(cli.build_parser()))
+    assert len(commands) == 22
+    for path, parser in commands.items():
+        name = " ".join(path)
+        assert parser.description and len(parser.description) > 40, name
+        assert "examples:\n  jupyterlab_share_files " in parser.epilog and name in parser.epilog, name
+        for action in parser._actions:
+            assert action.help, f"{name}: {action.dest} has no help"
+
+
+def test_top_level_help_names_the_environment_and_the_exit_status(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    out = capsys.readouterr().out
+    for word in ("SHARE_FILES_BASE_URL", "SHARE_FILES_TOKEN", "SHARE_FILES_INSECURE", "exit status:", "standalone", "hub"):
+        assert word in out
+
+
+def _refusal(monkeypatch, code, body):
+    import urllib.error
+
+    def refuse(req, context=None):
+        raise urllib.error.HTTPError(req.full_url, code, "refused", {}, io.BytesIO(body))
+
+    monkeypatch.setenv("SHARE_FILES_BASE_URL", "http://lab")
+    monkeypatch.setenv("SHARE_FILES_TOKEN", "t")
+    monkeypatch.setattr(cli.urllib.request, "urlopen", refuse)
+
+
+def test_a_protected_link_names_the_next_step(monkeypatch, capsys):
+    _refusal(monkeypatch, 401, b'{"error": "password required", "password_required": true}')
+    assert cli.main(["connect", "https://host/s/pol1/Abc_123-xyz"]) == 1
+    err = capsys.readouterr().err
+    assert "password required" in err and "in the panel" in err and "list-items" in err
+
+
+def test_a_route_the_server_does_not_have_is_named_not_printed(monkeypatch, capsys):
+    _refusal(monkeypatch, 404, b"<html><title>404 : Not Found</title></html>")
+    assert cli.main(["remove-upload", "RQ77ZZ12", "K3J5H2", "draft.pdf"]) == 1
+    err = capsys.readouterr().err
+    assert "no such route" in err and "<html>" not in err
+
+
+# --------------------------------------------------------------------------- #
 # cloudflare: token save + verify
 # --------------------------------------------------------------------------- #
 

@@ -1,1 +1,0 @@
-../../../.agents/skills/jupyterlab-share-files/SKILL.md

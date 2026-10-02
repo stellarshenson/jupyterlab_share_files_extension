@@ -139,7 +139,7 @@ def cloudflare_verify(token: str, account_id: str = "") -> dict:
     if not account_id:
         if not result["accounts"]:
             result["error"] = (
-                "no account id: pass --account_id or use a token that can "
+                "no account id: pass --account-id to cloudflare setup, or use a token that can "
                 "list accounts (" + (_cf_errors(accounts) or "empty list") + ")"
             )
             return result
@@ -268,7 +268,7 @@ def cloudflare_setup(
         raise RuntimeError(
             "cloudflare setup: the token cannot create tunnels ("
             + (verify.get("create_error") or verify.get("error") or "unknown")
-            + "); fix the token permissions and re-run --verify"
+            + "); fix the token permissions, then run cloudflare validate"
         )
     account_id = verify["account_id"]
 

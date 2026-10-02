@@ -71,6 +71,10 @@ class FakeHub:
         self.pending_add: tuple[str, list[str]] | None = None
         # where a fetch writes, set by the fixture to the server's root
         self.workspace_root = ""
+        # how many switches on the hub answers `busy`, as it does while it
+        # copies a record's files (DEF-HUB-128), and what each one runs
+        self.busy_switches = 0
+        self.on_busy = lambda: None
 
     def land_add(self, reason: str = "") -> None:
         """Settle the add in flight the way the hub's row reports it."""
@@ -185,6 +189,10 @@ class FakeHub:
                 if item["id"] == m.group(2):
                     if body["tunnel"] and not self.cloudflare_enabled:
                         return 403, {"reason": "tunnel_not_available", "message": "Cloudflare is off"}
+                    if body["tunnel"] and self.busy_switches:
+                        self.busy_switches -= 1
+                        self.on_busy()
+                        return 409, {"reason": "busy", "message": "The switch was refused: busy"}
                     item["tunnel"] = bool(body["tunnel"])
                     return 204, {}
             return 404, {"status": 404, "message": "No such share"}
@@ -741,6 +749,65 @@ async def test_a_default_switch_on_after_create_names_why_it_failed(jp_fetch, fa
     fake_hub.raise_for.add("requests/r_Fake_id_0002/tunnel")
     row = _json(await _post(jp_fetch, "api", "requests", body={"name": "z"}))
     assert row["tunnel_reason"] == "hub_unavailable"
+
+
+async def test_a_create_switch_the_hub_answers_busy_is_asked_again_until_it_lands(jp_fetch, fake_hub, monkeypatch):
+    """DEF-HUB-128: the hub answers `busy` while it copies the new share's
+    files; the create asks again and leaves with the Cloudflare link."""
+    monkeypatch.setattr(hub_routes, "SWITCH_RETRY_SECONDS", 0)
+    await _post(jp_fetch, "api", "tunnel", body={"active": True})
+    fake_hub.busy_switches = 2
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    assert "tunnel_reason" not in row
+    assert row["tunnel"] is True and row["link"] == f"https://share.example.com/s/{row['id']}"
+    switches = [c for c in fake_hub.calls if c[0] == "PUT" and c[1].endswith("/tunnel")]
+    assert switches == [("PUT", f"shares/{row['id']}/tunnel", {"tunnel": True})] * 3
+
+
+async def test_a_create_the_hub_still_copies_after_the_wait_is_pending_until_the_next_list(
+    jp_fetch, fake_hub, monkeypatch
+):
+    monkeypatch.setattr(hub_routes, "SWITCH_WAIT_SECONDS", 0)
+    await _post(jp_fetch, "api", "tunnel", body={"active": True})
+    fake_hub.busy_switches = 1
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    assert row["tunnel"] is False and row["tunnel_reason"] == "tunnel_pending"
+    # pending is no refusal: the default stays on
+    assert hub_routes.tunnel_default() is True
+    # the copy is done: the next list read switches the share on
+    listed = _json(await jp_fetch(NS, "api", "shares"))["shares"][0]
+    assert listed["tunnel"] is True and listed["link"] == f"https://share.example.com/s/{row['id']}"
+
+
+async def test_a_switch_off_while_the_hub_copies_ends_the_wait(jp_fetch, fake_hub, monkeypatch):
+    monkeypatch.setattr(hub_routes, "SWITCH_RETRY_SECONDS", 0)
+    await _post(jp_fetch, "api", "tunnel", body={"active": True})
+    fake_hub.busy_switches = 5
+    fake_hub.on_busy = lambda: hub_routes.set_tunnel_default(False)
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    assert row["tunnel"] is False and "tunnel_reason" not in row
+    assert fake_hub.busy_switches == 4
+
+
+async def test_a_switch_off_while_the_landing_switch_is_in_flight_takes_it_back(jp_fetch, fake_hub, monkeypatch):
+    monkeypatch.setattr(hub_routes, "SWITCH_RETRY_SECONDS", 0)
+    await _post(jp_fetch, "api", "tunnel", body={"active": True})
+    fake_hub.busy_switches = 1
+    original = hub_routes._HubBase._set_tunnel
+    fired = []
+
+    async def racing(self, kind, id_, tunnel):
+        if tunnel and fake_hub.busy_switches == 0 and not fired:
+            fired.append(1)
+            # the owner's switch off runs while this PUT is on the wire
+            await _post(jp_fetch, "api", "tunnel", body={"active": False})
+        return await original(self, kind, id_, tunnel)
+
+    monkeypatch.setattr(hub_routes._HubBase, "_set_tunnel", racing)
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    item = next(i for i in fake_hub.items if i["id"] == row["id"])
+    assert hub_routes.tunnel_default() is False
+    assert item["tunnel"] is False and row["tunnel"] is False
 
 
 async def test_a_header_switch_on_that_fails_partway_keeps_the_records_it_switched(jp_fetch, fake_hub):
@@ -1505,6 +1572,36 @@ async def test_connecting_reads_the_record_through_its_link(jp_fetch, fake_hub, 
     assert fake_hub.calls == [("GET", "items", None)]
     assert fake_link.calls and all(path.startswith(link[len(fake_link.base):]) for _, path, _ in fake_link.calls)
     assert not any("Authorization" in headers for _, _, headers in fake_link.calls)
+
+
+async def test_a_link_on_the_pages_own_host_is_read_through_the_hub_proxy(
+    jp_fetch, fake_hub, fake_link, jp_root_dir, monkeypatch
+):
+    """DEF-HUB-129: a net-isolated lab cannot open the hub's public address;
+    a link on the host the browser reached the lab on is read at the hub API
+    origin with its own path, and keeps the link as pasted."""
+    share = fake_link.add(files={"a.csv": b"abc"}, password="pw")
+    request = fake_link.add(kind="request")
+    monkeypatch.setenv("JUPYTERHUB_API_URL", fake_link.base + "/hub/api")
+    # the public host never resolves: a read of it fails the test
+    public = "https://Workbench.example.invalid:443"
+    browser = {"X-Forwarded-Proto": "https", "X-Forwarded-Host": "workbench.example.invalid"}
+
+    async def call(*parts, body):
+        return _json(await jp_fetch(NS, *parts, method="POST", body=json.dumps(body), headers=browser))
+
+    entry = await call("api", "connections", body={"link": public + urlparse(share).path, "password": "pw"})
+    assert entry["link"] == public + urlparse(share).path and "certificate" not in entry
+    saved = await call("api", "connections", entry["key"], "save", body={"target_dir": "", "names": ["a.csv"]})
+    assert saved["saved"] == ["a.csv"] and (jp_root_dir / "a.csv").read_bytes() == b"abc"
+    inbox = (await call("api", "connections", body={"link": public + urlparse(request).path}))["key"]
+    await call("api", "connections", inbox, "upload", body={"paths": ["a.csv"]})
+    for _ in range(200):
+        if not _json(await jp_fetch(NS, "api", "connections", inbox, "manifest", headers=browser))["uploading"]:
+            break
+        await asyncio.sleep(0.05)
+    assert fake_link.record(request)["uploads"] == [("a.csv", b"abc")]
+    assert {path.rsplit("/", 1)[-1] for _, path, _ in fake_link.calls} >= {"unlock", "a.csv", "u"}
 
 
 async def test_connecting_to_your_own_record_is_refused(jp_fetch, fake_hub, fake_link):

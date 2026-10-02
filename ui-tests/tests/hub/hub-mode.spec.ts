@@ -294,6 +294,24 @@ test('the Connect button is the right end of the input and is disabled while the
   expect(await fill()).toBe(clear);
 });
 
+test('a link on the lab page host is read through the hub proxy', async ({
+  page,
+  request
+}) => {
+  // DEF-HUB-129: a net-isolated lab cannot open the hub's public address,
+  // so a link on the host the browser reached the lab on is read at the hub
+  // API origin - the mock hub here - with its own path
+  const made = await foreign(request, { title: 'Same Host', names: ['a.csv'] });
+  await openPanel(page);
+  const link = new URL(new URL(made.url).pathname, page.url()).href;
+  await page.locator(`${PANEL} .jp-ShareFilesPanel-connectInput`).fill(link);
+  await page.locator(`${PANEL} .jp-ShareFilesPanel-connectButton`).click();
+  await expect(connected(page, 'Same Host')).toHaveCount(1);
+  // the panel keeps the link as pasted
+  const { data } = await api(page, 'GET', `${API}/connections`);
+  expect(data.connections.map((c: any) => c.link)).toEqual([link]);
+});
+
 test('every entry of the share, request and New menus carries an icon', async ({
   page
 }) => {
@@ -841,6 +859,33 @@ test('the cloud toggle flips every record and the next one, and no row carries a
   await expect(dialog).toContainText("Link works on the hub's network only");
   await expect(dialog.locator('[data-reach]')).toHaveCount(0);
   await dialog.locator('button', { hasText: 'Close' }).click();
+});
+
+test('a share the hub is still copying leaves with its Cloudflare link', async ({
+  page,
+  request
+}) => {
+  // DEF-HUB-128: the hub refuses a switch on with busy while it copies the
+  // new share's files; the create asks again until the copy is done
+  await request.post(`${HUB}/_control/staging`, {
+    data: { seconds: 2, busy: true }
+  });
+  await request.post(`${API}/tunnel`, { data: { active: true } });
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'still-copying',
+    paths: ['a.txt']
+  });
+  expect(made.data.tunnel_reason).toBeUndefined();
+  expect(made.data.tunnel).toBe(true);
+  expect(made.data.link).toBe(`${TUNNEL}/s/${POLICY}/${made.data.id}`);
+  const calls = (await (await request.get(`${HUB}/_control/calls`)).json())
+    .calls;
+  const switches = calls.filter(
+    (c: any) =>
+      c.method === 'PUT' && c.path.endsWith(`/shares/${made.data.id}/tunnel`)
+  );
+  // refused while the copy ran, then accepted
+  expect(switches.length).toBeGreaterThan(1);
 });
 
 test('a group policy with Cloudflare off refuses the switch and the toggle stays off', async ({

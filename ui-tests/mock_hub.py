@@ -34,7 +34,8 @@ certificate ``peer-a`` until ``/_control/certificate`` loads ``peer-b``.
 
 ``/_control/*`` is the test's own side door: reset the store, change the
 capabilities, the policy, the tunnel (its base, its delay and its ready
-verdict), the recipient page and the status a Cloudflare switch off answers,
+verdict), how long a share copies and whether a switch on is refused
+``busy`` meanwhile, the recipient page and the status a Cloudflare switch off answers,
 add an upload, add or close another user's record, swap the https
 certificate, ring the change stream, read the recorded calls.
 """
@@ -95,6 +96,15 @@ class Store:
         self.cloudflare_enabled = True
         # how long an add stays running before it settles
         self.add_seconds = ADD_SECONDS
+        # a share's copy: 0 lands it on the next listing; otherwise it lands
+        # this many seconds after the create, whatever is read meanwhile, and
+        # `busy_while_staging` refuses a switch on until then, as the DEV hub
+        # did on 2026-09-30 (DEF-HUB-128)
+        for timer in getattr(self, "stage_timers", {}).values():
+            timer.cancel()
+        self.stage_timers: dict[str, asyncio.TimerHandle] = {}
+        self.stage_seconds = 0.0
+        self.busy_while_staging = False
         # the hub's Cloudflare tunnel; the default base is a second origin on
         # this loopback port, so a tunnel link resolves without a network
         if getattr(self, "tunnel_timer", None) is not None:
@@ -146,6 +156,11 @@ class Store:
             except asyncio.QueueFull:
                 pass
 
+    def land_copy(self, id_: str):
+        """A timed copy is done: the share is promoted as a listing does."""
+        self.stage_timers.pop(id_, None)
+        self.promote()
+
     def new_id(self, prefix=""):
         self.counter += 1
         return f"{prefix}MockId_{self.counter:016d}"[:24]
@@ -156,7 +171,7 @@ class Store:
             if item["kind"] != "share" or item["state"] != "staging":
                 continue
             title = item["title"]
-            if "stay-staging" in title:
+            if "stay-staging" in title or item["id"] in self.stage_timers:
                 continue
             if "refuse" in title:
                 item["state"] = "refused"
@@ -291,6 +306,9 @@ class Create(_Hub):
             STORE.items[-1]["progress"] = {"copied": 21, "total": 42}
         if kind == "share":
             STORE.pending_paths[id_] = list(paths)
+        if state == "staging" and STORE.stage_seconds:
+            STORE.stage_timers[id_] = asyncio.get_running_loop().call_later(
+                STORE.stage_seconds, lambda: STORE.land_copy(id_))
         row = _with_url(STORE.items[-1])
         self.answer(202 if state == "staging" else 201, {"id": id_, "url": row["url"], "state": state})
 
@@ -406,6 +424,8 @@ class Tunnel(_Hub):
                 if tunnel and not STORE.cloudflare_enabled:
                     return self.answer(403, {"reason": "tunnel_not_available",
                                              "message": "The group policy has Cloudflare turned off"})
+                if tunnel and STORE.busy_while_staging and item["state"] == "staging":
+                    return self.answer(409, {"reason": "busy", "message": "The switch was refused: busy"})
                 if not tunnel and STORE.tunnel_off_status != 204:
                     return self.answer(STORE.tunnel_off_status, {"status": STORE.tunnel_off_status,
                                                                 "message": "switch off failed"})
@@ -727,6 +747,12 @@ class Control(_Base):
             if "cloudflare_enabled" in body:
                 STORE.cloudflare_enabled = bool(body["cloudflare_enabled"])
             return self.answer(200, {"cloudflare_enabled": STORE.cloudflare_enabled})
+        if action == "staging":
+            # seconds a share copies, and whether a switch on is refused busy
+            # while it does
+            STORE.stage_seconds = float(body.get("seconds") or 0)
+            STORE.busy_while_staging = bool(body.get("busy"))
+            return self.answer(200, {"seconds": STORE.stage_seconds, "busy": STORE.busy_while_staging})
         if action == "tunnel":
             # base, delay (seconds after the first switch-on), registers
             # (ever), ready (the connector's verdict, which rings the stream)

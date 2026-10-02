@@ -2,6 +2,25 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.61] - 2026-10-02
+
+### Added
+
+- Hub mode: a pasted link on the hub's own host is read through the hub proxy, at the origin of `JUPYTERHUB_API_URL`, so Connect works from a net-isolated lab and asks about no certificate; a link on any other host is read as pasted
+- `jupyterlab_share_files --help` names the environment variables and the exit status, and every `<command> --help` says what the command does and prints, how standalone and hub mode differ, and shows examples
+- The agent skill ships in the wheel at `share/jupyter/agents/skills/jupyterlab-share-files-extension/SKILL.md`; the README gives the link line after `pip install` and the one from a clone
+
+### Changed
+
+- The agent skill is renamed `jupyterlab-share-files-extension` and holds only the rules `--help` cannot enforce; the command reference lives in `--help`
+- `connect` on a password-protected link names the next step, a route the server does not have is reported in one sentence, and two Cloudflare messages name `--account-id` and `cloudflare validate`
+- The Makefile follows the canonical 1.44
+
+### Fixed
+
+- Hub mode, cloud on: a share created while the hub still copies its files gets its Cloudflare link. The create asks again each second for up to 30 s; a share still copying after that copies no link, says the link comes when the copy is done, and is switched on at the next list read
+- Hub mode: a switch off that lands while a new share is being switched on is no longer undone
+
 ## [1.2.59] - 2026-09-28
 
 ### Added

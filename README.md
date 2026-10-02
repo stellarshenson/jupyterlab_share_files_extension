@@ -50,7 +50,7 @@ The standalone page recipients see in any browser - download view, upload view (
 - **Delete to trash** - panel deletes go to the OS trash by default (`c.ShareFilesConfig.use_trash`)
 - **HTTPS-aware links** - share URLs follow the scheme the browser is on
 - **Cloudflare tunnel sharing** - optional public links beyond your network; cloud icon in the panel header shows state, toggles public/private, opens setup when unconfigured ([docs/cloudflare_setup.md](docs/cloudflare_setup.md))
-- **Hub mode** - on a lab spawned by [galaxahub](https://github.com/stellarshenson/galaxahub) the panel works through the hub's fileshare API, a connection through its record's link, and the lab mounts no unauthenticated route; the hub stages and serves the files ([docs/design-hub-public-zone.md](docs/design-hub-public-zone.md))
+- **Hub mode** - on a lab spawned by [galaxahub](https://github.com/stellarshenson/galaxahub) the panel works through the hub's fileshare API, a connection through its record's link (a link on the hub's own host is read through the hub proxy, so it connects from a net-isolated lab with no certificate step), and the lab mounts no unauthenticated route; the hub stages and serves the files ([docs/design-hub-public-zone.md](docs/design-hub-public-zone.md))
 - **Settings toggles** - shares, requests, hidden-file visibility, poll interval, download limit
 
 ![Sharing flow](.resources/sharing-flow.svg)
@@ -124,10 +124,20 @@ jupyterlab_share_files list-request-uploads <id>
 
 If a link's host uses a self-signed certificate, `connect` stops and shows the certificate's fingerprint. If you know the host and the certificate, run `connect <link> --trust-certificate`: it connects, prints the host and the certificate's fingerprint, and the connection keeps that certificate until you remove it, as Trust does in the panel.
 
-The repository carries an agent skill, [`.agents/skills/jupyterlab-share-files/SKILL.md`](.agents/skills/jupyterlab-share-files/SKILL.md). It tells an agent how to run each command, which commands put a password or a long listing into its output, and what each error asks for next. Agents that read `.agents/skills` find it in a clone of this repository; to make it available to Claude Code everywhere, link it into the skills directory from the clone:
+`jupyterlab_share_files --help` lists the commands, the environment variables and the exit status. `jupyterlab_share_files <command> --help` says what the command does, what it prints, how standalone and hub mode differ, and shows examples.
+
+The agent skill, [`.agents/skills/jupyterlab-share-files-extension/SKILL.md`](.agents/skills/jupyterlab-share-files-extension/SKILL.md), points an agent at that help and adds only the rules the help cannot enforce: which commands print a password or a long listing, which ones cannot be undone, and when to ask the user first. The skill ships in the repository and in the wheel, which installs it at `<sys.prefix>/share/jupyter/agents/skills/jupyterlab-share-files-extension/SKILL.md`. No agent reads that directory, and a wheel cannot write into the home directory, so one of the two links below is what makes it readable.
+
+After `pip install`, with the Python that runs the lab:
 
 ```bash
-ln -s "$PWD/.agents/skills/jupyterlab-share-files" ~/.claude/skills/jupyterlab-share-files
+mkdir -p ~/.agents/skills && ln -sfn "$(python -c 'import sys; print(sys.prefix)')/share/jupyter/agents/skills/jupyterlab-share-files-extension" ~/.agents/skills/jupyterlab-share-files-extension
+```
+
+From a clone, into Claude Code:
+
+```bash
+ln -sfn "$PWD/.agents/skills/jupyterlab-share-files-extension" ~/.claude/skills/jupyterlab-share-files-extension
 ```
 
 ## Cloudflare tunnel sharing

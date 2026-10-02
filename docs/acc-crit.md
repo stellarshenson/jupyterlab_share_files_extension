@@ -311,6 +311,15 @@ The Cloudflare tunnel exposing share and request links beyond the hub, and the p
   - log: 2026-09-28T12:29:46Z @kj mechanism updated "2026-09-28T12:24:57Z @kj on is the filled cloud, still, in --jp-inverse-layout-color3; switching is the same cloud in --jp-brand-color1 under share-files-breathe (opacity 1 to 0, 2s cubic-bezier(0.8, 0, 0.2, 1)), held by _toggleTunnel for CLOUD_BREATH_MS (2000) whatever the answer time" -> "on is the filled cloud, still, in --jp-inverse-layout-color3; switching is the same cloud in --jp-brand-color1 under share-files-breathe (opacity 1 to 0, 1.6s cubic-bezier(0.8, 0, 0.2, 1)), held by _toggleTunnel for CLOUD_BREATH_MS (1600) whatever the answer time"
   - log: 2026-09-28T12:29:46Z @kj owner 2026-09-28: breath faster; 2s first, then 1.6s
   - log: 2026-09-28T12:35:54Z @kj edited evidence "galata server and hub 'answers at once' tests: lowest opacity under 0.05, at least 2400 ms; hub pending test: accent on svg, no box-shadow, breath under reduced motion; a no-hold mutant fails both; green 2026-09-24: mock hub 55, standalone 38, pytest 494, jest 45" -> "galata server and hub 'answers at once' tests: lowest opacity under 0.05, at least 1600 ms; hub pending test: accent on svg, share-files-breathe of at least 1.6s, no box-shadow, breath under reduced motion; a no-hold mutant failed both 2026-09-24; green 2026-09-28: keyboard.spec.ts 19, hub-mode.spec.ts 55"
+- [x] `ACC-CLOUD-194` **A share the hub is still copying goes on Cloudflare** - HIGH; hub mode, cloud on: a new share gets its Cloudflare link although the hub refuses the switch as busy while it copies; the create asks again each second up to 30 s; a share still copying then has no link copied and a note that the link comes when the copy is done; the next list read switches it on
+  - evidence: pytest busy cases and mock-hub galata green (496 passed, 57/57); DEV hub 2026-10-01: busy 7 times, then the Cloudflare link in the create answer; wait cut to 1 s: tunnel_pending, then on Cloudflare at the first list read after the copy; logs/devcheck-switches-*.log
+  - related: DEF-HUB-128
+  - test: mock hub refusing busy while staging: the create answers the tunnel link; pytest: busy twice, busy past the wait, switch off during the wait
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-09-30T11:12:13Z @kj _apply_tunnel_default repeats the PUT tunnel every SWITCH_RETRY_SECONDS until SWITCH_WAIT_SECONDS; past it the row carries tunnel_pending and _reconcile_tunnel finishes the switch
+  - log: 2026-09-30T11:12:13Z @kj added; reason: the body names the wait, the fallback and the later switch, each a separate check
+  - log: 2026-09-30T11:53:21Z @kj adversarial review SHIP in 2 rounds; pytest 495 passed 8 skipped; open until a share copying over 30 s is checked on the DEV hub
+  - log: 2026-10-01T13:03:39Z @kj closed
 
 ## Hover tooltip `HOVER`
 
@@ -1069,6 +1078,24 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - log: 2026-09-24T10:04:37Z @kj 2026-09-24 the stated limit is rounded down (5,000,000,000 bytes read '4.6 GB', not '4.7 GB'), so the refusal never states a limit above the real one; test_a_limit_is_written_as_the_page_writes_sizes fails on the rounding version
   - log: 2026-09-24T10:14:06Z @kj 2026-09-24 a drop onto a row that shows plain 'offline' is still sent, and the panel says 'The upload to <name> has started; the row will show it when the record answers again.'; the end is announced once the record answers (galata 'a drop onto a request that does not answer for now says the upload started', with a mock outage control; fails on the previous panel)
   - log: 2026-09-24T10:29:13Z @kj 2026-09-24 the notice for a drop onto a row that shows offline reads 'The upload to <name> has started.': the cached page serves the row while the upload runs, so the earlier clause about when the row shows it was false
+- [-] `ACC-HUBM-195` **A record on this hub is read on the hub's internal address** - HIGH; hub mode: when the hub names capabilities.internal_base_url and a pasted link's record page answers 200 there, the connection reads, unlocks, saves and uploads through that address with no certificate step; otherwise it reads the pasted link as before
+  - related: ACC-HUBM-175, DEF-HUB-129
+  - test: pytest: pasted host refused, internal address serves; internal address 404 or down keeps the pasted host; galata mock hub: connect with an unreachable pasted host
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-09-30T11:12:13Z @kj HubConnectionsHandler.post probes internal_link(link, internal_base_url) without redirects and stores it as via; _address(conn) is used by every read
+  - log: 2026-09-30T11:12:13Z @kj added
+  - log: 2026-09-30T11:32:19Z @kj rejected: rejected by the owner: no hardcoded hub address; Connect reads the link the user sees, which answers from a lab on this hub
+- [x] `ACC-HUBM-196` **A link of this hub is read through the hub proxy** - HIGH; hub mode: a pasted link on the browser page's origin (any host case, default port filled in) is read, unlocked, saved and uploaded at the JUPYTERHUB_API_URL origin with its own path and no certificate step; the panel shows the pasted link; other links are read as pasted
+  - evidence: pytest and galata same-host cases green; DEV hub 2026-10-01, test lab with JUPYTERHUB_API_URL on hub:8000: manifest, password unlock, save and upload of a record on the public origin went through the proxy, saved bytes equal; a request from another origin read the pasted link
+  - related: ACC-HUBM-175
+  - related: DEF-HUB-129 - the defect this fixes; ACC-HUBM-195 - the rejected hub-address design
+  - test: pytest: a public-host link that never resolves connects, unlocks, saves and uploads at the API origin; galata mock hub: a link on the lab page's host connects
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-09-30T21:12:43Z @kj _HubConnectionBase._address compares _origin(link) with _origin(_request_origin(self)) and returns hub_api_origin() plus the link's path; every read and the Connect certificate check use it
+  - log: 2026-09-30T21:12:43Z @kj added
+  - log: 2026-09-30T21:19:12Z @kj implemented; test_a_link_on_the_pages_own_host_is_read_through_the_hub_proxy and galata 'a link on the lab page host is read through the hub proxy' fail on the old code; pytest 496 passed 8 skipped, galata 39/39 standalone, 57/57 mock hub; open until Connect from a net-isolated lab on DEV
+  - log: 2026-09-30T21:45:31Z @kj adversarial review (architect, bug-hunter, devops) SHIP in round 1: 7 MINOR, none material; hub note section 3 hub:8080 bullet reworded
+  - log: 2026-10-01T13:03:39Z @kj closed
 
 ## Drag and drop into the panel `DRAG`
 
@@ -1194,6 +1221,7 @@ Changing a share's contents once it exists - adding, removing, renaming and movi
   - test: hub lab: Rename a share; assert the hub record's title and the row show the new name
   - test-tags: FUNCTIONAL
   - log: 2026-09-24T19:07:46Z @kj added
+  - log: 2026-09-30T21:46:13Z @kj asked the hub for PUT shares/<id>/title in /home/lab/workspace/share-files-hub-requests.md section 4 (galaxahub 4.4.204 has no title route)
 
 ## Saving out of the panel into the workspace `SAVE`
 
@@ -1263,3 +1291,24 @@ How a transfer still in flight is shown, on every surface that shows one
   - log: 2026-09-22T10:40:06Z @kj the layer's leading edge is drawn at full accent strength (a 2px inset shadow) while the wash behind it stays translucent. The wash alone measures about 1.24:1 against an untinted row, under the 3:1 this stylesheet holds non-text indicators to, and since the percentage text was removed the edge is the only thing that states the fraction. Same pairing the drop target already uses
   - log: 2026-09-22T11:08:08Z @kj closed
   - log: 2026-09-22T11:14:00Z @kj the second clause, a row with nothing in flight carries no overlay at all, now holds on the recipient upload page too: uploadOne's three terminal branches remove the layer, matching the panel, which stops producing one when the hub settles the row. Closed as DEF-PUBLIC-99
+
+## Command-line interface `CLI`
+
+The jupyterlab_share_files CLI and what it ships for AI assistants
+
+- [x] `ACC-CLI-197` **--help is enough to run every command** - HIGH; the top-level help names every command, the environment variables and the exit status; each of the 22 subcommands has a description of what it does and prints, the standalone and hub differences, an examples epilog and help on every argument; a refusal names the next step and only existing options
+  - evidence: 2026-10-02 pytest test_cli.py 43 passed: all 22 subcommand parsers carry a description, an examples epilog and help on every argument; top-level help names the environment and exit status; the protected-link and missing-route refusals name the next step
+  - test: pytest test_cli.py: every subcommand help, top-level help, protected link, missing route
+  - test-tags: UNIT
+  - mechanism: 2026-10-02T01:04:38Z @kj cli.py _command builds each subparser with description, examples epilog and RawDescriptionHelpFormatter; connect and _request add the next step to two refusals; tunnel.py names --account-id and cloudflare validate
+  - log: 2026-10-02T01:04:38Z @kj added
+  - log: 2026-10-02T01:04:43Z @kj closed
+- [x] `ACC-CLI-198` **The agent skill ships in the repository and in the wheel** - HIGH; the skill is named jupyterlab-share-files-extension, sits at .agents/skills/<name>/SKILL.md, has under 30 lines and points at --help; the wheel installs it at <sys.prefix>/share/jupyter/agents/skills/<name>/SKILL.md; the README gives the link line after pip install and the one from a clone
+  - evidence: 2026-10-02 after make install: test_agent_skill.py 2 passed, the copy under sys.prefix share/jupyter/agents/skills/jupyterlab-share-files-extension equals the repository copy; a built wheel lists the skill under data/share/jupyter/agents/skills and no Markdown inside the package
+  - test: pytest test_agent_skill.py: installed copy equals the repository copy, skill short and points at --help; the built wheel lists the skill under data/share/jupyter/agents/skills
+  - test-tags: UNIT
+  - mechanism: 2026-10-02T01:04:38Z @kj pyproject.toml shared-data maps .agents/skills/jupyterlab-share-files-extension to share/jupyter/agents/skills/jupyterlab-share-files-extension
+  - log: 2026-10-02T01:04:38Z @kj added
+  - log: 2026-10-02T01:04:43Z @kj skill renamed and cut to 19 lines, shared-data line added, README has both link lines; a wheel built into the scratchpad lists the skill under data/share/jupyter/agents/skills; test_installed_agent_skill_matches_repository fails until make install puts the copy under sys.prefix
+  - log: 2026-10-02T01:14:56Z @kj closed
+

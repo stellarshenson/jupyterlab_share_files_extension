@@ -908,6 +908,34 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - root-cause: 2026-09-23T12:08:00Z @kj DEF-HUB-121's drop matched the record id only, not the password that was refused
   - log: 2026-09-23T12:08:00Z @kj added
   - log: 2026-09-23T12:12:16Z @kj closed
+- [x] `DEF-HUB-128` **Share created during its copy stays off Cloudflare** - MAJOR; hub mode, Cloudflare switch on: the lab switches a new share on right after the create; the hub answers busy while it copies the files, the panel warns 'Link works on the hub network only - The hub is busy copying other files', copies the hub-network link, and the share stays off the tunnel
+  - evidence: DEV hub 2026-10-01, test lab on the working tree, 1.5 GiB share: busy 7 times then 204, create answered the Cloudflare link in 7.5 s; wait cut to 1 s: tunnel_pending, on Cloudflare at the first list read after the copy landed; logs/devcheck-switches-*.log
+  - repro: hub lab with the cloud icon on: share one file from the file browser; the warning toast appears and the row keeps its hub-network link
+  - test-tags: UNIT, FUNCTIONAL
+  - root-cause: 2026-09-30T10:56:46Z @kj _apply_tunnel_default treats a busy answer as a final refusal; _reconcile_tunnel retries only on a list read, and the read the ready nudge causes can meet the same busy answer, after which nothing reads again
+  - log: 2026-09-30T10:56:46Z @kj added; reason: the body names the three visible symptoms the owner reported
+  - log: 2026-09-30T11:03:38Z @kj fix in working tree: create asks again each second up to 30 s while the hub answers busy; still copying then: tunnel_pending, no link copied; pytest 494 passed (3 new fail on old code); galata hub 4/4, mock refuses busy while staging; not checked on the DEV hub
+  - log: 2026-09-30T11:53:21Z @kj adversarial review SHIP in 2 rounds (architect, bug-hunter, ux-designer, devops); added: a switch off while the landing switch on is in flight takes it back; open until checked on the DEV hub after install
+  - log: 2026-10-01T13:03:39Z @kj closed
+- [ ] `DEF-HUB-129` **Connect to a share on the same hub cannot reach its link** - MAJOR; hub mode, no tunnel: another user of the same hub pastes the owner's hub-network link and Connect answers 'Could not reach the peer'; the message names neither the host nor the cause
+  - related: ACC-HUBM-196 - the fix
+  - repro: two users on one hub, Cloudflare off: user A shares a file, user B pastes the link into Connect
+  - test-tags: UNIT
+  - root-cause: 2026-09-30T21:12:43Z @kj a net-isolated lab cannot open the hub's public address, its one allowed path is lab to hub (hub developer, 2026-09-30); the lab read every pasted link at that address
+  - root-cause: 2026-09-30T12:00:50Z @kj likely cause: the other user's lab is on the galaxahub SANDBOXED network, whose host firewall drops lab egress to 192.168.0.0/16 except the hub IP (galaxahub-egress README, sealed bridge rules 3-7); workbench.lab.stellars-tech.eu resolves to 192.168.1.50, so the lab server's connection is dropped; the owner's lab is not sandboxed and connects; confirm with curl in that lab (timeout expected)
+  - root-cause: 2026-09-30T11:32:19Z @kj not the host: from the owner's lab the pasted link answers 200 and reads as a share once its self-signed certificate is trusted (probe 2026-09-30); 'Could not reach the peer' means the other user's lab opened no connection to workbench.lab.stellars-tech.eu:443; cause unknown until checked in that lab
+  - root-cause: 2026-09-30T10:56:47Z @kj likely cause: the lab server fetches the link's public host from inside its container, where that host does not resolve or answer (DNS, hairpin NAT or the lab network's egress drops); the lab has no internal address for the hub's recipient app
+  - log: 2026-09-30T10:56:47Z @kj added
+  - log: 2026-09-30T11:04:30Z @kj blocked on the hub: labs reach recipient pages only through CHP on hub:8000 (galaxahub test_fileshare.py) and the lab knows only hub:8080; asked for capabilities.internal_base_url in /home/lab/workspace/share-files-hub-requests.md section 3
+  - log: 2026-09-30T11:32:19Z @kj root-cause overridden; reason: the earlier record is disproved by a probe; kept below as the disproved theory
+  - log: 2026-09-30T11:32:19Z @kj owner: no hardcoded hub address, Connect reads the link the user sees; removed the internal_base_url lab code and tests, withdrew the hub request
+  - log: 2026-09-30T12:00:50Z @kj root-cause overridden; reason: galaxahub egress rules found; the earlier record stays as the unexplained observation
+  - log: 2026-09-30T12:17:31Z @kj owner: the hub lets sandboxed labs through to its proxy; asked in /home/lab/workspace/share-files-hub-requests.md section 3; owner's lab is on the restricted network and connects
+  - log: 2026-09-30T21:12:43Z @kj root-cause overridden; reason: hub developer named the cause; the sandbox record is superseded
+  - log: 2026-09-30T21:12:43Z @kj fix agreed with the hub: a link on the browser page's origin is read at the JUPYTERHUB_API_URL origin, which hub 4.4.228 moves onto its proxy (http://hub:8000); owner: labs restart for the new address, no fallback
+  - log: 2026-09-30T21:19:12Z @kj lab side done (ACC-HUBM-196), suites green; open until Connect from a net-isolated DEV lab after hub 4.4.228, lab restart and the new extension
+  - log: 2026-09-30T21:45:31Z @kj review: the bare 'Could not reach the peer' stays for links read as pasted (another access name, another hub), and the CLI connect from inside a net-isolated lab sends no forwarded headers so it reads as pasted; this fix covers neither
+  - log: 2026-10-01T13:03:39Z @kj DEV hub 2026-10-01 after the hub update: the new code in a test lab read, unlocked, saved and uploaded a same-hub record through hub:8000 with no certificate step; not run: Connect by a second user from a net-isolated lab, which needs the new extension in that lab
 
 ## Test suites `TESTS`
 
