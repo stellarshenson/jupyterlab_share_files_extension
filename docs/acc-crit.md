@@ -1216,12 +1216,19 @@ Changing a share's contents once it exists - adding, removing, renaming and movi
   - log: 2026-09-24T19:12:02Z @kj edited test "PUT the rename with name '   '; assert 400 and the name unchanged" -> "PUT the rename with a name of three spaces; assert 400 and the name unchanged"
   - log: 2026-09-24T19:12:02Z @kj amended text "a rename to an empty name or to spaces only is refused with 'Missing name' and the share keeps its name; Cancel changes nothing" -> "a rename to an empty name or to spaces only is refused with "Missing 'name'" and the share keeps its name; Cancel changes nothing"
   - log: 2026-09-24T19:50:44Z @kj closed: done
-- [ ] `ACC-EDIT-193` **Hub mode: a share is renamed from its menu** - HIGH; hub mode offers the same Rename on a share row, carried out by the hub; the hub has no endpoint that renames a share (not in the mock hub, not in galaxahub design-fileshare.md), so this waits on the hub
+- [x] `ACC-EDIT-193` **Hub mode: a share is renamed from its menu** - HIGH; hub mode offers the same Rename on a share row, carried out by the hub through PUT shares/<id>/title; the id, the link, the password and the files stay; spaces alone are refused by the lab, a hub refusal is shown and the name stays
+  - evidence: DEV hub 2026-10-02: live-hub galata case renames a share from its menu, title changes, id, link and password state stay; hub answers 204, 400 over 200 characters; green: pytest 506 passed 8 skipped, jest 45, galata standalone 39, mock hub 58
+  - mechanism: 2026-10-02T04:23:29Z @kj lab route PUT api/shares/<id>/name relays the name as PUT shares/<id>/title {title}; hub answer 200 or 204 is success, any other is relayed with the hub's message; menu entry Rename Share... shown in hub mode
   - mechanism: 2026-09-24T19:08:01Z @kj waits on a hub route that renames a share's title; the lab would relay it as it relays the password PUT
   - test: hub lab: Rename a share; assert the hub record's title and the row show the new name
   - test-tags: FUNCTIONAL
   - log: 2026-09-24T19:07:46Z @kj added
   - log: 2026-09-30T21:46:13Z @kj asked the hub for PUT shares/<id>/title in /home/lab/workspace/share-files-hub-requests.md section 4 (galaxahub 4.4.204 has no title route)
+  - log: 2026-10-02T04:23:33Z @kj owner said to assume the hub title route; lab side built against PUT shares/<id>/title, mock hub route added; 3 pytest cases and 1 mock-hub galata case; DEV check waits on the hub deploy
+  - log: 2026-10-02T04:29:25Z @kj review architect, bug-hunter, devops: SHIP, minors outside the bar; 200-with-item answer got a pytest case; green: pytest 506 passed 8 skipped, jest 45, galata standalone 39, mock hub 58; still open for a DEV check and a live-hub rename case once the hub deploys the route
+  - log: 2026-10-02T05:17:17Z @kj amended text "hub mode offers the same Rename on a share row, carried out by the hub; the hub has no endpoint that renames a share (not in the mock hub, not in galaxahub design-fileshare.md), so this waits on the hub" -> "HIGH; hub mode offers the same Rename on a share row, carried out by the hub through PUT shares/<id>/title; the id, the link, the password and the files stay; spaces alone are refused by the lab, a hub refusal is shown and the name stays"
+  - log: 2026-10-02T05:29:34Z @kj ux-designer review: SHIP, six minors; fixed one: the row spins while the hub answers a rename; confirming round SHIP, closure confirmed; declined: reopen the dialog on a refusal, toast level and wording, right-click focus, no-op request on surrounding spaces
+  - log: 2026-10-02T05:29:37Z @kj closed
 
 ## Saving out of the panel into the workspace `SAVE`
 

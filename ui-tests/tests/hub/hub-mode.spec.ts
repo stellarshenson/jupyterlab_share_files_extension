@@ -312,6 +312,59 @@ test('a link on the lab page host is read through the hub proxy', async ({
   expect(data.connections.map((c: any) => c.link)).toEqual([link]);
 });
 
+test('a hub share is renamed from its menu and keeps its id and link', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-193: the hub holds the title; the lab relays the new one
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'Before Name',
+    paths: []
+  });
+  const id = made.data.id;
+  const listed = async () =>
+    (await api(page, 'GET', `${API}/shares`)).data.shares.find(
+      (s: any) => s.id === id
+    );
+  const hubTitle = async () =>
+    (await (await request.get(`${HUB}/_control/items`)).json()).items.find(
+      (i: any) => i.id === id
+    ).title;
+  const before = await listed();
+  await openPanel(page);
+  await refreshPanel(page);
+  const row = (name: string) =>
+    page.locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: name });
+  const dialog = page.locator('.jp-Dialog');
+  const rename = async (from: string, to: string) => {
+    await row(from)
+      .locator('.jp-ShareFilesPanel-itemHeader')
+      .click({ button: 'right' });
+    await page
+      .locator('.lm-Menu .lm-Menu-item', { hasText: 'Rename Share...' })
+      .click();
+    // the dialog opens on the current name
+    await expect(dialog.locator('input')).toHaveValue(from);
+    await dialog.locator('input').fill(to);
+    await dialog.locator('button', { hasText: 'Rename' }).click();
+  };
+
+  await rename('Before Name', 'After Name');
+  await expect(row('After Name')).toBeVisible();
+  await expect(row('Before Name')).toHaveCount(0);
+  expect(await hubTitle()).toBe('After Name');
+  const after = await listed();
+  expect(after.name).toBe('After Name');
+  expect(after.link).toBe(before.link);
+
+  // spaces alone are refused and the title stays
+  await rename('After Name', '   ');
+  await expect(
+    page.locator('.Toastify__toast', { hasText: "Missing 'name'" })
+  ).toBeVisible();
+  expect(await hubTitle()).toBe('After Name');
+});
+
 test('every entry of the share, request and New menus carries an icon', async ({
   page
 }) => {
@@ -329,6 +382,7 @@ test('every entry of the share, request and New menus carries an icon', async ({
     'Open in Browser',
     'Download to Current Folder',
     'Save as Zip',
+    'Rename Share...',
     'Set Password...',
     'Delete Share'
   ]);

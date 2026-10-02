@@ -917,7 +917,8 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - log: 2026-09-30T11:03:38Z @kj fix in working tree: create asks again each second up to 30 s while the hub answers busy; still copying then: tunnel_pending, no link copied; pytest 494 passed (3 new fail on old code); galata hub 4/4, mock refuses busy while staging; not checked on the DEV hub
   - log: 2026-09-30T11:53:21Z @kj adversarial review SHIP in 2 rounds (architect, bug-hunter, ux-designer, devops); added: a switch off while the landing switch on is in flight takes it back; open until checked on the DEV hub after install
   - log: 2026-10-01T13:03:39Z @kj closed
-- [ ] `DEF-HUB-129` **Connect to a share on the same hub cannot reach its link** - MAJOR; hub mode, no tunnel: another user of the same hub pastes the owner's hub-network link and Connect answers 'Could not reach the peer'; the message names neither the host nor the cause
+- [x] `DEF-HUB-129` **Connect to a share on the same hub cannot reach its link** - MAJOR; hub mode, no tunnel: another user of the same hub pastes the owner's hub-network link and Connect answers 'Could not reach the peer'; the message names neither the host nor the cause
+  - evidence: owner's two-user check on DEV 2026-10-02: Connect to another user's share link on the workbench host works; that record's page answers 200 at hub:8000 plus the link path; test_a_link_on_the_pages_own_host_is_read_through_the_hub_proxy and the mock-hub galata case green; released in 1.2.61
   - related: ACC-HUBM-196 - the fix
   - repro: two users on one hub, Cloudflare off: user A shares a file, user B pastes the link into Connect
   - test-tags: UNIT
@@ -936,6 +937,7 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - log: 2026-09-30T21:19:12Z @kj lab side done (ACC-HUBM-196), suites green; open until Connect from a net-isolated DEV lab after hub 4.4.228, lab restart and the new extension
   - log: 2026-09-30T21:45:31Z @kj review: the bare 'Could not reach the peer' stays for links read as pasted (another access name, another hub), and the CLI connect from inside a net-isolated lab sends no forwarded headers so it reads as pasted; this fix covers neither
   - log: 2026-10-01T13:03:39Z @kj DEV hub 2026-10-01 after the hub update: the new code in a test lab read, unlocked, saved and uploaded a same-hub record through hub:8000 with no certificate step; not run: Connect by a second user from a net-isolated lab, which needs the new extension in that lab
+  - log: 2026-10-02T04:34:42Z @kj closed
 
 ## Test suites `TESTS`
 

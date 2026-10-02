@@ -3453,13 +3453,10 @@ export class ShareFilesPanel extends Widget {
       args: { kind: 'shares', id: share.id, name: share.name }
     });
     menu.addItem({ type: 'separator' });
-    if (!this._hubMode) {
-      // the hub has no route that renames a share (ACC-EDIT-193)
-      menu.addItem({
-        command: 'share-files-panel:rename-share',
-        args: { id: share.id }
-      });
-    }
+    menu.addItem({
+      command: 'share-files-panel:rename-share',
+      args: { id: share.id }
+    });
     menu.addItem({
       command: 'share-files-panel:set-password',
       args: { kind: 'share', id: share.id, hasPassword: !!share.has_password }
@@ -3694,14 +3691,20 @@ export class ShareFilesPanel extends Widget {
     if (!result.button.accept || result.value === name) {
       return;
     }
+    // the hub may take seconds to answer: the row spins until the new name
+    // is read back
+    this._state.busyKeys.add(id);
+    this._render();
     try {
       await renameShare(this._serverSettings, id, result.value ?? '');
     } catch (err: any) {
       Notification.error(`Could not rename: ${err.message || err}`, {
         autoClose: 8000
       });
+    } finally {
+      this._state.busyKeys.delete(id);
+      await this.refresh();
     }
-    await this.refresh();
   }
 
   private async _deleteRequest(id: string): Promise<void> {

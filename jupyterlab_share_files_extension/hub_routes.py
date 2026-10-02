@@ -936,6 +936,25 @@ class HubRequestItemHandler(_HubBase):
         self.write_json({"ok": True})
 
 
+class HubShareNameHandler(_HubBase):
+    """api/shares/<id>/name - PUT gives the share a new title on the hub; its
+    id, link, password and files stay."""
+
+    @tornado.web.authenticated
+    async def put(self, id_):
+        body = self.get_json_body() or {}
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return self.write_error_json(400, "Missing 'name'")
+        answer = await self._hub("PUT", f"shares/{id_}/title", {"title": name})
+        if answer is None:
+            return
+        code, data = answer
+        if code not in (200, 204):
+            return self._relay(code, data)
+        self.write_json({"id": id_, "name": name})
+
+
 class HubPasswordHandler(_HubBase):
     """api/<shares|requests>/<id>/password - set or clear on the hub; the
     value read back is the one set through this server process."""
@@ -1777,6 +1796,7 @@ def hub_handlers(base_url: str, ns: str) -> list:
         (api("shares"), HubSharesListHandler),
         (api("shares", HUB_ID), HubShareItemHandler),
         (api("shares", HUB_ID, "items"), HubShareItemsHandler),
+        (api("shares", HUB_ID, "name"), HubShareNameHandler),
         (api("requests"), HubRequestsListHandler),
         (api("requests", HUB_ID), HubRequestItemHandler),
         (api("requests", HUB_ID, "uploads", UPLOAD_ID, "fetch"), HubUploadFetchHandler),

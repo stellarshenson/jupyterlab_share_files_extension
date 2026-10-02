@@ -243,6 +243,45 @@ test('an empty share is filled, and its file is renamed into a folder and remove
   expect(await names()).toEqual([]);
 });
 
+test('a share is renamed from its menu on the real hub and keeps its id and link', async ({
+  page
+}) => {
+  // ACC-EDIT-193: the hub holds the title; the lab relays the new one
+  const from = `${RUN}-before`;
+  const to = `${RUN}-after`;
+  const created = await api(page, 'POST', `${API}/shares`, {
+    name: from,
+    paths: []
+  });
+  expect(created.status).toBe(200);
+  const id = created.data.id;
+  const before = await row(page, 'shares', id);
+  await openPanel(page);
+  await refreshPanel(page);
+  await item(page, from)
+    .locator('.jp-ShareFilesPanel-itemHeader')
+    .click({ button: 'right' });
+  await page
+    .locator('.lm-Menu .lm-Menu-item', { hasText: 'Rename Share...' })
+    .click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog.locator('input')).toHaveValue(from);
+  await dialog.locator('input').fill(to);
+  await dialog.locator('button', { hasText: 'Rename' }).click();
+  await expect(item(page, to)).toBeVisible();
+  await expect(item(page, from)).toHaveCount(0);
+  // the rows are the hub's own items: the title changed, nothing else did
+  const after = await row(page, 'shares', id);
+  expect(after.name).toBe(to);
+  expect(after.link).toBe(before.link);
+  expect(after.has_password).toBe(before.has_password);
+  // a share the hub does not hold is its 404
+  const missing = await api(page, 'PUT', `${API}/shares/ZZZZZZZZ/name`, {
+    name: to
+  });
+  expect(missing.status).toBe(404);
+});
+
 test('a request is created on the hub and deleted', async ({ page }) => {
   const name = `${RUN}-request`;
   const created = await api(page, 'POST', `${API}/requests`, { name });

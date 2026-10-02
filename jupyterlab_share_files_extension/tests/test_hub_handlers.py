@@ -183,6 +183,13 @@ class FakeHub:
                     item["has_password"] = bool(body.get("password"))
                     return 204, {}
             return 404, {"status": 404, "message": "No such share"}
+        m = re.fullmatch(r"shares/([^/]+)/title", path)
+        if m and method == "PUT":
+            for item in self.items:
+                if item["id"] == m.group(1):
+                    item["title"] = body["title"]
+                    return 204, {}
+            return 404, {"status": 404, "message": "No such share"}
         m = re.fullmatch(r"(shares|requests)/([^/]+)/tunnel", path)
         if m and method == "PUT":
             for item in self.items:
@@ -547,6 +554,46 @@ async def test_password_set_read_back_and_cleared(jp_fetch, fake_hub):
     hub_routes._PASSWORDS["other"] = "x"
     hub_routes._PASSWORDS.clear()
     assert _json(await jp_fetch(NS, "api", "shares", row["id"], "password"))["password"] == ""
+
+
+async def _rename(jp_fetch, id_, name):
+    return await jp_fetch(NS, "api", "shares", id_, "name", method="PUT", body=json.dumps({"name": name}))
+
+
+async def test_a_share_is_renamed_on_the_hub_and_keeps_its_id_and_link(jp_fetch, fake_hub):
+    """ACC-EDIT-193: the lab relays the new name as the hub's title."""
+    before = _json(await _post(jp_fetch, "api", "shares", body={"name": "Before", "paths": []}))
+    resp = await _rename(jp_fetch, before["id"], "  After  ")
+    assert _json(resp) == {"id": before["id"], "name": "After"}
+    assert ("PUT", f"shares/{before['id']}/title", {"title": "After"}) in fake_hub.calls
+    after = await _share_row(jp_fetch, before["id"])
+    assert after["name"] == "After" and after["link"] == before["link"]
+
+
+async def test_a_hub_that_answers_the_renamed_item_is_a_success(jp_fetch, fake_hub):
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "Before", "paths": []}))
+    fake_hub.overrides[("PUT", f"shares/{row['id']}/title")] = (200, {"id": row["id"], "title": "After"})
+    assert _json(await _rename(jp_fetch, row["id"], "After")) == {"id": row["id"], "name": "After"}
+
+
+async def test_a_name_of_spaces_alone_is_refused_before_the_hub(jp_fetch, fake_hub):
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "Kept", "paths": []}))
+    with pytest.raises(HTTPClientError) as err:
+        await _rename(jp_fetch, row["id"], "   ")
+    assert err.value.code == 400 and json.loads(err.value.response.body)["error"] == "Missing 'name'"
+    assert not any(c[1].endswith("/title") for c in fake_hub.calls)
+    assert (await _share_row(jp_fetch, row["id"]))["name"] == "Kept"
+
+
+async def test_a_rename_the_hub_refuses_is_relayed_with_the_hubs_words(jp_fetch, fake_hub):
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "Kept", "paths": []}))
+    fake_hub.overrides[("PUT", f"shares/{row['id']}/title")] = (
+        400, {"status": 400, "message": "title is longer than 200 characters"})
+    with pytest.raises(HTTPClientError) as err:
+        await _rename(jp_fetch, row["id"], "x" * 201)
+    assert err.value.code == 400
+    assert json.loads(err.value.response.body)["error"] == "title is longer than 200 characters"
+    assert (await _share_row(jp_fetch, row["id"]))["name"] == "Kept"
 
 
 def _recipient_page(page):

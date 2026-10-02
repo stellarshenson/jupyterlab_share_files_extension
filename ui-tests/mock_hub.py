@@ -411,6 +411,21 @@ class Password(_Hub):
         self.answer(404, {"status": 404, "message": "No such share"})
 
 
+class Title(_Hub):
+    """A share's title, by the same rule as the create: not empty."""
+
+    def put(self, id_):
+        title = str(self.body().get("title") or "").strip()
+        if not title:
+            return self.answer(400, {"status": 400, "message": "title is required"})
+        for item in STORE.items:
+            if item["id"] == id_ and item["kind"] == "share":
+                item["title"] = title
+                STORE.nudge()
+                return self.answer(204)
+        self.answer(404, {"status": 404, "message": "No such share"})
+
+
 class Tunnel(_Hub):
     """The per-record tunnel switch (galaxahub ACC-FILE-2920). The route it
     replaced, ``<id>/cloud``, is not mounted and answers 404."""
@@ -798,6 +813,7 @@ def make_app():
         (rf"{prefix}/shares/{ID}/content", Content),
         (rf"{prefix}/shares/{ID}/fetch", ShareFetch),
         (rf"{prefix}/(shares|requests)/{ID}/password", Password),
+        (rf"{prefix}/shares/{ID}/title", Title),
         (rf"{prefix}/(shares|requests)/{ID}/tunnel", Tunnel),
         (rf"{prefix}/stream", Stream),
         (rf"{prefix}/requests/{ID}/uploads", Uploads),

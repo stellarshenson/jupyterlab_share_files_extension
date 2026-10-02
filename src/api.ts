@@ -261,12 +261,12 @@ export function renameShareItem(
   });
 }
 
-/** Standalone: give a share a new name; its id and link stay. */
+/** Give a share a new name; its id and link stay. */
 export function renameShare(
   s: ServerConnection.ISettings,
   id: string,
   name: string
-): Promise<IShare> {
+): Promise<{ id: string; name: string }> {
   return requestAPI(`api/shares/${id}/name`, s, {
     ...jsonBody({ name }),
     method: 'PUT'

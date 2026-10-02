@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.63] - 2026-10-02
+
+### Added
+
+- Hub mode: a share is renamed from its row menu ("Rename Share..."), as in standalone. The lab sends the new name to the hub's title route; the id, the link, the password and the files stay. A name of spaces alone is refused, and a hub refusal, such as a name over 200 characters, is shown and the name stays
+
+### Changed
+
+- A share row shows its busy mark from the moment the Rename dialog closes until the new name is read back
+
 ## [1.2.61] - 2026-10-02
 
 ### Added
