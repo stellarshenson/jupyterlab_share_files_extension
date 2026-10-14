@@ -2,6 +2,12 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.65] - 2026-10-14
+
+### Changed
+
+- Hub mode: when the hub cannot find its file sharing service image, the refusal reads "Sharing service unavailable - ask the administrator." instead of "The hub has no file sharing service image - ask the administrator."
+
 ## [1.2.64] - 2026-10-02
 
 ### Added

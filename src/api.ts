@@ -348,7 +348,7 @@ export function hubReasonText(slug: string): string {
     no_capacity: 'You have reached the number of shares your group allows.',
     volume_watermark: 'The hub has no free space for new shares.',
     sidecar_image_absent:
-      'The hub has no file sharing service image - ask the administrator.',
+      'Sharing service unavailable - ask the administrator.',
     sidecar_not_serving: 'The hub file sharing service is not serving yet.',
     tunnel_not_ready: "The hub's Cloudflare tunnel is not connected yet.",
     busy: 'The hub is busy copying other files - try again shortly.',
