@@ -2,6 +2,12 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.67] - 2026-10-16
+
+### Changed
+
+- No change from 1.2.66; the same content is published again under a new version
+
 ## [1.2.66] - 2026-10-16
 
 ### Changed
