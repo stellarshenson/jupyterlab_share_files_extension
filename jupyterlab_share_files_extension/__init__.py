@@ -42,7 +42,10 @@ def _load_jupyter_server_extension(server_app):
     if hub_mode():
         setup_route_handlers(server_app.web_app, config=config)
         # No local store and no per-user tunnel: the hub holds the bytes and
-        # the tunnel. The store directory is never created on a hub lab.
+        # the tunnel. The store directory is never created on a hub lab. The
+        # tunnel starts as the autostart setting says.
+        from .hub_routes import apply_hub_autostart
+        apply_hub_autostart()
         server_app.log.info(
             f"Registered {name} server extension (hub mode, api={hub_api_base() or 'contract incomplete'})"
         )

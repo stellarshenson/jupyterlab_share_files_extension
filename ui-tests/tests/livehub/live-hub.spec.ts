@@ -306,9 +306,7 @@ test('the hub refuses what it cannot do and the lab relays the reason', async ({
 }) => {
   test.setTimeout(240000);
   // an unknown record: the hub's 404 is relayed with its message
-  const missing = await api(page, 'POST', `${API}/shares/ZZZZZZZZ/tunnel`, {
-    tunnel: true
-  });
+  const missing = await api(page, 'DELETE', `${API}/shares/ZZZZZZZZ`);
   expect(missing.status).toBe(404);
   expect(typeof missing.data.error).toBe('string');
   expect(missing.data.error.length).toBeGreaterThan(0);
@@ -354,11 +352,12 @@ test("a tunnel switch-on brings the hub's tunnel up, the link moves to the tunne
   const name = `${RUN}-tunnel`;
   const created = await readyShare(page, tmpPath, name);
   const before = new URL(created.link);
-  const on = await api(page, 'POST', `${API}/shares/${created.id}/tunnel`, {
-    tunnel: true
-  });
+  // the tunnel is one state for every record of the account (DEF-HUB-130):
+  // this switches the owner's other records too, and the owner's own lab
+  // reconciles them to its own switch - run the suite with that panel closed
+  const on = await api(page, 'POST', `${API}/tunnel`, { active: true });
   expect(on.status).toBe(200);
-  expect(on.data).toEqual({ id: created.id, tunnel: true });
+  expect(on.data.tunnel_default).toBe(true);
   // the hub provisions its tunnel on demand and composes the record's link
   // on the tunnel hostname once its connector serves; the lab polls nothing
   // and only reads what the hub reports
@@ -388,22 +387,20 @@ test("a tunnel switch-on brings the hub's tunnel up, the link moves to the tunne
       }
     )
     .toBe(true);
-  // one row switched on its own: the header toggle (the stored default)
-  // stays off, and the row's link dialog shows the tunnel address
+  // the header icon reads on, and the row's link dialog shows the tunnel
+  // address
   await openPanel(page);
   await refreshPanel(page);
   await expect(
     page.locator(`${PANEL} .jp-ShareFilesPanel-cloudIndicator`)
-  ).not.toHaveClass(/jp-mod-active/);
+  ).toHaveClass(/jp-mod-active/);
   await item(page, name).locator('button[title="Copy link"]').click();
   await expect(page.locator('.jp-Dialog input[readonly]')).toHaveValue(
     /^https:\/\//
   );
   await page.locator('.jp-Dialog button', { hasText: 'Close' }).click();
   // off: the link returns to the hub's own address
-  const off = await api(page, 'POST', `${API}/shares/${created.id}/tunnel`, {
-    tunnel: false
-  });
+  const off = await api(page, 'POST', `${API}/tunnel`, { active: false });
   expect(off.status).toBe(200);
   await expect
     .poll(

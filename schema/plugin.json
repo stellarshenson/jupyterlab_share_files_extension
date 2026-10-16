@@ -27,7 +27,7 @@
       "type": "boolean",
       "default": false,
       "title": "Start the Cloudflare tunnel automatically",
-      "description": "When a Cloudflare tunnel is configured (cloudflare setup), bring it up at server startup so links are public. Off by default - the server starts with private links; the cloud icon in the panel header toggles the tunnel on demand."
+      "description": "When a Cloudflare tunnel is configured (cloudflare setup), bring it up at server startup so links are public. Off by default - the server starts with private links; the cloud icon in the panel header toggles the tunnel on demand. On a hub-managed lab it sets the cloud switch at lab start: on, every share and request goes on the hub's Cloudflare tunnel; off, none does until the cloud icon switches it on."
     },
     "pollIntervalSeconds": {
       "type": "number",

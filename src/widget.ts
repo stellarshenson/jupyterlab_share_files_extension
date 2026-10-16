@@ -320,7 +320,8 @@ export class ShareFilesPanel extends Widget {
       void setTunnel(this._serverSettings, {
         autostart: next.tunnelAutostart
       }).catch(() => {
-        /* not configured yet - nothing to persist */
+        /* standalone refuses before Cloudflare is set up; a hub lab has
+           stored the preference before the hub answer that failed */
       });
     }
   }

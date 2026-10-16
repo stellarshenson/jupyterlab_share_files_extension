@@ -869,8 +869,8 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - mechanism: 2026-09-05T09:01:14Z @kj Relay remembers the 404 while a subscriber exists and forgets it with the last unsubscribe
   - log: 2026-09-05T09:01:14Z @kj added
   - log: 2026-09-05T09:32:41Z @kj closed
-- [x] `ACC-HUBM-139` **Per-record Cloudflare switch** - HIGH; every hub share and request carries cloud; POST api/<kind>/<id>/cloud {cloud} relays PUT <kind>/<id>/cloud; a row's context menu offers Share Through Cloudflare / Hub Network Only; the link dialog says when a record's link works on the hub network only; the lab never composes the link - the hub's url is kept except that the hub's own origin is restored to the browser origin
-  - evidence: galata hub 'the cloud toggle flips every record and the next one, and a row can be switched on its own' green: context menu Hub Network Only, request cloud false, link on the hub address, dialog line "Link works on the hub's network only" with no probe; test_one_record_is_switched_on_its_own green; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+- [-] `ACC-HUBM-139` **Per-record Cloudflare switch** - HIGH; every hub share and request carries cloud; POST api/<kind>/<id>/cloud {cloud} relays PUT <kind>/<id>/cloud; a row's context menu offers Share Through Cloudflare / Hub Network Only; the link dialog says when a record's link works on the hub network only; the lab never composes the link - the hub's url is kept except that the hub's own origin is restored to the browser origin
+  - related: ACC-HUBM-202 - the criterion that supersedes it
   - test: galata: create a share, switch it on through the API and a request off through the context menu, assert cloud, link host and the dialog line
   - test-tags: UNIT, INTEGRATION, E2E
   - mechanism: 2026-09-05T09:01:14Z @kj HubCloudHandler; share_from_item and request_from_item carry cloud; rewrite_link keeps any origin but the hub API origin
@@ -879,6 +879,8 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - log: 2026-09-15T19:06:24Z @kj reopened: reopened: the row cloud mark is removed - the header cloud icon alone shows whether Cloudflare is on (ACC-HUBM-149); evidence retired: test_hub_handlers.py::test_one_record_is_switched_on_its_own green; galata hub 'the cloud toggle flips every record and the next one, and a row can be switched on its own' green 2026-09-05 (row mark, context menu, dialog line, link host)
   - log: 2026-09-15T19:06:24Z @kj edited text and test (replaced)
   - log: 2026-09-15T21:39:59Z @kj closed: met
+  - log: 2026-10-16T08:21:41Z @kj reopened: reopened: owner rule 2026-10-16 - the tunnel is one state for all records; the per-record route is removed (DEF-HUB-130); evidence retired: galata hub 'the cloud toggle flips every record and the next one, and a row can be switched on its own' green: context menu Hub Network Only, request cloud false, link on the hub address, dialog line "Link works on the hub's network only" with no probe; test_one_record_is_switched_on_its_own green; local CI 2026-09-15 logs/ci-review-r1.log: pytest 295 passed 8 skipped, jest 48, lint exit 0, build OK, galata standalone 16, galata hub 20; five-lens adversarial review SHIP after 5 rounds (wf_df3fab52-1f8 to wf_66f21fbb-bc0)
+  - log: 2026-10-16T08:21:41Z @kj rejected: superseded by ACC-HUBM-202: one tunnel state for every record; api/<kind>/<id>/tunnel removed
 - [x] `ACC-HUBM-140` **Cloud toggle flips every record and sets the default for the next one** - HIGH; POST api/tunnel {active} puts every record of the user through PUT cloud and stores the default (hub_cloud in the CLI config, default off); a record created while the default is on is switched on right after the hub minted it and answers with the url the hub composed for it; tunnel_configured is true while the hub answers because the hub decides per record
   - evidence: test_hub_handlers.py::test_cloud_toggle_flips_every_record_and_sets_the_default green; galata hub toggle test green 2026-09-05: header icon flips the standing share and the next request is born on
   - test: pytest: toggle on switches both records and a new request is born on; toggle off takes them back. galata: the header icon flips a standing share and the next request
@@ -1112,6 +1114,22 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - log: 2026-09-30T21:19:12Z @kj implemented; test_a_link_on_the_pages_own_host_is_read_through_the_hub_proxy and galata 'a link on the lab page host is read through the hub proxy' fail on the old code; pytest 496 passed 8 skipped, galata 39/39 standalone, 57/57 mock hub; open until Connect from a net-isolated lab on DEV
   - log: 2026-09-30T21:45:31Z @kj adversarial review (architect, bug-hunter, devops) SHIP in round 1: 7 MINOR, none material; hub note section 3 hub:8080 bullet reworded
   - log: 2026-10-01T13:03:39Z @kj closed
+- [x] `ACC-HUBM-201` **Tunnel at lab start follows the autostart setting** - HIGH; hub mode: at lab start the cloud switch is what tunnelAutostart says - on, every share and request goes on the hub tunnel; off, none does until the cloud icon switches it on; POST api/tunnel {autostart} stores the setting for the next start
+  - evidence: test_lab_start_sets_the_tunnel_to_the_autostart_setting, test_load_in_hub_mode..., test_autostart_is_stored_while_the_hub_does_not_answer green and fail on mutants; pytest 510 passed 2026-10-16
+  - related: DEF-HUB-130 - the defect this fixes
+  - test: seed hub_tunnel true, autostart off, load the extension in hub mode: switch reads off
+  - test-tags: UNIT
+  - mechanism: 2026-10-16T07:26:40Z @kj apply_hub_autostart in __init__ hub branch sets hub_tunnel to tunnel_autostart; HubTunnelHandler.post stores autostart
+  - log: 2026-10-16T07:26:40Z @kj added
+  - log: 2026-10-16T08:19:35Z @kj closed: met: apply_hub_autostart at hub-mode load; autostart stored before the capabilities read
+- [x] `ACC-HUBM-202` **Tunnel is one state for every record, both ways** - HIGH; hub mode: while the switch is on every record is on the tunnel, while it is off none is; a listing switches any record that differs, on or off; a listing during a whole switch changes nothing
+  - evidence: pytest left_on_the_tunnel and listing_during_a_switch_on fail on mutants; galata mock hub 'a share left on Cloudflare while the switch is off goes off' fails on mutant; mock hub 59, live hub 7 green 2026-10-16
+  - related: DEF-HUB-130 - the defect this fixes
+  - test: switch off, hub record on the tunnel, list shares: record goes off
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-10-16T07:26:40Z @kj _reconcile_tunnel switches records to tunnel_default() either way; _SWITCHING counts api/tunnel switches in flight and skips reconciling
+  - log: 2026-10-16T07:26:40Z @kj added
+  - log: 2026-10-16T08:19:35Z @kj closed: met: _reconcile_tunnel switches records either way; _SWITCHING skips reconcile during a switch
 
 ## Drag and drop into the panel `DRAG`
 

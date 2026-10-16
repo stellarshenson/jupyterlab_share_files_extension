@@ -65,7 +65,7 @@ from .storage import (
     all_excluded_message,
     is_excluded,
 )
-from .tunnel import _load_config, _save_config
+from .tunnel import _load_config, _save_config, set_tunnel_autostart
 
 # galaxahub share ids are url-safe base64; requests carry an `r_` prefix.
 # Upload ids are shorter opaque tokens; both are matched loosely here and
@@ -243,6 +243,18 @@ def set_tunnel_default(value: bool) -> None:
     _save_config(cfg)
 
 
+def apply_hub_autostart() -> None:
+    """At lab start the tunnel is what the autostart setting says: on or off
+    for every record, whatever the icon said before the restart (DEF-HUB-130)."""
+    if tunnel_default() != bool(_load_config().get("tunnel_autostart", False)):
+        set_tunnel_default(not tunnel_default())
+
+
+# switches of the whole tunnel in flight in this process; a listing does not
+# reconcile meanwhile, because the stored state changes only when one lands
+_SWITCHING = 0
+
+
 def rewrite_link(url: str, browser_origin: str) -> str:
     """The link the panel hands out for a hub ``url``.
 
@@ -331,7 +343,7 @@ class _HubBase(_Base):
 
     async def _reconcile_tunnel(self, items: list[dict]) -> list[dict]:
         """The tunnel is one state, not a property of a record: while the
-        switch is on, every record is on it.
+        switch is on, every record is on it, and while it is off, none is.
 
         A create whose switch-on never landed - the hub did not answer - left
         the record off with the switch still on, and nothing afterwards
@@ -340,18 +352,20 @@ class _HubBase(_Base):
         stragglers on and re-read, so the link the panel shows is the one the
         switch promises. A record the hub refuses stays off and is read again
         next time; the switch is the owner's and one refused record does not
-        revoke it.
+        revoke it. A record still on the tunnel while the switch is off - a
+        lab start with autostart off - goes off the same way (DEF-HUB-130).
         """
-        if not tunnel_default():
+        if _SWITCHING:
             return items
-        behind = [i for i in items if not i.get("tunnel")]
+        on = tunnel_default()
+        behind = [i for i in items if bool(i.get("tunnel")) != on]
         if not behind:
             return items
         switched = False
         for item in behind:
             kind, id_ = item.get("kind", ""), item.get("id", "")
-            code, _ = await self._set_tunnel(kind, id_, True)
-            if code == 204 and not tunnel_default():
+            code, _ = await self._set_tunnel(kind, id_, on)
+            if code == 204 and tunnel_default() != on:
                 # The owner switched off while this write was in flight. Read
                 # the switch after the write, not before it, so the write can
                 # be taken back: a check before it leaves the record published
@@ -359,7 +373,7 @@ class _HubBase(_Base):
                 # it off afterwards. Sound because a switch off writes its
                 # intent before it reads the records, so a write that lands
                 # after the press always reads the press.
-                await self._set_tunnel(kind, id_, False)
+                await self._set_tunnel(kind, id_, not on)
                 # read the records again, as the success path below does: the
                 # switch off that ran under this loop took every record off
                 # the tunnel, and the list read before the write still shows
@@ -579,68 +593,58 @@ class HubTunnelHandler(_HubBase):
     @tornado.web.authenticated
     async def post(self):
         body = self.get_json_body() or {}
+        # stored whether or not the hub answers: it is read at the next lab start
+        if "autostart" in body:
+            set_tunnel_autostart(bool(body["autostart"]))
         caps = await self._capabilities()
         if caps is None:
             return
         if "active" in body:
-            active = bool(body["active"])
-            before = tunnel_default()  # what to put back if nothing lands
-            # A switch off writes its intent before it reads the records. The
-            # listing path reads this same switch, and every moment it still
-            # reads on is a moment a listing can put the records this handler
-            # is about to switch off straight back on the tunnel - public
-            # links under a header that reads off. A switch on cannot do the
-            # same, because the hub may refuse it and a refused switch on has
-            # to leave the stored default off.
-            if not active:
-                set_tunnel_default(False)
-            answer = await self._hub("GET", "items")
-            code, data = answer or (0, {})
-            if code != 200:
-                # nothing was switched, so the switch goes back to what it
-                # said before this request - never to a fixed value, which
-                # would answer "turn sharing off" by turning it on
-                set_tunnel_default(before)
-                return None if answer is None else self._relay(code, data)
-            items = (data.get("items") if isinstance(data, dict) else None) or []
-            switched = 0  # records the hub really switched
-            for item in items:
-                if bool(item.get("tunnel")) == active:
-                    continue
-                answer = await self._hub("PUT", f"{plural(item.get('kind', ''))}/{item.get('id', '')}/tunnel", {"tunnel": active})
-                # 204 switched, 404 the record is already gone (DEF-HUB-54)
-                if answer is None or answer[0] not in (204, 404):
-                    # a switch that got at least one record moved keeps the
-                    # press: a switch off that put two of three records off
-                    # the tunnel must not read on again, or the next listing
-                    # reconciles the two it just closed straight back open.
-                    # A switch that moved nothing goes back to what the
-                    # switch said before the request - never to a fixed
-                    # value, which would answer "stop sharing" with "on".
-                    set_tunnel_default(active if switched else before)
-                    return None if answer is None else self._relay(*answer)
-                if answer[0] == 204:
-                    switched += 1
-            set_tunnel_default(active)
+            global _SWITCHING
+            _SWITCHING += 1
+            try:
+                active = bool(body["active"])
+                before = tunnel_default()  # what to put back if nothing lands
+                # A switch off writes its intent before it reads the records. The
+                # listing path reads this same switch, and every moment it still
+                # reads on is a moment a listing can put the records this handler
+                # is about to switch off straight back on the tunnel - public
+                # links under a header that reads off. A switch on cannot do the
+                # same, because the hub may refuse it and a refused switch on has
+                # to leave the stored default off.
+                if not active:
+                    set_tunnel_default(False)
+                answer = await self._hub("GET", "items")
+                code, data = answer or (0, {})
+                if code != 200:
+                    # nothing was switched, so the switch goes back to what it
+                    # said before this request - never to a fixed value, which
+                    # would answer "turn sharing off" by turning it on
+                    set_tunnel_default(before)
+                    return None if answer is None else self._relay(code, data)
+                items = (data.get("items") if isinstance(data, dict) else None) or []
+                switched = 0  # records the hub really switched
+                for item in items:
+                    if bool(item.get("tunnel")) == active:
+                        continue
+                    answer = await self._hub("PUT", f"{plural(item.get('kind', ''))}/{item.get('id', '')}/tunnel", {"tunnel": active})
+                    # 204 switched, 404 the record is already gone (DEF-HUB-54)
+                    if answer is None or answer[0] not in (204, 404):
+                        # a switch that got at least one record moved keeps the
+                        # press: a switch off that put two of three records off
+                        # the tunnel must not read on again, or the next listing
+                        # reconciles the two it just closed straight back open.
+                        # A switch that moved nothing goes back to what the
+                        # switch said before the request - never to a fixed
+                        # value, which would answer "stop sharing" with "on".
+                        set_tunnel_default(active if switched else before)
+                        return None if answer is None else self._relay(*answer)
+                    if answer[0] == 204:
+                        switched += 1
+                set_tunnel_default(active)
+            finally:
+                _SWITCHING -= 1
         self.write_json(self._tunnel_state(caps))
-
-
-class HubItemTunnelHandler(_HubBase):
-    """api/<shares|requests>/<id>/tunnel - one record's Cloudflare switch."""
-
-    @tornado.web.authenticated
-    async def post(self, kind, id_):
-        body = self.get_json_body() or {}
-        tunnel = body.get("tunnel")
-        if not isinstance(tunnel, bool):
-            return self.write_error_json(400, "'tunnel' must be a boolean")
-        answer = await self._hub("PUT", f"{kind}/{id_}/tunnel", {"tunnel": tunnel})
-        if answer is None:
-            return
-        code, data = answer
-        if code != 204:
-            return self._relay(code, data)
-        self.write_json({"id": id_, "tunnel": tunnel})
 
 
 class HubStreamHandler(_HubBase):
@@ -1791,7 +1795,6 @@ def hub_handlers(base_url: str, ns: str) -> list:
         (api("tunnel"), HubTunnelHandler),
         (api("generate-password"), GeneratePasswordHandler),
         (api(r"(shares|requests)", HUB_ID, "password"), HubPasswordHandler),
-        (api(r"(shares|requests)", HUB_ID, "tunnel"), HubItemTunnelHandler),
         (api(r"(shares|requests)", HUB_ID, "save"), HubRecordSaveHandler),
         (api("shares"), HubSharesListHandler),
         (api("shares", HUB_ID), HubShareItemHandler),

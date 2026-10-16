@@ -795,9 +795,7 @@ test('the link dialog opens the link itself, whatever the hub serving verdict', 
     name: 'Dialog inbox'
   });
   // only a tunnel link is probed; the mock tunnel registers at once
-  await api(page, 'POST', `${API}/requests/${created.data.id}/tunnel`, {
-    tunnel: true
-  });
+  await api(page, 'POST', `${API}/tunnel`, { active: true });
   const tunnel = `http://localhost:${process.env.MOCK_HUB_PORT || '8765'}`;
   await refreshPanel(page);
   const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
@@ -942,6 +940,41 @@ test('a share the hub is still copying leaves with its Cloudflare link', async (
   expect(switches.length).toBeGreaterThan(1);
 });
 
+test('a share left on Cloudflare while the switch is off goes off at the next listing', async ({
+  page,
+  request
+}) => {
+  // DEF-HUB-130: a lab start with autostart off finds the records of the
+  // last session still on the hub tunnel; the tunnel is one state, so the
+  // panel's listing takes them off
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'left-public',
+    paths: ['a.txt']
+  });
+  await request.put(`${HUB}/hub/api/fileshare/shares/${made.data.id}/tunnel`, {
+    headers: { Authorization: 'token test-token' },
+    data: { tunnel: true }
+  });
+  await openPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'left-public'
+  });
+  await expect(row).toBeVisible();
+  await expect(page.locator(CLOUD)).toHaveAttribute('aria-pressed', 'false');
+  const items = (await api(page, 'GET', `${API}/shares/${made.data.id}`)).data;
+  expect(items.tunnel).toBe(false);
+  const calls = (await (await request.get(`${HUB}/_control/calls`)).json())
+    .calls;
+  expect(
+    calls.some(
+      (c: any) =>
+        c.method === 'PUT' &&
+        c.path.endsWith(`/shares/${made.data.id}/tunnel`) &&
+        JSON.parse(c.body || '{}').tunnel === false
+    )
+  ).toBe(true);
+});
+
 test('a group policy with Cloudflare off refuses the switch and the toggle stays off', async ({
   page,
   request
@@ -961,14 +994,7 @@ test('a group policy with Cloudflare off refuses the switch and the toggle stays
   await expect(cloud).not.toHaveClass(/jp-mod-active/);
   const state = await api(page, 'GET', `${API}/tunnel`);
   expect(state.data.tunnel_active).toBe(false);
-  const refused = await api(
-    page,
-    'POST',
-    `${API}/shares/${(await api(page, 'GET', `${API}/shares`)).data.shares[0].id}/tunnel`,
-    {
-      tunnel: true
-    }
-  );
+  const refused = await api(page, 'POST', `${API}/tunnel`, { active: true });
   expect(refused.status).toBe(403);
   expect(refused.data.reason).toBe('tunnel_not_available');
 });

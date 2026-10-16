@@ -147,8 +147,11 @@ def test_load_in_hub_mode_creates_no_store_and_starts_no_tunnel(hub_env, monkeyp
     server_app = _FakeServerApp()
     server_app.web_app = web_app
     server_app.log = types.SimpleNamespace(info=lambda *a, **k: None)
+    # switched on in an earlier lab session, autostart off (DEF-HUB-130)
+    hub_routes.set_tunnel_default(True)
     ext._load_jupyter_server_extension(server_app)
     assert called == []
+    assert hub_routes.tunnel_default() is False
     assert not (root / "uploads").exists()
     assert web_app.handlers and not any("/public/" in s[0] for s in web_app.handlers)
 
@@ -397,6 +400,19 @@ def test_rewrite_link_restores_the_browser_facing_origin(hub_env):
     tunnel = "https://share.example.com/s/ABCDEF12"
     assert hub_routes.rewrite_link(tunnel, "https://hub.example.com") == tunnel
     assert hub_routes.rewrite_link("", "https://hub.example.com") == ""
+
+
+def test_lab_start_sets_the_tunnel_to_the_autostart_setting(hub_env):
+    """DEF-HUB-130: at lab start the tunnel is what autostart says, whatever
+    the icon said before the restart."""
+    from jupyterlab_share_files_extension import tunnel
+
+    tunnel.set_tunnel_autostart(True)
+    hub_routes.apply_hub_autostart()
+    assert hub_routes.tunnel_default() is True
+    tunnel.set_tunnel_autostart(False)
+    hub_routes.apply_hub_autostart()
+    assert hub_routes.tunnel_default() is False
 
 
 def test_tunnel_default_persists_in_the_config_file(hub_env):

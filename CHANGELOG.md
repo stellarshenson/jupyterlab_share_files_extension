@@ -2,6 +2,18 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.66] - 2026-10-16
+
+### Changed
+
+- Hub mode: Cloudflare sharing is one state for every share and request. While the cloud icon reads on, every record is on the hub's tunnel, new ones included; while it reads off, a listing takes off the tunnel any record still on it
+- Hub mode: the route `api/<shares|requests>/<id>/tunnel` that switched one record on its own is removed; the header cloud icon (`api/tunnel`) is the only switch
+
+### Fixed
+
+- Hub mode: "Start the Cloudflare tunnel automatically" now decides the cloud switch at every lab start. Until now a switch-on stored weeks earlier survived every restart, so a new share went public while the setting was off (DEF-HUB-130)
+- Hub mode: a change of that setting is stored while the hub does not answer
+
 ## [1.2.65] - 2026-10-14
 
 ### Changed

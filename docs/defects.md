@@ -938,6 +938,15 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - log: 2026-09-30T21:45:31Z @kj review: the bare 'Could not reach the peer' stays for links read as pasted (another access name, another hub), and the CLI connect from inside a net-isolated lab sends no forwarded headers so it reads as pasted; this fix covers neither
   - log: 2026-10-01T13:03:39Z @kj DEV hub 2026-10-01 after the hub update: the new code in a test lab read, unlocked, saved and uploaded a same-hub record through hub:8000 with no certificate step; not run: Connect by a second user from a net-isolated lab, which needs the new extension in that lab
   - log: 2026-10-02T04:34:42Z @kj closed
+- [x] `DEF-HUB-130` **new share goes to Cloudflare while autostart setting is off** - CRITICAL; hub mode; owner 2026-10-14: 'Start the Cloudflare tunnel automatically is off, and yet when I add new file, the cloud sharing starts automatically'; stored hub_tunnel=true, on since before 2026-10-01, switched the new share on; cause: see root-cause; `hub_routes.py`, `__init__.py`
+  - evidence: test_load_in_hub_mode and 4 new pytest fail on mutants; pytest 510 passed 8 skipped, jest 45, lint, galata standalone 40, mock hub 59, live hub 7 on 2026-10-16; review SHIP, rounds 2-3 clean
+  - related: ACC-HUBM-201, ACC-HUBM-202
+  - root-cause: 2026-10-16T06:26:55Z @kj hub_tunnel, stored by the header cloud icon in config.json, survives every lab start; hub mode never reads tunnelAutostart (HubTunnelHandler ignores autostart, __init__ returns before apply_autostart), so a switch-on from weeks ago puts each new record on Cloudflare; armed icon looks like off
+  - repro: hub mode, tunnelAutostart off, hub_tunnel true in config.json, create a share of a file
+  - test-tags: UNIT, FUNCTIONAL
+  - log: 2026-10-16T06:19:19Z @kj added
+  - log: 2026-10-16T06:27:00Z @kj amended text "hub mode; owner: 'Start the Cloudflare tunnel automatically is off, and yet when I add new file, the cloud sharing starts automatically'; stored hub_tunnel=true from 2026-10-02 likely switches each new record on; cause under investigation; `hub_routes.py`" -> "hub mode; owner 2026-10-14: 'Start the Cloudflare tunnel automatically is off, and yet when I add new file, the cloud sharing starts automatically'; stored hub_tunnel=true, on since before 2026-10-01, switched the new share on; cause: see root-cause; `hub_routes.py`, `__init__.py`"
+  - log: 2026-10-16T08:19:35Z @kj closed: fixed: hub switch set from tunnelAutostart at lab start; reconcile both ways; autostart stored before the hub read
 
 ## Test suites `TESTS`
 

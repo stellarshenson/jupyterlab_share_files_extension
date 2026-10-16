@@ -760,20 +760,6 @@ async def test_the_toggle_on_is_refused_while_the_policy_has_cloudflare_off(jp_f
     assert hub_routes.tunnel_default() is False
 
 
-async def test_one_record_is_switched_on_its_own(jp_fetch, fake_hub):
-    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
-    res = _json(await _post(jp_fetch, "api", "shares", share["id"], "tunnel", body={"tunnel": True}))
-    assert res == {"id": share["id"], "tunnel": True}
-    row = _json(await jp_fetch(NS, "api", "shares", share["id"]))
-    assert row["tunnel"] is True and row["link"].startswith("https://share.example.com/")
-    with pytest.raises(HTTPClientError) as exc:
-        await _post(jp_fetch, "api", "shares", share["id"], "tunnel", body={"tunnel": "yes"})
-    assert exc.value.code == 400
-    with pytest.raises(HTTPClientError) as exc:
-        await _post(jp_fetch, "api", "requests", "r_Fake_id_9999", "tunnel", body={"tunnel": False})
-    assert exc.value.code == 404
-
-
 async def test_password_required_is_reported_and_relayed(jp_fetch, fake_hub):
     fake_hub.capabilities["password_required"] = True
     info = _json(await jp_fetch(NS, "api", "info"))
@@ -968,6 +954,71 @@ async def test_nothing_is_switched_while_the_toggle_is_off(jp_fetch, fake_hub):
     rows = _json(await jp_fetch(NS, "api", "shares"))["shares"]
     assert [r["tunnel"] for r in rows] == [False]
     assert next(i for i in fake_hub.items if i["id"] == share["id"])["tunnel"] is False
+
+
+async def test_a_record_left_on_the_tunnel_while_the_toggle_is_off_goes_off(jp_fetch, fake_hub):
+    """DEF-HUB-130: the tunnel is one state both ways. A lab start with
+    autostart off finds the records of the last session still on the tunnel;
+    the first listing takes them off."""
+    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    next(i for i in fake_hub.items if i["id"] == share["id"])["tunnel"] = True
+    assert hub_routes.tunnel_default() is False
+    rows = _json(await jp_fetch(NS, "api", "shares"))["shares"]
+    assert [r["tunnel"] for r in rows] == [False]
+    assert next(i for i in fake_hub.items if i["id"] == share["id"])["tunnel"] is False
+
+
+async def test_autostart_is_stored_for_the_next_lab_start(jp_fetch, fake_hub):
+    from jupyterlab_share_files_extension import tunnel
+
+    await _post(jp_fetch, "api", "tunnel", body={"autostart": True})
+    assert tunnel._load_config()["tunnel_autostart"] is True
+    assert hub_routes.tunnel_default() is False  # the running lab's switch stays
+
+
+async def test_autostart_is_stored_while_the_hub_does_not_answer(jp_fetch, fake_hub):
+    from jupyterlab_share_files_extension import tunnel
+
+    tunnel.set_tunnel_autostart(True)
+    fake_hub.unavailable = True
+    with pytest.raises(HTTPClientError) as exc:
+        await _post(jp_fetch, "api", "tunnel", body={"autostart": False})
+    assert exc.value.code == 502
+    assert tunnel._load_config()["tunnel_autostart"] is False
+    hub_routes.apply_hub_autostart()
+    assert hub_routes.tunnel_default() is False
+
+
+async def test_a_listing_during_a_switch_on_leaves_the_records_alone(jp_fetch, fake_hub):
+    """A switch on stores the state only once it lands, so a listing in the
+    middle reads off and would take back the records already switched on."""
+    for name in ("a", "b"):
+        _json(await _post(jp_fetch, "api", "shares", body={"name": name, "paths": ["a.txt"]}))
+    inner = fake_hub.request
+    in_flight = asyncio.Event()
+    release = asyncio.Event()
+    puts = 0
+
+    async def gated(method, path, body=None, timeout=None):
+        nonlocal puts
+        if method == "PUT" and path.endswith("/tunnel") and body.get("tunnel"):
+            puts += 1
+            if puts == 2:  # the first record is on, the second is held
+                in_flight.set()
+                await release.wait()
+        return await inner(method, path, body, timeout)
+
+    fake_hub.request = gated
+
+    async def listing():
+        await in_flight.wait()
+        answer = await jp_fetch(NS, "api", "shares")
+        release.set()
+        return answer
+
+    on, _ = await asyncio.gather(_post(jp_fetch, "api", "tunnel", body={"active": True}), listing())
+    assert _json(on)["tunnel_active"] is True
+    assert [i["tunnel"] for i in fake_hub.items] == [True, True]
 
 
 async def test_a_switch_off_writes_its_intent_before_it_reads_the_records(jp_fetch, fake_hub):
