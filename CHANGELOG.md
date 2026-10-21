@@ -2,6 +2,23 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.68] - 2026-10-21
+
+### Added
+
+- The README names the agent skill the package ships, with the link commands for the installed wheel and for a clone
+
+### Changed
+
+- The side panel's inputs - the file filter, the drop zone, the Connect row and the Cloudflare setup fields - paint a little darker than the panel in every theme, and the SHARE FILES title starts on the same column as the section labels
+- The README is condensed to the install, CLI, skill, configuration, Cloudflare and hub essentials; its screenshots are dark-theme captures of the running extension
+
+### Fixed
+
+- Saving a connected share with no entries printed "Saved <name> to ./undefined"; the panel now says nothing was saved, and the server answers an empty saved list without creating a folder
+- Hub mode: a tunnel switch is retried for up to 30 seconds while the hub copies files or asks the caller to slow down, instead of failing with 409 or 429; a rate limit is named in words
+- The filter input's placeholder and the drag-over drop-zone label follow the theme's secondary text colour, so they stay readable on the darkened surface
+
 ## [1.2.67] - 2026-10-16
 
 ### Changed

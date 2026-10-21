@@ -123,6 +123,20 @@ def test_save_all_keeps_a_plain_slug_as_the_folder_name(tmp_path):
     assert (tmp_path / "Report-2026" / "hello.txt").read_bytes() == b"hi"
 
 
+def test_save_all_of_an_empty_share_writes_nothing_and_answers_no_path(tmp_path):
+    """DEF-PEER-133: an empty share has no member to save; the wrapping
+    folder's path claimed a save that never happened."""
+    handler, key = _save_handler(
+        tmp_path,
+        {"target_dir": ""},
+        {"slug": "Empty", "entries": []},
+        peer={"download-all": _PeerResponse(200, _zip_of({}))},
+    )
+    asyncio.run(handler.post(key))
+    assert (handler.status, handler.payload) == (200, {"ok": True, "saved": []})
+    assert not (tmp_path / "Empty").exists()
+
+
 def test_save_all_as_a_zip_keeps_the_peers_archive(tmp_path):
     """ACC-HUBM-178 standalone: the whole share as the one zip the peer sends,
     named after it, and not unpacked."""

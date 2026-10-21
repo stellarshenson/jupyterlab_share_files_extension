@@ -74,6 +74,7 @@ class FakeHub:
         # how many switches on the hub answers `busy`, as it does while it
         # copies a record's files (DEF-HUB-128), and what each one runs
         self.busy_switches = 0
+        self.busy_reason = "busy"
         self.on_busy = lambda: None
 
     def land_add(self, reason: str = "") -> None:
@@ -199,7 +200,8 @@ class FakeHub:
                     if body["tunnel"] and self.busy_switches:
                         self.busy_switches -= 1
                         self.on_busy()
-                        return 409, {"reason": "busy", "message": "The switch was refused: busy"}
+                        status = 429 if self.busy_reason == "rate_limited" else 409
+                        return status, {"reason": self.busy_reason, "message": "The switch was refused"}
                     item["tunnel"] = bool(body["tunnel"])
                     return 204, {}
             return 404, {"status": 404, "message": "No such share"}
@@ -725,6 +727,33 @@ async def test_the_toggle_flips_every_record_and_sets_the_default(jp_fetch, fake
     assert all(re.fullmatch(r"http://[^/]+/s/" + r["id"], r["link"]) for r in listing["requests"])
 
 
+async def test_a_toggle_the_hub_answers_busy_is_asked_again(jp_fetch, fake_hub, monkeypatch):
+    """The hub runs tunnel work through one mediator, so a switch pressed
+    while the previous one still starts its connector answers `busy`. The
+    toggle asks again, as the create path does, instead of refusing the
+    owner."""
+    monkeypatch.setattr(hub_routes, "SWITCH_RETRY_SECONDS", 0)
+    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    fake_hub.busy_switches = 2
+    state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))
+    assert state["tunnel_active"] is True
+    switches = [c for c in fake_hub.calls if c[0] == "PUT" and c[1].endswith("/tunnel")]
+    assert switches == [("PUT", f"shares/{share['id']}/tunnel", {"tunnel": True})] * 3
+
+
+async def test_a_toggle_the_hub_rate_limits_is_asked_again(jp_fetch, fake_hub, monkeypatch):
+    """The hub refuses a tunnel switch pressed seconds after the last one as
+    `rate_limited`, not `busy`; the toggle waits that out too."""
+    monkeypatch.setattr(hub_routes, "SWITCH_RETRY_SECONDS", 0)
+    share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    fake_hub.busy_switches = 1
+    fake_hub.busy_reason = "rate_limited"
+    state = _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))
+    assert state["tunnel_active"] is True
+    switches = [c for c in fake_hub.calls if c[0] == "PUT" and c[1].endswith("/tunnel")]
+    assert switches == [("PUT", f"shares/{share['id']}/tunnel", {"tunnel": True})] * 2
+
+
 async def test_a_record_gone_mid_switch_does_not_abort_the_bulk_switch(jp_fetch, fake_hub):
     """DEF-HUB-54: one record deleted in another panel answers 404; the bulk
     switch counts it as done, and the default lands on the side the owner
@@ -795,6 +824,33 @@ async def test_a_create_switch_the_hub_answers_busy_is_asked_again_until_it_land
     assert row["tunnel"] is True and row["link"] == f"https://share.example.com/s/{row['id']}"
     switches = [c for c in fake_hub.calls if c[0] == "PUT" and c[1].endswith("/tunnel")]
     assert switches == [("PUT", f"shares/{row['id']}/tunnel", {"tunnel": True})] * 3
+
+
+async def test_a_create_switch_the_hub_rate_limits_is_asked_again_until_it_lands(
+    jp_fetch, fake_hub, monkeypatch
+):
+    """The hub's other wait-out answer: a switch pressed seconds after the
+    last one is rate-limited, and the create asks again as it does for busy."""
+    monkeypatch.setattr(hub_routes, "SWITCH_RETRY_SECONDS", 0)
+    await _post(jp_fetch, "api", "tunnel", body={"active": True})
+    fake_hub.busy_switches = 1
+    fake_hub.busy_reason = "rate_limited"
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    assert "tunnel_reason" not in row
+    assert row["tunnel"] is True
+
+
+async def test_a_create_still_rate_limited_after_the_wait_says_rate_limited(
+    jp_fetch, fake_hub, monkeypatch
+):
+    """A rate limit that outlasts the wait is not `tunnel_pending` - the hub
+    is not copying anything, it asked the caller to slow down."""
+    monkeypatch.setattr(hub_routes, "SWITCH_WAIT_SECONDS", 0)
+    await _post(jp_fetch, "api", "tunnel", body={"active": True})
+    fake_hub.busy_switches = 1
+    fake_hub.busy_reason = "rate_limited"
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    assert row["tunnel"] is False and row["tunnel_reason"] == "rate_limited"
 
 
 async def test_a_create_the_hub_still_copies_after_the_wait_is_pending_until_the_next_list(
@@ -1700,6 +1756,17 @@ async def test_a_link_on_the_pages_own_host_is_read_through_the_hub_proxy(
         await asyncio.sleep(0.05)
     assert fake_link.record(request)["uploads"] == [("a.csv", b"abc")]
     assert {path.rsplit("/", 1)[-1] for _, path, _ in fake_link.calls} >= {"unlock", "a.csv", "u"}
+
+
+async def test_saving_an_empty_connected_share_writes_nothing_and_answers_no_path(
+    jp_fetch, fake_hub, fake_link, jp_root_dir
+):
+    """DEF-PEER-133: an empty share has no member to save; the wrapping
+    folder's path claimed a save that never happened."""
+    entry = await _connect(jp_fetch, fake_link.add(files={}))
+    answer = _json(await _post(jp_fetch, "api", "connections", entry["key"], "save", body={"target_dir": ""}))
+    assert answer == {"ok": True, "saved": []}
+    assert not (jp_root_dir / "Their Record").exists()
 
 
 async def test_connecting_to_your_own_record_is_refused(jp_fetch, fake_hub, fake_link):

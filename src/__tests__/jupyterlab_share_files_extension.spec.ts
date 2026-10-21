@@ -14,6 +14,7 @@ import {
   linkRef,
   connectionDownloadUrl,
   offlineReason,
+  savedFromConnectionNotice,
   type IExtensionInfo
 } from '../api';
 import { clearClip, getClip, setClip } from '../clipboard';
@@ -75,6 +76,7 @@ describe('hub refusal slugs', () => {
     expect(hubReasonText('not_granted')).toMatch(/group/);
     expect(hubReasonText('sidecar_not_serving')).toMatch(/not serving/);
     expect(hubReasonText('hub_unavailable')).toMatch(/could not be reached/);
+    expect(hubReasonText('rate_limited')).toMatch(/wait a few seconds/);
   });
 
   it('names the policy refusals galaxahub added with the cloud switch', () => {
@@ -549,5 +551,22 @@ describe('offline reason for a peer refresh failure', () => {
       expect(reason).not.toContain('undefined');
       expect(reason).not.toContain('[object Object]');
     }
+  });
+});
+
+describe('the line after saving a connected share', () => {
+  it('names the first path the server wrote', () => {
+    expect(savedFromConnectionNotice('Report', ['docs/Report'])).toEqual({
+      message: 'Saved Report to ./docs/Report',
+      type: 'success'
+    });
+  });
+
+  it('says nothing was saved when the share has no entries', () => {
+    // saved[0] on the empty list printed ./undefined (DEF-PEER-133)
+    expect(savedFromConnectionNotice('Report', [])).toEqual({
+      message: 'Nothing saved from Report: the share is empty',
+      type: 'warning'
+    });
   });
 });

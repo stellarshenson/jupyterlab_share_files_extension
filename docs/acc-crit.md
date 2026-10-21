@@ -520,6 +520,13 @@ The polling loop - what it keeps on a transient failure and what it must surface
   - test-tags: UNIT
   - log: 2026-08-05T00:00:00Z @kj implemented, `offlineReasons` in the panel state
   - log: 2026-09-01T19:56:39Z @kj edited test-tags (replaced)
+- [x] `ACC-PANEL-203-SURFACE` **Panel input surfaces sit a little darker than the panel** - LOW; the drop zone, the connect input, the filter input and the Cloudflare setup inputs paint 4% black over --jp-layout-color1, so they are a little darker than the panel in any theme; the theme's own input colour is not used because Galaxa Light paints it lighter than the panel
+  - evidence: computed backgrounds in Galaxa Light Theme - Steel: panel rgb(190,195,202), drop zone and connect input color(srgb 0.7153 0.7341 0.7605) = rgb(182,187,194), darker by 8 levels; dark theme panel rgb(48,56,65), surface rgb(46,54,62); jlpm build compiled, lint:check clean
+  - test: open the panel in the Galaxa Steel light and dark themes and compare the computed drop zone and Connect input background with the panel: each is a little darker
+  - test-tags: MANUAL
+  - mechanism: 2026-10-21T15:14:12Z @kj background: color-mix(in srgb, var(--jp-layout-color1) 96%, black), the relation stock JupyterLab Light uses between white and #f5f5f5
+  - log: 2026-10-21T15:14:12Z @kj added
+  - log: 2026-10-21T15:14:15Z @kj closed: closed: met
 
 ## Uploader identity `UPLDR`
 
@@ -1130,6 +1137,14 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - mechanism: 2026-10-16T07:26:40Z @kj _reconcile_tunnel switches records to tunnel_default() either way; _SWITCHING counts api/tunnel switches in flight and skips reconciling
   - log: 2026-10-16T07:26:40Z @kj added
   - log: 2026-10-16T08:19:35Z @kj closed: met: _reconcile_tunnel switches records either way; _SWITCHING skips reconcile during a switch
+- [x] `ACC-HUBM-204-BUSYTOGGLE` **A tunnel toggle waits out the hub's busy answer** - MEDIUM; a switch pressed while the hub still starts its connector is retried while the hub says busy, up to 30 s, instead of failing
+  - evidence: test_a_toggle_the_hub_answers_busy_is_asked_again passes; live-hub Galata 7 of 7; pytest 511 passed 8 skipped
+  - test: run pytest test_a_toggle_the_hub_answers_busy_is_asked_again; it passes, and the live-hub tunnel test passes
+  - test-tags: UNIT, FUNCTIONAL
+  - mechanism: 2026-10-21T17:43:26Z @kj _switch retries a busy reason for SWITCH_WAIT_SECONDS at SWITCH_RETRY_SECONDS, as _apply_tunnel_default does
+  - log: 2026-10-21T17:43:26Z @kj added
+  - log: 2026-10-21T17:43:30Z @kj closed
+  - log: 2026-10-21T18:39:37Z @kj amended: also waits out rate_limited; the toggle and the create path share SWITCH_RETRY_REASONS, and an expired rate-limited create names that reason
 
 ## Drag and drop into the panel `DRAG`
 
@@ -1317,6 +1332,14 @@ Taking a share's contents back into the file browser's current folder, one file 
   - test-tags: FUNCTIONAL
   - log: 2026-09-24T19:07:46Z @kj added
   - log: 2026-09-24T19:50:44Z @kj closed: done
+- [x] `ACC-SAVE-205-EMPTYSAVE` **A save from an empty connected share says nothing was saved** - LOW; an empty saved list reports Nothing saved from <name>: the share is empty instead of a path with undefined
+  - evidence: jest savedFromConnectionNotice cases pass, 47 tests in total; build and lint clean
+  - test: jest savedFromConnectionNotice cases; the empty list gives the warning sentence
+  - test-tags: UNIT
+  - mechanism: 2026-10-21T17:43:26Z @kj savedFromConnectionNotice reads the list length before saved[0]
+  - log: 2026-10-21T17:43:26Z @kj added
+  - log: 2026-10-21T17:43:30Z @kj closed
+  - log: 2026-10-21T17:58:25Z @kj server now answers saved: [] for an empty connected share; the notice branch is reachable (DEF-PEER-133)
 
 ## Transfer progress `PROG`
 

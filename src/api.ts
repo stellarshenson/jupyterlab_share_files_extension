@@ -352,6 +352,8 @@ export function hubReasonText(slug: string): string {
     sidecar_not_serving: 'The hub file sharing service is not serving yet.',
     tunnel_not_ready: "The hub's Cloudflare tunnel is not connected yet.",
     busy: 'The hub is busy copying other files - try again shortly.',
+    rate_limited:
+      'The hub is switching tunnels too quickly - wait a few seconds and try again.',
     source_unreadable: 'The hub could not read the files from your workspace.',
     grant_revoked: 'The grant this share was created under was revoked.',
     expired: 'The retention period has passed.',
@@ -398,6 +400,22 @@ export function linkCheckText(res: ILinkCheck, shown = ''): string {
   const opened =
     res.link === shown ? '' : ` opened ${res.link || 'the link'} and`;
   return `✗  Link is not reachable - the lab server${opened} got ${got}`;
+}
+
+/** The result line after saving a connected share: the first path written,
+ * or, when the server wrote nothing - an empty share - that nothing was
+ * saved. Reading `saved[0]` unguarded printed `./undefined` (DEF-PEER-133). */
+export function savedFromConnectionNotice(
+  name: string,
+  saved: string[] | undefined
+): { message: string; type: 'success' | 'warning' } {
+  if (!saved || !saved.length) {
+    return {
+      message: `Nothing saved from ${name}: the share is empty`,
+      type: 'warning'
+    };
+  }
+  return { message: `Saved ${name} to ./${saved[0]}`, type: 'success' };
 }
 
 /** Hub mode: the header cloud icon's look, whether it reads pressed, and its

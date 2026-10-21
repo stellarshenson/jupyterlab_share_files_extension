@@ -75,6 +75,31 @@ async def _get(workspace, path, **fetch):
         server.stop()
 
 
+async def _get_raw(workspace, path):
+    """GET ``path`` and read every byte until the connection closes: what a
+    browser's stack sees, including a response the server cut short.
+    tornado's AsyncHTTPClient discards a partial body when a chunked response
+    has no terminator, so it cannot show what the server actually sent."""
+    server, base = _serve(workspace)
+    url = urlparse(base + path)
+    try:
+        reader, writer = await asyncio.open_connection(url.hostname, url.port)
+        writer.write(
+            f"GET {url.path} HTTP/1.1\r\nHost: {url.hostname}\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        data = b""
+        while True:
+            chunk = await reader.read(65536)
+            if not chunk:
+                break
+            data += chunk
+        writer.close()
+        return data
+    finally:
+        server.stop()
+
+
 def _members(body: bytes) -> dict[str, bytes]:
     zf = zipfile.ZipFile(io.BytesIO(body))
     assert zf.testzip() is None
@@ -144,19 +169,13 @@ def test_a_member_that_vanishes_under_the_zip_closes_the_connection(tmp_path, mo
     sub = ShareStore(str(tmp_path)).resolve_data_path(id_, "docs") / "sub"
     sub.mkdir()
     (sub / "b.txt").symlink_to(sub / "gone")
-    lines, chunks = [], []
-    with pytest.raises(routes.HTTPStreamClosedError):
-        asyncio.run(
-            _get(
-                tmp_path,
-                f"/share/{id_}/download/docs",
-                header_callback=lines.append,
-                streaming_callback=chunks.append,
-            )
-        )
+    data = asyncio.run(_get_raw(tmp_path, f"/share/{id_}/download/docs"))
     # the first member was out when the link failed
-    assert lines[0].startswith("HTTP/1.1 200")
-    assert chunks
+    assert data.startswith(b"HTTP/1.1 200")
+    assert b"docs/a.txt" in data
+    # and the response has no chunked terminator, which is what marks the
+    # download failed rather than complete
+    assert not data.endswith(b"0\r\n\r\n")
 
 
 def test_a_folder_whose_first_member_fails_is_answered_with_a_500(tmp_path):

@@ -1587,6 +1587,16 @@ def _extract_zip_into(zip_file, dest_dir: Path, max_bytes: int) -> int:
     return written
 
 
+def _zip_has_members(zip_file) -> bool:
+    """True when the archive holds at least one member.
+
+    A byte count cannot answer this: a share of zero-byte files writes no
+    bytes and still has members.
+    """
+    with zipfile.ZipFile(zip_file) as zf:
+        return bool(zf.infolist())
+
+
 class ConnectionSaveHandler(_Base):
     """Download items from a connected share into the user's workspace."""
 
@@ -1687,6 +1697,11 @@ class ConnectionSaveHandler(_Base):
                         shutil.move(spool.name, target)
                         settle_mode(target)
                         return self.write_json({"ok": True, "saved": saved})
+                    if not _zip_has_members(spool):
+                        # an empty share: nothing to write, and a folder named
+                        # after it would claim a save that never happened
+                        # (DEF-PEER-133)
+                        return self.write_json({"ok": True, "saved": []})
                     wrap_dir = _resolve_unique_target(dest_root, share_slug)
                     # `.` and `..` pass _safe_name - check where the folder
                     # really lands after resolve(), not how its path reads

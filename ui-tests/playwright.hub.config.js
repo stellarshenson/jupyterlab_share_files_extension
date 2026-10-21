@@ -52,7 +52,9 @@ module.exports = {
       command: 'python mock_hub.py',
       url: `${HUB_URL}/_control/health`,
       timeout: 30 * 1000,
-      reuseExistingServer: !process.env.CI,
+      // a lab left on this port may be another build or another suite's;
+      // start a fresh one so the browser runs the working tree
+      reuseExistingServer: false,
       env: {
         MOCK_HUB_PORT: HUB_PORT,
         MOCK_HUB_ROOT: process.env.JUPYTERLAB_GALATA_ROOT_DIR
@@ -62,7 +64,9 @@ module.exports = {
       command: 'jupyter lab --config jupyter_server_test_config.py',
       url: `${BASE_URL}/lab`,
       timeout: 120 * 1000,
-      reuseExistingServer: !process.env.CI,
+      // a lab left on this port may be another build or another suite's;
+      // start a fresh one so the browser runs the working tree
+      reuseExistingServer: false,
       env: {
         SHARE_FILES_PUBLIC_ZONE: 'hub',
         SHARE_FILES_HUB_API: `${HUB_URL}/hub/api/fileshare`,

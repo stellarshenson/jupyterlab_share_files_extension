@@ -30,6 +30,10 @@
 
 .jp-ShareFilesPanel-headerTitle {
   flex: 1 1 auto;
+
+  /* the section labels follow a 14px caret column, so the title skips the same
+     column and both start on one vertical line, as in the AI assistants panel */
+  margin-left: 14px;
   font-weight: 600;
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -52,9 +56,19 @@
   padding: 2px 6px;
   border: 1px solid var(--jp-border-color2);
   border-radius: 2px;
-  background: var(
-    --neutral-fill-input-rest,
-    var(--jp-input-background, var(--jp-layout-color1))
+
+  /* a surface a little darker than the panel, in either theme: stock
+     JupyterLab Light paints its inputs 4% below white, so 4% of black over
+     the panel colour keeps that relation whatever the theme's own input
+     colour is (Galaxa Light paints it lighter than the panel) */
+  background: color-mix(
+    in srgb,
+    var(
+        --jp-layout-color1,
+        var(--neutral-fill-input-rest, var(--jp-input-background))
+      )
+      96%,
+    black
   );
   color: var(--jp-ui-font-color1);
   font-family: var(--jp-ui-font-family);
@@ -64,6 +78,10 @@
 
 .jp-ShareFilesPanel-filterInput:focus {
   border-color: var(--jp-brand-color1);
+}
+
+.jp-ShareFilesPanel-filterInput::placeholder {
+  color: var(--jp-ui-font-color2);
 }
 
 .jp-ShareFilesPanel-iconButton {
@@ -605,9 +623,14 @@
   text-align: center;
   font-size: var(--jp-ui-font-size0);
   color: var(--jp-ui-font-color2);
-  background: var(
-    --neutral-fill-input-rest,
-    var(--jp-input-background, var(--jp-layout-color1))
+  background: color-mix(
+    in srgb,
+    var(
+        --jp-layout-color1,
+        var(--neutral-fill-input-rest, var(--jp-input-background))
+      )
+      96%,
+    black
   );
   flex: 0 0 auto;
   transition: all 0.15s;
@@ -620,7 +643,6 @@
   outline: 2px solid var(--jp-brand-color1);
   outline-offset: -2px;
   box-shadow: inset 0 0 0 9999px rgb(33 150 243 / 8%);
-  color: var(--jp-brand-color1);
   opacity: 1;
 }
 
@@ -639,9 +661,14 @@
   padding: 2px 6px;
   border: 1px solid var(--jp-border-color2);
   border-radius: 2px 0 0 2px;
-  background: var(
-    --neutral-fill-input-rest,
-    var(--jp-input-background, var(--jp-layout-color1))
+  background: color-mix(
+    in srgb,
+    var(
+        --jp-layout-color1,
+        var(--neutral-fill-input-rest, var(--jp-input-background))
+      )
+      96%,
+    black
   );
   color: var(--jp-ui-font-color1);
   font-size: var(--jp-ui-font-size1);

@@ -330,6 +330,14 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - log: 2026-09-24T18:53:55Z @kj added
   - log: 2026-09-24T19:43:01Z @kj edited test-tags added "FUNCTIONAL"
   - log: 2026-09-24T19:50:44Z @kj closed: fixed
+- [x] `DEF-PANEL-131-LIGHT` **Drop zone and inputs are white in a tinted light theme** - MINOR; in the Galaxa Light theme the panel is #bec3ca and the theme's own input surface #c7cbd1; the drop zone, the connect input, the filter input and the Cloudflare setup inputs paint pure white; cause: see root-cause; style/base.css, src/widget.ts
+  - evidence: computed backgrounds in the Galaxa Light Theme - Steel: panel rgb(190,195,202), drop zone and connect input rgb(199,203,209) after the change and rgb(255,255,255) before; the filter input and the Cloudflare setup dialog inputs take the same chain; jlpm build compiled; lint:check clean
+  - repro: Open the panel in the Galaxa Light Theme - Steel theme and read the drop zone and Connect input: both are white on the #bec3ca panel
+  - root-cause: 2026-10-21T10:08:22Z @kj the stylesheet preferred --neutral-fill-input-rest; the shell sets that Fluent token to white in a light scheme whatever the theme says, so --jp-input-background, which the shell's own input.jp-mod-styled uses, never applied
+  - log: 2026-10-21T10:08:22Z @kj added
+  - log: 2026-10-21T10:08:28Z @kj closed: fixed
+  - log: 2026-10-21T15:14:15Z @kj amended: the owner ruled the surface a little darker than the panel; the theme input colour was lighter in Galaxa Light, so the fix is 4% black over --jp-layout-color1 (ACC-PANEL-203-SURFACE)
+  - log: 2026-10-21T16:53:30Z @kj evidence corrected: final surface is rgb(182,187,194); rgb(199,203,209) was the intermediate value before the 4% black rule
 
 ## Public sharing `PUBLIC`
 
@@ -444,6 +452,14 @@ The unauthenticated public/\* surface - recipient pages, manifests, downloads an
   - test-tags: E2E
   - log: 2026-09-22T11:13:47Z @kj added
   - log: 2026-09-22T11:13:55Z @kj closed
+- [x] `DEF-PUBLIC-132-ZIPSTALL` **Folder zip sends no chunk before a vanished member closes it** - MAJOR; a folder download whose member vanishes under the walk delivers no body chunk; the client waits instead of seeing the failed download; routes.py _serve_zip
+  - evidence: test now reads raw bytes with asyncio.open_connection: asserts 200, docs/a.txt in the body, no 0 chunk terminator; pytest 510 passed 8 skipped; jlpm build and lint:check clean
+  - repro: pytest jupyterlab_share_files_extension/tests/test_public_transfer.py::test_a_member_that_vanishes_under_the_zip_closes_the_connection; chunks stays empty, three runs in a row
+  - test-tags: UNIT
+  - root-cause: 2026-10-21T17:11:50Z @kj the test asserted the client's partial-chunk delivery; tornado 6.6 discards a body whose chunked response never terminates. A raw read of the response shows the first member's local header on the wire, then the close
+  - root-cause: 2026-10-21T17:02:07Z @kj unknown; os.walk reaches docs/a.txt before sub/b.txt, yet no chunk reaches the client before the connection closes
+  - log: 2026-10-21T17:02:07Z @kj added
+  - log: 2026-10-21T17:11:50Z @kj closed
 
 ## Storage `STORE`
 
@@ -588,6 +604,15 @@ Connecting to another user's link and keeping its state fresh
   - log: 2026-09-17T17:20:06Z @kj added
   - log: 2026-09-17T17:20:18Z @kj edited text
   - log: 2026-09-18T04:06:55Z @kj closed
+- [x] `DEF-PEER-133-SAVEPATH` **Save of a connected share prints ./undefined** - MEDIUM; saving a connected share answers success and the panel prints Saved <name> to ./undefined when the server returns an empty saved list
+  - evidence: saveConnectionFlow guards the empty saved list and reports Nothing saved from <name>: the share is empty; jlpm test 45 passed, lint:check clean, jlpm build compiled
+  - repro: connect to a share with no entries and run Download to Current Folder; the notification reads Saved <name> to ./undefined (screenshot paste-20261021-190015)
+  - test-tags: UNIT
+  - root-cause: 2026-10-21T17:58:25Z @kj the save handlers always created the wrapping folder and reported its path, so an empty share never sent saved: []; _zip_has_members now returns saved: [] for an empty archive in routes.py and hub_routes.py
+  - root-cause: 2026-10-21T17:03:28Z @kj src/widget.ts:2492 reads saved[0] without checking the array; routes.py:1745 and hub_routes.py:1614 answer {"saved": []} when the save wrote nothing
+  - log: 2026-10-21T17:03:28Z @kj added
+  - log: 2026-10-21T17:11:50Z @kj closed
+  - log: 2026-10-21T17:58:25Z @kj amended: the server side fixed too; empty connected shares now answer saved: [] and write no folder; pytest 513 passed
 
 ## Logging `LOGS`
 
@@ -947,6 +972,18 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - log: 2026-10-16T06:19:19Z @kj added
   - log: 2026-10-16T06:27:00Z @kj amended text "hub mode; owner: 'Start the Cloudflare tunnel automatically is off, and yet when I add new file, the cloud sharing starts automatically'; stored hub_tunnel=true from 2026-10-02 likely switches each new record on; cause under investigation; `hub_routes.py`" -> "hub mode; owner 2026-10-14: 'Start the Cloudflare tunnel automatically is off, and yet when I add new file, the cloud sharing starts automatically'; stored hub_tunnel=true, on since before 2026-10-01, switched the new share on; cause: see root-cause; `hub_routes.py`, `__init__.py`"
   - log: 2026-10-16T08:19:35Z @kj closed: fixed: hub switch set from tunnelAutostart at lab start; reconcile both ways; autostart stored before the hub read
+- [x] `DEF-HUB-134-TUNNELBUSY` **A tunnel toggle pressed while the hub is busy is refused** - MEDIUM; a switch off sent while the hub still starts the connector for the switch on answers 429 busy and does not land; the owner sees a refusal for a toggle that should wait
+  - evidence: test_a_toggle_the_hub_answers_busy_is_asked_again passes; live-hub Galata 7 of 7; pytest 511 passed 8 skipped
+  - repro: live-hub Galata tunnel test: switch on, wait for the tunnel host, switch off; the off answered 429
+  - test-tags: UNIT
+  - root-cause: 2026-10-21T17:29:44Z @kj HubTunnelHandler.post relayed the hub's busy refusal; only _apply_tunnel_default retried busy on the create path
+  - log: 2026-10-21T17:29:44Z @kj added
+  - log: 2026-10-21T17:41:26Z @kj closed
+- [ ] `DEF-HUB-135-TIMERRETRY` **Tunnel switch retry is a 30-second timer, not a probe** - MAJOR; a busy or rate-limited tunnel switch is retried once a second until a wall-clock deadline; the owner ruled the retry must be probe driven - read the hub's state and proceed when it is ready
+  - repro: switch the tunnel while the hub copies files; the lab sleeps one second between attempts up to SWITCH_WAIT_SECONDS=30 instead of probing the hub
+  - test-tags: UNIT
+  - root-cause: 2026-10-21T20:57:31Z @kj hub_routes.py SWITCH_WAIT_SECONDS and SWITCH_RETRY_SECONDS drive sleep loops in _switch and _apply_tunnel_default
+  - log: 2026-10-21T20:57:31Z @kj added
 
 ## Test suites `TESTS`
 

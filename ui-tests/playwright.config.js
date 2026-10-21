@@ -34,7 +34,9 @@ module.exports = {
     command: 'jupyter lab --config jupyter_server_test_config.py',
     url: `${BASE_URL}/lab`,
     timeout: 120 * 1000,
-    reuseExistingServer: !process.env.CI,
+    // a lab left on this port may be another build or another suite's;
+    // start a fresh one so the browser runs the working tree
+    reuseExistingServer: false,
     env: {
       // the server extension under test is the working tree, not an installed copy
       PYTHONPATH: path.resolve(__dirname, '..'),

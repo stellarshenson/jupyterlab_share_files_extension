@@ -51,6 +51,7 @@ from .routes import (
     _Base,
     _download_limit,
     _extract_zip_into,
+    _zip_has_members,
     _post_file,
     _request_origin,
     _resolve_workspace_target_dir,
@@ -123,6 +124,9 @@ NOT_ON_REASON = "tunnel_not_switched_on"
 # lands switches it on (`_reconcile_tunnel`).
 SWITCH_WAIT_SECONDS = 30
 SWITCH_RETRY_SECONDS = 1
+# both answers a switch waits out: the hub is copying, or the last switch was
+# only seconds ago (the hub refuses that one with `rate_limited`)
+SWITCH_RETRY_REASONS = ("busy", "rate_limited")
 PENDING_REASON = "tunnel_pending"
 
 
@@ -492,15 +496,21 @@ class _HubBase(_Base):
         the toggle says so. A refusal turns the toggle off and rides on the
         row as ``tunnel_reason`` so the panel can say why the link stayed on
         the hub's network; the switched-on row's url is read back from the
-        hub, which composes it. A `busy` answer is asked again for
-        SWITCH_WAIT_SECONDS; a record still busy then is PENDING_REASON."""
+        hub, which composes it. A `busy` or `rate_limited` answer is asked
+        again for SWITCH_WAIT_SECONDS; a record still busy then is
+        PENDING_REASON, and one still rate-limited carries that reason."""
         if not tunnel_default():
             return row
         code, data = await self._set_tunnel(kind, row["id"], True)
         deadline = time.monotonic() + SWITCH_WAIT_SECONDS
-        while isinstance(data, dict) and data.get("reason") == "busy":
+        while isinstance(data, dict) and data.get("reason") in SWITCH_RETRY_REASONS:
             if time.monotonic() >= deadline:
-                return {**row, "tunnel_reason": PENDING_REASON}
+                # busy: the copy is still running, so the list read after it
+                # lands switches the record on. Any other answer is the hub's
+                # own verdict, and the panel has a sentence for it.
+                if data.get("reason") == "busy":
+                    return {**row, "tunnel_reason": PENDING_REASON}
+                return {**row, "tunnel_reason": data.get("reason")}
             await asyncio.sleep(SWITCH_RETRY_SECONDS)
             if not tunnel_default():
                 # switched off while the hub copied: nothing to switch on
@@ -590,6 +600,26 @@ class HubTunnelHandler(_HubBase):
             return
         self.write_json(self._tunnel_state(caps))
 
+    async def _switch(self, method: str, path: str, body: dict | None = None):
+        """A tunnel read or write, asked again while the hub answers ``busy``.
+
+        The hub runs tunnel work through one mediator, so a switch pressed
+        while the previous one still starts its connector is refused ``busy``
+        - the same answer ``_apply_tunnel_default`` retries for a create - and
+        a switch pressed seconds after the last one is refused
+        ``rate_limited``; both are waited out rather than shown to the owner."""
+        deadline = time.monotonic() + SWITCH_WAIT_SECONDS
+        answer = await self._hub(method, path, body)
+        while (
+            answer is not None
+            and isinstance(answer[1], dict)
+            and answer[1].get("reason") in SWITCH_RETRY_REASONS
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(SWITCH_RETRY_SECONDS)
+            answer = await self._hub(method, path, body)
+        return answer
+
     @tornado.web.authenticated
     async def post(self):
         body = self.get_json_body() or {}
@@ -614,7 +644,7 @@ class HubTunnelHandler(_HubBase):
                 # to leave the stored default off.
                 if not active:
                     set_tunnel_default(False)
-                answer = await self._hub("GET", "items")
+                answer = await self._switch("GET", "items")
                 code, data = answer or (0, {})
                 if code != 200:
                     # nothing was switched, so the switch goes back to what it
@@ -627,7 +657,7 @@ class HubTunnelHandler(_HubBase):
                 for item in items:
                     if bool(item.get("tunnel")) == active:
                         continue
-                    answer = await self._hub("PUT", f"{plural(item.get('kind', ''))}/{item.get('id', '')}/tunnel", {"tunnel": active})
+                    answer = await self._switch("PUT", f"{plural(item.get('kind', ''))}/{item.get('id', '')}/tunnel", {"tunnel": active})
                     # 204 switched, 404 the record is already gone (DEF-HUB-54)
                     if answer is None or answer[0] not in (204, 404):
                         # a switch that got at least one record moved keeps the
@@ -1622,6 +1652,12 @@ class HubConnectionSaveHandler(_HubConnectionBase):
             if not zipfile.is_zipfile(part):
                 raise zipfile.BadZipFile("not a zip archive")
             return [_land(part, parent, f"{name}.zip")]
+        if not _zip_has_members(part):
+            # an empty share: nothing to write, and a folder named after it
+            # would claim a save that never happened (DEF-PEER-133)
+            part.unlink()
+            written.remove(part)
+            return []
         staging = _staging(parent, name)
         written.append(staging)
         _extract_zip_into(part, staging, limit)

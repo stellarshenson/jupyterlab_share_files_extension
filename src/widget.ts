@@ -60,6 +60,7 @@ import {
   resetTunnel,
   saveFromConnection,
   saveRecord,
+  savedFromConnectionNotice,
   setPassword,
   setTunnel,
   streamUrl,
@@ -2489,8 +2490,7 @@ export class ShareFilesPanel extends Widget {
       );
       Notification.update({
         id: pending,
-        message: `Saved ${name} to ./${saved[0]}`,
-        type: 'success',
+        ...savedFromConnectionNotice(name, saved),
         autoClose: 5000
       });
       await this._revealInFileBrowser(target);
@@ -4854,8 +4854,9 @@ export class ShareFilesPanel extends Widget {
         ' font-family: var(--jp-code-font-family, monospace);' +
         ' font-size: var(--jp-ui-font-size1);' +
         ' color: var(--jp-ui-font-color1);' +
-        ' background: var(--neutral-fill-input-rest,' +
-        ' var(--jp-input-background, var(--jp-layout-color1)));' +
+        ' background: color-mix(in srgb,' +
+        ' var(--jp-layout-color1, var(--neutral-fill-input-rest,' +
+        ' var(--jp-input-background))) 96%, black);' +
         ' border: 1px solid var(--jp-border-color2);' +
         ' border-radius: 2px;' +
         ' box-sizing: border-box;';

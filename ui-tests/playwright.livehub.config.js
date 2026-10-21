@@ -43,7 +43,9 @@ module.exports = {
     command: 'jupyter lab --config jupyter_server_test_config.py',
     url: `${BASE_URL}/lab`,
     timeout: 120 * 1000,
-    reuseExistingServer: !process.env.CI,
+    // a lab left on this port may be another build or another suite's;
+    // start a fresh one so the browser runs the working tree
+    reuseExistingServer: false,
     env: {
       // the hub variables come from the process environment; only the mode
       // is pinned, so a lab whose env lost it still comes up in hub mode
