@@ -335,6 +335,16 @@ export function fetchRequestUpload(
   );
 }
 
+/** Hub mode: does any record carry a tunnel switch the hub has not applied
+ * yet? A transient refusal changes nothing on the hub, so it rings nothing on
+ * the change stream; the panel polls its lists while one record says pending,
+ * and that list read is the probe that ends the wait (DEF-HUB-135). */
+export function hasTunnelPending(
+  records: Array<Partial<IShare | IRequest>>
+): boolean {
+  return records.some(record => record.tunnel_reason === 'tunnel_pending');
+}
+
 /** The hub's refusal slugs (a closed set, `fileshare/reasons.py` on the
  * hub) in plain words. An unknown slug is returned as-is. */
 export function hubReasonText(slug: string): string {
@@ -373,7 +383,7 @@ export function hubReasonText(slug: string): string {
     tunnel_not_switched_on:
       'The hub did not switch this record on - its link works on the hub network only.',
     tunnel_pending:
-      'The hub is still copying the files. The share gets its Cloudflare link when the copy is done - copy the link from its row then.',
+      "The hub has not applied this record's tunnel switch yet. The panel checks again and the switch takes effect when the hub is ready.",
     policy_conflict:
       'Two groups claim file sharing on this hub - ask the administrator.'
   };

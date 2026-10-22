@@ -7,6 +7,7 @@
  */
 
 import {
+  hasTunnelPending,
   hubTunnelLook,
   hubReasonText,
   linkCheckText,
@@ -98,6 +99,34 @@ describe('hub refusal slugs', () => {
     expect(text).not.toContain('something_new');
     expect(text).toMatch(/does not know/);
     expect(hubReasonText('')).toBe('');
+  });
+});
+
+describe('tunnel switch still pending', () => {
+  it('is true while a share or a request carries the pending mark', () => {
+    expect(
+      hasTunnelPending([{ kind: 'share', tunnel_reason: 'tunnel_pending' }])
+    ).toBe(true);
+    expect(
+      hasTunnelPending([
+        { kind: 'share' },
+        { kind: 'request', tunnel_reason: 'tunnel_pending' }
+      ])
+    ).toBe(true);
+  });
+
+  it('is false for other reasons, an unmarked record and an empty list', () => {
+    expect(hasTunnelPending([{ tunnel_reason: 'tunnel_not_available' }])).toBe(
+      false
+    );
+    expect(hasTunnelPending([{ tunnel_reason: '' }, {}])).toBe(false);
+    expect(hasTunnelPending([])).toBe(false);
+  });
+
+  it('says the switch is not applied yet, without naming a copy or a link', () => {
+    const text = hubReasonText('tunnel_pending');
+    expect(text).toMatch(/has not applied/);
+    expect(text).not.toMatch(/copying|link appears/);
   });
 });
 

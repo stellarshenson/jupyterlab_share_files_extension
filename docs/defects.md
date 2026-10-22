@@ -973,17 +973,20 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - log: 2026-10-16T06:27:00Z @kj amended text "hub mode; owner: 'Start the Cloudflare tunnel automatically is off, and yet when I add new file, the cloud sharing starts automatically'; stored hub_tunnel=true from 2026-10-02 likely switches each new record on; cause under investigation; `hub_routes.py`" -> "hub mode; owner 2026-10-14: 'Start the Cloudflare tunnel automatically is off, and yet when I add new file, the cloud sharing starts automatically'; stored hub_tunnel=true, on since before 2026-10-01, switched the new share on; cause: see root-cause; `hub_routes.py`, `__init__.py`"
   - log: 2026-10-16T08:19:35Z @kj closed: fixed: hub switch set from tunnelAutostart at lab start; reconcile both ways; autostart stored before the hub read
 - [x] `DEF-HUB-134-TUNNELBUSY` **A tunnel toggle pressed while the hub is busy is refused** - MEDIUM; a switch off sent while the hub still starts the connector for the switch on answers 429 busy and does not land; the owner sees a refusal for a toggle that should wait
-  - evidence: test_a_toggle_the_hub_answers_busy_is_asked_again passes; live-hub Galata 7 of 7; pytest 511 passed 8 skipped
+  - evidence: live-hub galata 7 of 7 (tunnel switch-on 28.7 s); pytest 519 passed 8 skipped; the probe-driven toggle cases cover the busy answer
   - repro: live-hub Galata tunnel test: switch on, wait for the tunnel host, switch off; the off answered 429
   - test-tags: UNIT
   - root-cause: 2026-10-21T17:29:44Z @kj HubTunnelHandler.post relayed the hub's busy refusal; only _apply_tunnel_default retried busy on the create path
   - log: 2026-10-21T17:29:44Z @kj added
   - log: 2026-10-21T17:41:26Z @kj closed
-- [ ] `DEF-HUB-135-TIMERRETRY` **Tunnel switch retry is a 30-second timer, not a probe** - MAJOR; a busy or rate-limited tunnel switch is retried once a second until a wall-clock deadline; the owner ruled the retry must be probe driven - read the hub's state and proceed when it is ready
+  - log: 2026-10-21T22:18:24Z @kj edited evidence "test_a_toggle_the_hub_answers_busy_is_asked_again passes; live-hub Galata 7 of 7; pytest 511 passed 8 skipped" -> "live-hub galata 7 of 7 (tunnel switch-on 28.7 s); pytest 519 passed 8 skipped; the probe-driven toggle cases cover the busy answer"
+- [x] `DEF-HUB-135-TIMERRETRY` **Tunnel switch retry is a 30-second timer, not a probe** - MAJOR; a busy or rate-limited tunnel switch is retried once a second until a wall-clock deadline; the owner ruled the retry must be probe driven - read the hub's state and proceed when it is ready
+  - evidence: pytest 519 passed 8 skipped; jest 50; galata standalone 40, mock hub 59, live hub 7, switch-on 28.7 s against a 240 s timeout; no deadline or sleep in the switch paths; round-2 review SHIP
   - repro: switch the tunnel while the hub copies files; the lab sleeps one second between attempts up to SWITCH_WAIT_SECONDS=30 instead of probing the hub
   - test-tags: UNIT
   - root-cause: 2026-10-21T20:57:31Z @kj hub_routes.py SWITCH_WAIT_SECONDS and SWITCH_RETRY_SECONDS drive sleep loops in _switch and _apply_tunnel_default
   - log: 2026-10-21T20:57:31Z @kj added
+  - log: 2026-10-21T22:18:24Z @kj closed
 
 ## Test suites `TESTS`
 

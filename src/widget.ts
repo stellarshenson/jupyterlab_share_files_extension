@@ -43,6 +43,7 @@ import {
   generatePassword,
   getInfo,
   getPassword,
+  hasTunnelPending,
   hubReasonText,
   hubTunnelLook,
   IExtensionInfo,
@@ -806,17 +807,32 @@ export class ShareFilesPanel extends Widget {
 
   /** Pick the refresh source for the mode the server reported: the hub's
    * change stream on a hub-managed lab, the timer everywhere else. Called
-   * after every refresh, so a mode change takes effect on the next tick. */
+   * after every refresh, so a mode change takes effect on the next tick.
+   * A switch the hub refused as busy or rate limited changed nothing on the
+   * hub, so no ring arrives and the stream alone cannot end the wait: the
+   * list poll is the probe, and it runs while any row says tunnel_pending
+   * (DEF-HUB-135). */
   private _syncLiveness(): void {
     if (!this.isAttached) {
       return;
     }
     if (this._hubMode && typeof EventSource !== 'undefined') {
+      if (this._tunnelPending()) {
+        this._startPolling();
+      } else {
+        this._stopPolling();
+      }
       this._openStream();
     } else {
       this._closeStream();
       this._startPolling();
     }
+  }
+
+  /** Hub mode: is any share or request still waiting for the hub to apply its
+   * tunnel switch? The panel's own list read is what finishes it. */
+  private _tunnelPending(): boolean {
+    return hasTunnelPending([...this._state.shares, ...this._state.requests]);
   }
 
   /** Hub mode: one EventSource to the lab's `api/stream`. The lab holds one
@@ -827,7 +843,11 @@ export class ShareFilesPanel extends Widget {
     if (this._stream) {
       return;
     }
-    this._stopPolling();
+    // The stream is not enough while a switch waits: a transient refusal
+    // rings nothing, so keep the list poll running as the probe
+    if (!this._tunnelPending()) {
+      this._stopPolling();
+    }
     this._startConnectionPolling();
     const stream = new EventSource(streamUrl(this._serverSettings));
     stream.addEventListener('changed', () => this._scheduleRefresh());

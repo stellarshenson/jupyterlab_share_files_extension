@@ -116,17 +116,15 @@ TUNNEL_KEY = "hub_tunnel"
 # hub_unavailable
 NOT_ON_REASON = "tunnel_not_switched_on"
 
-# The hub refuses a switch on with `busy` while it still copies the record's
-# files (seen on the DEV hub 2026-09-30), and a create's switch follows its
-# 202 at once. The create asks again once a second for this many seconds, so
-# a small share leaves with its Cloudflare link (DEF-HUB-128); a record still
-# copying after that carries PENDING_REASON, and the list read after the copy
-# lands switches it on (`_reconcile_tunnel`).
-SWITCH_WAIT_SECONDS = 30
-SWITCH_RETRY_SECONDS = 1
-# both answers a switch waits out: the hub is copying, or the last switch was
-# only seconds ago (the hub refuses that one with `rate_limited`)
-SWITCH_RETRY_REASONS = ("busy", "rate_limited")
+# The hub answers a switch on with `busy` while it still copies the record's
+# files (seen on the DEV hub 2026-09-30) or with `rate_limited` when the last
+# switch was only seconds ago (DEF-HUB-128). Both mean "not yet", not "no":
+# a create leaves the record off with PENDING_REASON and the list read after
+# the copy lands switches it on (`_reconcile_tunnel`), and the toggle keeps
+# the owner's default for the same read to finish. Neither path waits on a
+# clock; the read of the hub's own records is the probe that ends the wait
+# (DEF-HUB-135).
+SWITCH_TRANSIENT_REASONS = ("busy", "rate_limited")
 PENDING_REASON = "tunnel_pending"
 
 
@@ -156,7 +154,7 @@ def share_from_item(item: dict, link: str) -> dict:
     """One hub ``items`` row of kind share -> the panel's share shape."""
     files = item.get("files") or []
     last_add = item.get("last_add") or {}
-    return {
+    row = {
         "id": item.get("id", ""),
         "name": item.get("title") or item.get("id", ""),
         "slug": item.get("id", ""),
@@ -182,6 +180,10 @@ def share_from_item(item: dict, link: str) -> dict:
         # bytes copied and to copy, present only while the hub carries bytes
         "progress": item.get("progress") or None,
     }
+    if item.get("tunnel_reason"):
+        # a switch the listing could not apply: pending, or the hub's slug
+        row["tunnel_reason"] = item["tunnel_reason"]
+    return row
 
 
 def request_from_item(
@@ -200,7 +202,7 @@ def request_from_item(
             "mtime": _ts(u.get("uploaded_at")),
         })
     last_upload = max((e["mtime"] for e in entries), default=0)
-    return {
+    row = {
         "id": item.get("id", ""),
         "name": item.get("title") or item.get("id", ""),
         "slug": item.get("id", ""),
@@ -219,6 +221,10 @@ def request_from_item(
         "reason": item.get("reason") or "",
         "expires_at": _ts(item.get("expires_at")),
     }
+    if item.get("tunnel_reason"):
+        # a switch the listing could not apply: pending, or the hub's slug
+        row["tunnel_reason"] = item["tunnel_reason"]
+    return row
 
 
 def relay_error(code: int, data: Any) -> tuple[int, dict]:
@@ -279,6 +285,21 @@ def rewrite_link(url: str, browser_origin: str) -> str:
 
 def plural(kind: str) -> str:
     return "shares" if kind == "share" else "requests"
+
+
+def _mark_tunnel_reasons(
+    items: list[dict], refused: dict[tuple[str, str], str]
+) -> list[dict]:
+    """Copy the list with each record the switch left behind marked by why:
+    PENDING_REASON for the hub's "not yet", its own slug for a refusal. A
+    record the switch landed on keeps no mark."""
+    if not refused:
+        return items
+    marked = []
+    for item in items:
+        reason = refused.get((item.get("kind", ""), item.get("id", "")))
+        marked.append({**item, "tunnel_reason": reason} if reason else item)
+    return marked
 
 
 # --------------------------------------------------------------------------- #
@@ -358,6 +379,13 @@ class _HubBase(_Base):
         next time; the switch is the owner's and one refused record does not
         revoke it. A record still on the tunnel while the switch is off - a
         lab start with autostart off - goes off the same way (DEF-HUB-130).
+
+        A transient refusal is the hub's "not yet": it changes nothing on the
+        hub, so no change rings the panel. Mark that row PENDING_REASON, which
+        keeps the panel's own list poll probing until the hub applies the
+        switch; a permanent refusal keeps its own slug instead. The mark goes
+        on the list this read returns, including the re-read after a partial
+        success (DEF-HUB-135).
         """
         if _SWITCHING:
             return items
@@ -365,10 +393,12 @@ class _HubBase(_Base):
         behind = [i for i in items if bool(i.get("tunnel")) != on]
         if not behind:
             return items
+        # why the switch left each record behind, keyed by kind and id
+        refused: dict[tuple[str, str], str] = {}
         switched = False
         for item in behind:
             kind, id_ = item.get("kind", ""), item.get("id", "")
-            code, _ = await self._set_tunnel(kind, id_, on)
+            code, data = await self._set_tunnel(kind, id_, on)
             if code == 204 and tunnel_default() != on:
                 # The owner switched off while this write was in flight. Read
                 # the switch after the write, not before it, so the write can
@@ -382,11 +412,19 @@ class _HubBase(_Base):
                 # switch off that ran under this loop took every record off
                 # the tunnel, and the list read before the write still shows
                 # them on it, with tunnel links the hub no longer serves
-                return await self._items_quiet() or items
-            switched = switched or code == 204
+                return _mark_tunnel_reasons(await self._items_quiet() or items, refused)
+            if code == 204:
+                switched = True
+                continue
+            reason = data.get("reason") if isinstance(data, dict) else ""
+            if reason in SWITCH_TRANSIENT_REASONS:
+                refused[(kind, id_)] = PENDING_REASON
+            elif reason:
+                # a permanent refusal: the panel has a sentence for the slug
+                refused[(kind, id_)] = reason
         if not switched:
-            return items
-        return await self._items_quiet() or items
+            return _mark_tunnel_reasons(items, refused)
+        return _mark_tunnel_reasons(await self._items_quiet() or items, refused)
 
     async def _uploads(self, request_id: str) -> list[dict] | None:
         """None means the 502 was already written; a non-200 answer for one
@@ -493,29 +531,17 @@ class _HubBase(_Base):
 
     async def _apply_tunnel_default(self, kind: str, row: dict) -> dict:
         """A record the hub just minted with its switch off: switch it on when
-        the toggle says so. A refusal turns the toggle off and rides on the
-        row as ``tunnel_reason`` so the panel can say why the link stayed on
-        the hub's network; the switched-on row's url is read back from the
-        hub, which composes it. A `busy` or `rate_limited` answer is asked
-        again for SWITCH_WAIT_SECONDS; a record still busy then is
-        PENDING_REASON, and one still rate-limited carries that reason."""
+        the toggle says so. One attempt only - a `busy` or `rate_limited`
+        answer says the hub will switch it later, so the row carries
+        PENDING_REASON and the next list read finishes the switch
+        (`_reconcile_tunnel`); holding the create open waits on a copy of
+        unknown length and gains nothing the read cannot do. A permanent
+        refusal turns the toggle off and rides on the row as ``tunnel_reason``
+        so the panel can say why the link stayed on the hub's network; the
+        switched-on row's url is read back from the hub, which composes it."""
         if not tunnel_default():
             return row
         code, data = await self._set_tunnel(kind, row["id"], True)
-        deadline = time.monotonic() + SWITCH_WAIT_SECONDS
-        while isinstance(data, dict) and data.get("reason") in SWITCH_RETRY_REASONS:
-            if time.monotonic() >= deadline:
-                # busy: the copy is still running, so the list read after it
-                # lands switches the record on. Any other answer is the hub's
-                # own verdict, and the panel has a sentence for it.
-                if data.get("reason") == "busy":
-                    return {**row, "tunnel_reason": PENDING_REASON}
-                return {**row, "tunnel_reason": data.get("reason")}
-            await asyncio.sleep(SWITCH_RETRY_SECONDS)
-            if not tunnel_default():
-                # switched off while the hub copied: nothing to switch on
-                return row
-            code, data = await self._set_tunnel(kind, row["id"], True)
         if code == 204:
             if not tunnel_default():
                 # switched off while this write was in flight: take it back,
@@ -527,6 +553,13 @@ class _HubBase(_Base):
                     return {**row, "tunnel": True, "link": self._link(item.get("url", ""))}
             return {**row, "tunnel": True}
         reason = data.get("reason") if isinstance(data, dict) else ""
+        if reason in SWITCH_TRANSIENT_REASONS:
+            if not tunnel_default():
+                # switched off while the hub was busy: nothing to switch on
+                return row
+            # the copy is still running, or the switch came too soon: the
+            # record stays off and the next list read finishes the switch
+            return {**row, "tunnel": False, "tunnel_reason": PENDING_REASON}
         if reason == "tunnel_not_available":
             set_tunnel_default(False)
         # code 0: the hub did not answer
@@ -600,26 +633,6 @@ class HubTunnelHandler(_HubBase):
             return
         self.write_json(self._tunnel_state(caps))
 
-    async def _switch(self, method: str, path: str, body: dict | None = None):
-        """A tunnel read or write, asked again while the hub answers ``busy``.
-
-        The hub runs tunnel work through one mediator, so a switch pressed
-        while the previous one still starts its connector is refused ``busy``
-        - the same answer ``_apply_tunnel_default`` retries for a create - and
-        a switch pressed seconds after the last one is refused
-        ``rate_limited``; both are waited out rather than shown to the owner."""
-        deadline = time.monotonic() + SWITCH_WAIT_SECONDS
-        answer = await self._hub(method, path, body)
-        while (
-            answer is not None
-            and isinstance(answer[1], dict)
-            and answer[1].get("reason") in SWITCH_RETRY_REASONS
-            and time.monotonic() < deadline
-        ):
-            await asyncio.sleep(SWITCH_RETRY_SECONDS)
-            answer = await self._hub(method, path, body)
-        return answer
-
     @tornado.web.authenticated
     async def post(self):
         body = self.get_json_body() or {}
@@ -644,12 +657,14 @@ class HubTunnelHandler(_HubBase):
                 # to leave the stored default off.
                 if not active:
                     set_tunnel_default(False)
-                answer = await self._switch("GET", "items")
+                answer = await self._hub("GET", "items")
                 code, data = answer or (0, {})
                 if code != 200:
                     # nothing was switched, so the switch goes back to what it
                     # said before this request - never to a fixed value, which
-                    # would answer "turn sharing off" by turning it on
+                    # would answer "turn sharing off" by turning it on. A
+                    # transient refusal of this read is relayed too: no record
+                    # list was read, so there is nothing to reconcile from
                     set_tunnel_default(before)
                     return None if answer is None else self._relay(code, data)
                 items = (data.get("items") if isinstance(data, dict) else None) or []
@@ -657,7 +672,17 @@ class HubTunnelHandler(_HubBase):
                 for item in items:
                     if bool(item.get("tunnel")) == active:
                         continue
-                    answer = await self._switch("PUT", f"{plural(item.get('kind', ''))}/{item.get('id', '')}/tunnel", {"tunnel": active})
+                    answer = await self._hub("PUT", f"{plural(item.get('kind', ''))}/{item.get('id', '')}/tunnel", {"tunnel": active})
+                    if (
+                        answer is not None
+                        and isinstance(answer[1], dict)
+                        and answer[1].get("reason") in SWITCH_TRANSIENT_REASONS
+                    ):
+                        # "not yet", not "no": the owner's intent stands and
+                        # the next list read switches the records left behind
+                        # (`_reconcile_tunnel`), so the owner is not shown an
+                        # error for a switch the hub is still going to make
+                        break
                     # 204 switched, 404 the record is already gone (DEF-HUB-54)
                     if answer is None or answer[0] not in (204, 404):
                         # a switch that got at least one record moved keeps the

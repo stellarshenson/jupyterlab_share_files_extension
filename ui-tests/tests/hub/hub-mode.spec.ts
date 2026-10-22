@@ -913,31 +913,67 @@ test('the cloud toggle flips every record and the next one, and no row carries a
   await dialog.locator('button', { hasText: 'Close' }).click();
 });
 
-test('a share the hub is still copying leaves with its Cloudflare link', async ({
+test('a share the hub is still copying leaves pending and the panel poll gets its Cloudflare link', async ({
   page,
   request
 }) => {
-  // DEF-HUB-128: the hub refuses a switch on with busy while it copies the
-  // new share's files; the create asks again until the copy is done
+  // DEF-HUB-135: the hub refuses a switch on with busy while it copies the
+  // new share's files; the create makes one attempt and leaves the record
+  // pending. A refused switch changes nothing on the hub, so no ring comes:
+  // the panel's own list poll is the probe that sees the copy land, switches
+  // the record on and picks up the Cloudflare link.
+  await openPanel(page);
+  await setPollInterval(page, 2);
   await request.post(`${HUB}/_control/staging`, {
     data: { seconds: 2, busy: true }
   });
   await request.post(`${API}/tunnel`, { data: { active: true } });
-  const made = await api(page, 'POST', `${API}/shares`, {
-    name: 'still-copying',
-    paths: ['a.txt']
-  });
-  expect(made.data.tunnel_reason).toBeUndefined();
-  expect(made.data.tunnel).toBe(true);
-  expect(made.data.link).toBe(`${TUNNEL}/s/${POLICY}/${made.data.id}`);
+  // create through the panel with a path, so the copy runs and the switch on
+  // is refused while it does
+  await page.contents.uploadContent('a', 'text', 'still-copying.txt');
+  await page.filebrowser.openHomeDirectory();
+  await page.filebrowser.revealFileInBrowser('still-copying.txt');
+  await page
+    .getByRole('region', { name: 'File Browser Section' })
+    .getByRole('listitem', { name: /^Name: still-copying.txt/ })
+    .click({ button: 'right' });
+  await page
+    .locator('.lm-Menu .lm-Menu-item', { hasText: 'Share Files' })
+    .click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toBeVisible();
+  await dialog.locator('input[placeholder="Name"]').fill('still-copying');
+  await dialog.locator('button.jp-mod-accept').click();
+  // the create says the switch is not applied yet, and claims no copied link
+  await expect.poll(() => notes(page, 'warning', 'has not applied')).toBe(1);
+  expect(await notes(page, 'success', 'link copied')).toBe(0);
   const calls = (await (await request.get(`${HUB}/_control/calls`)).json())
     .calls;
-  const switches = calls.filter(
-    (c: any) =>
-      c.method === 'PUT' && c.path.endsWith(`/shares/${made.data.id}/tunnel`)
+  const switched = calls.find(
+    (c: any) => c.method === 'PUT' && /\/shares\/[^/]+\/tunnel$/.test(c.path)
   );
-  // refused while the copy ran, then accepted
-  expect(switches.length).toBeGreaterThan(1);
+  expect(switched).toBeTruthy();
+  const path = switched.path.split('/');
+  const id = path[path.length - 2];
+  const afterCreate = await refreshes(request);
+  // nobody presses Refresh: the pending row keeps the panel's own poll
+  // running, the copy lands, and the read switches the record on
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'still-copying'
+  });
+  const shownLink = async (): Promise<string> => {
+    await row.locator('button[title="Copy link"]').click();
+    const linkDialog = page.locator('.jp-Dialog');
+    await expect(linkDialog).toBeVisible();
+    const shown = await linkDialog.locator('input[readonly]').inputValue();
+    await linkDialog.locator('button', { hasText: 'Close' }).click();
+    await expect(linkDialog).toBeHidden();
+    return shown;
+  };
+  await expect
+    .poll(shownLink, { timeout: 20000 })
+    .toBe(`${TUNNEL}/s/${POLICY}/${id}`);
+  expect(await refreshes(request)).toBeGreaterThan(afterCreate);
 });
 
 test('a share left on Cloudflare while the switch is off goes off at the next listing', async ({
