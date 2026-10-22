@@ -2,6 +2,16 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.69] - 2026-10-22
+
+### Changed
+
+- Hub mode: the tunnel switch wait ends on the hub's state; a busy or rate_limited answer marks the record tunnel_pending, and the panel's list read applies the switch when the hub is ready
+
+### Fixed
+
+- The tunnel-pending message no longer says the hub is still copying when the switch was rate limited
+
 ## [1.2.68] - 2026-10-21
 
 ### Added
