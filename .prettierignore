@@ -5,6 +5,7 @@ node_modules
 !/package.json
 jupyterlab_share_files_extension
 .claude
+.agents
 tmp
 graphify-out
 # pm-tools owns the trackers' format and `pm-tools check` gates it; prettier

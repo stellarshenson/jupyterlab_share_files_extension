@@ -2,6 +2,17 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.70] - 2026-10-29
+
+### Changed
+
+- The panel's share and request listings drop the excluded names in both modes, so `Thumbs.db`, `desktop.ini`, `__MACOSX`, `.DS_Store` and the rest no longer appear; the copy already left them out
+- The default `excluded_names` catalogue adds the Windows Explorer thumbnails (`Thumbs.db`, `ehthumbs.db`), folder settings (`desktop.ini`), Office lock files (`~$*`), the recycle-bin and upgrade folders (`RECYCLER`, `System Volume Information`, `$WINDOWS.~BT`, `$Windows.~WS`) and the macOS volume metadata (`.AppleDouble`, `.LSOverride`, `.Spotlight-V100`, `.fseventsd`, `.TemporaryItems`, `.apdisk`)
+
+### Fixed
+
+- The share panel no longer shows "The hub left out N entries - for example symbolic links and names starting with . or ~" for entries the hub skipped
+
 ## [1.2.69] - 2026-10-22
 
 ### Changed
