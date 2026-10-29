@@ -444,7 +444,7 @@ export class ShareFilesPanel extends Widget {
     try {
       await addShareItems(this._serverSettings, shareId, paths);
       // on a hub the copy runs after the answer: the row says the hub is
-      // copying, says when the hub refused, and counts what the hub left out
+      // copying and says when the hub refused
       if (!this._hubMode) {
         Notification.success(`${paths.length} item(s) added`, {
           autoClose: 5000
@@ -1566,13 +1566,6 @@ export class ShareFilesPanel extends Widget {
     if (share.add_reason) {
       list.appendChild(
         this._renderEmpty(this._addRefusedText(share.add_reason))
-      );
-    }
-    if (share.skipped && !share.adding) {
-      list.appendChild(
-        this._renderEmpty(
-          `The hub left out ${share.skipped} ${share.skipped === 1 ? 'entry' : 'entries'} - for example symbolic links and names starting with . or ~`
-        )
       );
     }
     if (visible.length === 0 && !share.adding) {

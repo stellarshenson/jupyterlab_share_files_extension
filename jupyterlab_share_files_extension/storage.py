@@ -138,19 +138,25 @@ def _is_safe_relative(path: str) -> bool:
     return ".." not in parts
 
 
-def _list_entries(directory: Path, workspace_root: Path | None = None) -> list[dict[str, Any]]:
+def _list_entries(
+    directory: Path,
+    workspace_root: Path | None = None,
+    excluded: Sequence[str] = EXCLUDED_NAMES,
+) -> list[dict[str, Any]]:
     """Return [{name, type, size, mtime, path?}] for the top-level items in directory.
 
-    When `workspace_root` is provided and the entry lies inside it, the
-    workspace-relative `path` is added so the frontend can pass it to
-    JupyterLab's Contents API (e.g. for copy-to-file-browser). `mtime` is the
-    filesystem modification time (unix seconds) shown in the panel's hover
-    tooltip.
+    Excluded names are not listed. When `workspace_root` is provided and the
+    entry lies inside it, the workspace-relative `path` is added so the
+    frontend can pass it to JupyterLab's Contents API (e.g. for
+    copy-to-file-browser). `mtime` is the filesystem modification time (unix
+    seconds) shown in the panel's hover tooltip.
     """
     if not directory.exists():
         return []
     entries = []
     for child in sorted(directory.iterdir()):
+        if is_excluded(child.name, excluded):
+            continue
         entry: dict[str, Any] = {"name": child.name}
         st = child.stat()
         entry["mtime"] = int(st.st_mtime)
@@ -268,6 +274,11 @@ def is_excluded(name: str, patterns: Sequence[str] = EXCLUDED_NAMES) -> bool:
     `.Trash-1000` matches `.Trash-*`.
     """
     return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
+
+
+def is_excluded_path(name: str, patterns: Sequence[str] = EXCLUDED_NAMES) -> bool:
+    """True when any path component matches the excluded-names catalogue."""
+    return any(is_excluded(part, patterns) for part in str(name).split("/"))
 
 
 def all_excluded_message(names: Sequence[str]) -> str:
@@ -602,7 +613,9 @@ class ShareStore(BaseStore):
                 continue
             content_dir = self._path_for(id_)
             manifest = self._enrich(manifest, content_dir)
-            manifest["entries"] = _list_entries(content_dir, self.workspace_root)
+            manifest["entries"] = _list_entries(
+                content_dir, self.workspace_root, self.excluded_names
+            )
             result.append(manifest)
         return result
 
@@ -669,7 +682,9 @@ class ShareStore(BaseStore):
         manifest = self._read_manifest(id_)
         content_dir = self._path_for(id_)
         manifest = self._enrich(manifest, content_dir)
-        manifest["entries"] = _list_entries(content_dir, self.workspace_root)
+        manifest["entries"] = _list_entries(
+            content_dir, self.workspace_root, self.excluded_names
+        )
         return manifest
 
     def add_items(self, id_: str, source_paths: list[str]) -> dict[str, Any]:
@@ -765,7 +780,7 @@ class RequestStore(BaseStore):
                     continue
                 # the sidecar carries the display label; entries must not list it
                 entries = [
-                    e for e in _list_entries(child, self.workspace_root)
+                    e for e in _list_entries(child, self.workspace_root, self.excluded_names)
                     # also hides crashed sidecar temp files (.uploader.json.*.tmp)
                     if not e["name"].startswith(UPLOADER_SIDECAR)
                 ]

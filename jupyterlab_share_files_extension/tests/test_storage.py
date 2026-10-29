@@ -1084,6 +1084,14 @@ class TestExcludedNames:
         (src / "sub" / ".DS_Store").write_bytes(b"\x00")
         (src / "sub" / "._main.py").write_bytes(b"\x00")
         (src / "sub" / "helper.py").write_text("# helper")
+        for root in (src, src / "sub"):
+            (root / "Thumbs.db").write_bytes(b"\x00")
+            (root / "ehthumbs.db").write_bytes(b"\x00")
+            (root / "desktop.ini").write_text("[.ShellClassInfo]")
+            (root / "System Volume Information").mkdir()
+            (root / "~$lock.docx").write_bytes(b"\x00")
+            (root / ".Spotlight-V100").mkdir()
+            (root / ".AppleDouble").mkdir()
         return src
 
     def _share_dir(self, tmp_path):
@@ -1104,6 +1112,14 @@ class TestExcludedNames:
         # and at depth, where the ignore callable is asked again
         assert not (copied / "sub" / ".DS_Store").exists()
         assert not (copied / "sub" / "._main.py").exists()
+        for root in (copied, copied / "sub"):
+            assert not (root / "Thumbs.db").exists()
+            assert not (root / "ehthumbs.db").exists()
+            assert not (root / "desktop.ini").exists()
+            assert not (root / "System Volume Information").exists()
+            assert not (root / "~$lock.docx").exists()
+            assert not (root / ".Spotlight-V100").exists()
+            assert not (root / ".AppleDouble").exists()
 
     def test_an_excluded_item_dropped_on_its_own_is_skipped(self, tmp_path):
         (tmp_path / ".ipynb_checkpoints").mkdir()
@@ -1158,7 +1174,21 @@ class TestExcludedNames:
         assert is_excluded(".Trashes")
         assert is_excluded(".trashed-1234-old.txt")
         assert is_excluded("$RECYCLE.BIN")
+        assert is_excluded("Thumbs.db")
+        assert is_excluded("desktop.ini")
+        assert is_excluded("~$lock.docx")
+        assert is_excluded("System Volume Information")
+        assert is_excluded(".Spotlight-V100")
         assert not is_excluded("trash-talk.md")
+
+    def test_the_listing_hides_an_excluded_name_already_in_a_share(self, tmp_path):
+        (tmp_path / "keep.txt").write_text("keep")
+        store = ShareStore(str(tmp_path))
+        store.create("kept", ["keep.txt"])
+        content = self._share_dir(tmp_path)
+        (content / "Thumbs.db").write_bytes(b"\x00")
+        [row] = store.list()
+        assert [e["name"] for e in row["entries"]] == ["keep.txt"]
 
 
 class TestSaveOut:

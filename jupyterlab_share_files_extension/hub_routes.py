@@ -27,6 +27,7 @@ import secrets
 import shutil
 import time
 import zipfile
+from collections.abc import Sequence
 from html.parser import HTMLParser
 from http.cookies import SimpleCookie
 from pathlib import Path
@@ -38,6 +39,7 @@ import tornado.web
 from jupyter_server.utils import url_path_join
 from tornado.iostream import StreamClosedError
 
+from .config import EXCLUDED_NAMES
 from .hub import HubClient, HubUnavailable, hub_api_origin
 from .hub_stream import CLOSE, KEEPALIVE_SECONDS, RELAY, RETRY_SECONDS
 from .routes import (
@@ -65,6 +67,7 @@ from .storage import (
     _zip_tree,
     all_excluded_message,
     is_excluded,
+    is_excluded_path,
 )
 from .tunnel import _load_config, _save_config, set_tunnel_autostart
 
@@ -150,7 +153,9 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def share_from_item(item: dict, link: str) -> dict:
+def share_from_item(
+    item: dict, link: str, excluded: Sequence[str] = EXCLUDED_NAMES
+) -> dict:
     """One hub ``items`` row of kind share -> the panel's share shape."""
     files = item.get("files") or []
     last_add = item.get("last_add") or {}
@@ -163,6 +168,7 @@ def share_from_item(item: dict, link: str) -> dict:
         "entries": [
             {"name": f.get("name", ""), "type": "file", "size": int(f.get("size") or 0)}
             for f in files
+            if not is_excluded_path(f.get("name", ""), excluded)
         ],
         "link": link,
         "has_password": bool(item.get("has_password")),
@@ -187,13 +193,19 @@ def share_from_item(item: dict, link: str) -> dict:
 
 
 def request_from_item(
-    item: dict, uploads: list[dict], link: str, last_seen: int = 0
+    item: dict,
+    uploads: list[dict],
+    link: str,
+    last_seen: int = 0,
+    excluded: Sequence[str] = EXCLUDED_NAMES,
 ) -> dict:
     """One hub ``items`` row of kind request plus its uploads -> the panel's
     request shape. The hub does not group uploads by uploader, so every
     upload sits in one group; ``upload_id`` rides on the entry for fetch."""
     entries = []
     for u in uploads or []:
+        if is_excluded_path(u.get("filename", ""), excluded):
+            continue
         entries.append({
             "name": u.get("filename", ""),
             "type": "file",
@@ -781,7 +793,12 @@ class HubSharesListHandler(_HubBase):
         if items is None:
             return
         self.write_json({
-            "shares": [share_from_item(i, self._link(i.get("url", ""))) for i in items]
+            "shares": [
+                share_from_item(
+                    i, self._link(i.get("url", "")), excluded=self.excluded_names
+                )
+                for i in items
+            ]
         })
 
     @tornado.web.authenticated
@@ -814,7 +831,9 @@ class HubSharesListHandler(_HubBase):
             "has_password": bool(password),
             "created_at": _now_iso(),
         }
-        row = share_from_item(item, self._link(item["url"]))
+        row = share_from_item(
+            item, self._link(item["url"]), excluded=self.excluded_names
+        )
         self.write_json(await self._apply_tunnel_default("share", row))
 
 
@@ -826,7 +845,11 @@ class HubShareItemHandler(_HubBase):
             return
         for item in items:
             if item.get("id") == id_:
-                return self.write_json(share_from_item(item, self._link(item.get("url", ""))))
+                return self.write_json(
+                    share_from_item(
+                        item, self._link(item.get("url", "")), excluded=self.excluded_names
+                    )
+                )
         self.write_error_json(404, "not found")
 
     @tornado.web.authenticated
@@ -937,7 +960,11 @@ class HubRequestsListHandler(_HubBase):
             uploads = await self._uploads(item.get("id", ""))
             if uploads is None:
                 return
-            rows.append(request_from_item(item, uploads, self._link(item.get("url", ""))))
+            rows.append(
+                request_from_item(
+                    item, uploads, self._link(item.get("url", "")), excluded=self.excluded_names
+                )
+            )
         self.write_json({"requests": rows})
 
     @tornado.web.authenticated
@@ -963,7 +990,9 @@ class HubRequestsListHandler(_HubBase):
             "has_password": bool(password),
             "created_at": _now_iso(),
         }
-        row = request_from_item(item, [], self._link(item["url"]))
+        row = request_from_item(
+            item, [], self._link(item["url"]), excluded=self.excluded_names
+        )
         self.write_json(await self._apply_tunnel_default("request", row))
 
 
@@ -979,7 +1008,9 @@ class HubRequestItemHandler(_HubBase):
                 if uploads is None:
                     return
                 return self.write_json(
-                    request_from_item(item, uploads, self._link(item.get("url", "")))
+                    request_from_item(
+                        item, uploads, self._link(item.get("url", "")), excluded=self.excluded_names
+                    )
                 )
         self.write_error_json(404, "not found")
 

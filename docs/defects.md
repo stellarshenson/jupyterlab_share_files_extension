@@ -513,6 +513,13 @@ The on-disk share, request and connection stores under shares_dir
   - root-cause: 2026-09-23T11:13:26Z @kj storage._zip_tree opened ZipFile without strict_timestamps=False; the public download zip in routes.py already passed it
   - log: 2026-09-23T11:13:26Z @kj added
   - log: 2026-09-23T11:14:26Z @kj closed
+- [x] `DEF-STORE-137-WINDOWS-ARTEFACTS` **Excluded-names catalogue misses common Windows artefacts** - MEDIUM; a share copies Thumbs.db, ehthumbs.db, desktop.ini, Office lock files, RECYCLER and System Volume Information; on a hub the hub skips them and the panel counted them as skipped entries; cause: EXCLUDED_NAMES listed the macOS and trash names only; fix: add the Windows and remaining macOS names and filter listings
+  - evidence: EXCLUDED_NAMES holds the 14 names; _list_entries and both hub serializers filter them; new tests pass; pytest 522 passed, 8 skipped; jest 50; lint exit 0; build exit 0; galata mock hub 59; review SHIP
+  - repro: standalone: share a folder holding Thumbs.db and desktop.ini; both land in the share; hub mode: the hub skips them and the panel shows the skipped count
+  - test-tags: UNIT, INTEGRATION
+  - root-cause: 2026-10-29T00:42:26Z @kj config.py EXCLUDED_NAMES held .ipynb_checkpoints, __pycache__, __MACOSX, .DS_Store, ._*, the trash folders and $RECYCLE.BIN; Windows Explorer thumbnails and folder settings and Office lock files were absent
+  - log: 2026-10-29T00:42:26Z @kj added
+  - log: 2026-10-29T00:56:23Z @kj closed
 
 ## Peer connections `PEER`
 
@@ -987,6 +994,13 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - root-cause: 2026-10-21T20:57:31Z @kj hub_routes.py SWITCH_WAIT_SECONDS and SWITCH_RETRY_SECONDS drive sleep loops in _switch and _apply_tunnel_default
   - log: 2026-10-21T20:57:31Z @kj added
   - log: 2026-10-21T22:18:24Z @kj closed
+- [x] `DEF-HUB-136-SKIPPED-NOTE` **Hub share panel shows the skipped-entry note** - MEDIUM; the share panel shows 'The hub left out 2 entries - for example symbolic links and names starting with . or ~'; it names the hub and file-system rules the user never asked about; cause: src/widget.ts:1571 renders share.skipped as a plain row; fix: owner decides remove or reword
+  - evidence: row removed from src/widget.ts; no skipped or left-out reference remains; pytest 522 passed, 8 skipped; jest 50; lint exit 0; build exit 0; galata mock hub 59; review SHIP
+  - repro: hub mode: share a folder holding a symbolic link or a name starting with . or ~, then open the share's file list
+  - test-tags: E2E
+  - root-cause: 2026-10-29T00:36:23Z @kj src/widget.ts:1571-1577 appends an empty row whenever the hub's share-wide skipped count is above zero; the count is true but the sentence is written for a developer
+  - log: 2026-10-29T00:36:23Z @kj added
+  - log: 2026-10-29T00:56:23Z @kj closed
 
 ## Test suites `TESTS`
 

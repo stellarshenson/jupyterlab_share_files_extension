@@ -14,12 +14,14 @@ from __future__ import annotations
 from traitlets import Bool, Int, List, Unicode
 from traitlets.config import Configurable
 
-#: Names never copied into a share - checkpoint and cache folders, the
-#: artefacts macOS writes beside the files it copies, and the trash folders
-#: of the three desktop systems. Matched with `fnmatch` against one path
-#: component, so `._*` and `.Trash-*` cover the numbered variants. This is
-#: the default of `ShareFilesConfig.excluded_names`; an operator replaces
-#: the whole catalogue there.
+#: Names never copied into a share - checkpoint and cache folders, macOS
+#: archive and volume metadata, Windows Explorer thumbnails, folder settings,
+#: Office lock files, recycle-bin folders and upgrade leftovers, and the trash
+#: folders of the desktop systems. Matched with `fnmatch` against one path
+#: component, so `._*`, `~$*` and `.Trash-*` cover the numbered and
+#: per-document variants. This is the default of
+#: `ShareFilesConfig.excluded_names`; an operator replaces the whole catalogue
+#: there.
 EXCLUDED_NAMES: list[str] = [
     ".ipynb_checkpoints",
     "__pycache__",
@@ -31,6 +33,23 @@ EXCLUDED_NAMES: list[str] = [
     ".Trashes",
     ".trashed-*",
     "$RECYCLE.BIN",
+    # macOS archive and volume metadata
+    ".AppleDouble",
+    ".LSOverride",
+    ".Spotlight-V100",
+    ".fseventsd",
+    ".TemporaryItems",
+    ".apdisk",
+    # Windows Explorer thumbnails, folder settings and Office lock files
+    "Thumbs.db",
+    "ehthumbs.db",
+    "desktop.ini",
+    "~$*",
+    # recycle-bin folders and upgrade leftovers
+    "RECYCLER",
+    "System Volume Information",
+    "$WINDOWS.~BT",
+    "$Windows.~WS",
 ]
 
 
@@ -90,8 +109,13 @@ class ShareFilesConfig(Configurable):
             "(no pattern, the first 64) are sent to the hub, which leaves "
             "them out at every depth. The "
             "default catalogue holds the checkpoint and cache folders "
-            "(.ipynb_checkpoints, __pycache__), the macOS artefacts "
-            "(__MACOSX, .DS_Store, ._*) and the trash folders (.Trash, "
+            "(.ipynb_checkpoints, __pycache__), macOS archive and volume "
+            "metadata (__MACOSX, .DS_Store, ._*, .AppleDouble, .LSOverride, "
+            ".Spotlight-V100, .fseventsd, .TemporaryItems, .apdisk), Windows "
+            "Explorer thumbnails, folder settings and Office lock files "
+            "(Thumbs.db, ehthumbs.db, desktop.ini, ~$*), recycle-bin folders "
+            "and upgrade leftovers (RECYCLER, System Volume Information, "
+            "$WINDOWS.~BT, $Windows.~WS) and the trash folders (.Trash, "
             ".Trash-*, .Trashes, .trashed-*, $RECYCLE.BIN). Setting this "
             "replaces the whole catalogue; set it to [] to copy everything."
         ),

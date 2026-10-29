@@ -361,6 +361,21 @@ def test_share_from_item_keeps_the_refusal_reason():
     assert (row["state"], row["reason"]) == ("refused", "over_cap")
 
 
+def test_share_from_item_drops_excluded_names():
+    row = hub_routes.share_from_item(
+        {
+            **LIVE_SHARE,
+            "files": [
+                {"name": "docs/a.txt", "size": 1},
+                {"name": "Thumbs.db", "size": 2},
+                {"name": "docs/.DS_Store", "size": 3},
+            ],
+        },
+        "",
+    )
+    assert [e["name"] for e in row["entries"]] == ["docs/a.txt"]
+
+
 def test_request_from_item_groups_uploads_and_derives_counts():
     uploads = [
         {"upload_id": "u1", "filename": "a.csv", "size": 10, "sha256": "x", "uploaded_at": "2026-09-03T21:00:00Z"},
@@ -378,6 +393,17 @@ def test_request_from_item_groups_uploads_and_derives_counts():
     assert entries[1] == {"name": "b.csv", "type": "file", "size": 20, "upload_id": "u2", "mtime": _epoch("2026-09-03T22:00:00Z")}
     empty = hub_routes.request_from_item(LIVE_REQUEST, [], "")
     assert empty["uploaders"] == [] and empty["upload_count"] == 0 and empty["last_upload_at"] == 0
+
+
+def test_request_from_item_drops_excluded_uploads():
+    uploads = [
+        {"upload_id": "u1", "filename": "a.txt", "size": 10},
+        {"upload_id": "u2", "filename": "Thumbs.db", "size": 20},
+    ]
+    row = hub_routes.request_from_item(LIVE_REQUEST, uploads, "")
+    entries = row["uploaders"][0]["entries"]
+    assert [e["name"] for e in entries] == ["a.txt"]
+    assert row["upload_count"] == 1
 
 
 def test_relay_error_keeps_status_and_names_the_reason():

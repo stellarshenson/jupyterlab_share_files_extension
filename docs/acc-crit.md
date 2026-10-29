@@ -1196,6 +1196,13 @@ Names never copied into a share or a request, held as an internal catalogue in t
   - log: 2026-09-20T13:13:30Z @kj added
   - log: 2026-09-20T13:24:15Z @kj edited text
   - log: 2026-09-20T14:01:51Z @kj closed
+- [x] `ACC-EXCL-206-TRIM-FILTER` **Windows and macOS artefacts are trimmed and filtered** - HIGH; a share copies no Thumbs.db, ehthumbs.db, desktop.ini, ~$*, RECYCLER, System Volume Information, $WINDOWS.~BT, $Windows.~WS, .AppleDouble, .LSOverride, .Spotlight-V100, .fseventsd, .TemporaryItems or .apdisk; the panel lists none of them even when an older share holds them
+  - evidence: pytest 522 passed, 8 skipped; jest 50; lint exit 0; build exit 0; galata mock hub 59; review SHIP; new tests test_the_listing_hides_an_excluded_name_already_in_a_share, test_share_from_item_drops_excluded_names, test_request_from_item_drops_excluded_uploads
+  - test: unit: copy a folder holding the Windows and macOS artefacts and list a share holding Thumbs.db; neither the copy nor the listing shows them
+  - test-tags: UNIT, INTEGRATION
+  - mechanism: 2026-10-29T00:56:18Z @kj EXCLUDED_NAMES in config.py holds the names; _list_entries skips them for both stores and share_from_item and request_from_item skip them on hub rows
+  - log: 2026-10-29T00:56:18Z @kj added
+  - log: 2026-10-29T00:56:23Z @kj closed
 
 ## Editing a share after creation `EDIT`
 
