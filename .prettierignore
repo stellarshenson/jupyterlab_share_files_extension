@@ -12,3 +12,5 @@ graphify-out
 # would collapse the spaces inside a quoted log line
 docs/acc-crit.md
 docs/defects.md
+eslint.config.mjs
+.venv

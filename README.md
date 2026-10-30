@@ -50,8 +50,8 @@ A link is served by the JupyterLab server that created it, so it works only whil
 
 ## Requirements
 
-- JupyterLab >= 4.0.0
-- Python >= 3.9
+- JupyterLab >= 4.6.0
+- Python >= 3.10
 
 ## Install
 

@@ -143,3 +143,6 @@ ui-tests/.galata-root/
 # Code graph (graphify skill) and scratch output
 tmp/
 graphify-out/
+
+# Run output
+logs/
