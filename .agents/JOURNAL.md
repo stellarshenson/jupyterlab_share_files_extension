@@ -305,3 +305,6 @@ This journal tracks substantive work on documents, diagrams, and documentation c
 
 147. **Task - Require Python 3.12** (v1.2.76): raised the minimum Python to 3.12 on the owner's decision<br>
     **Result**: `requires-python` in `pyproject.toml` moved to `>=3.12`, and the classifiers for Python 3.10 and 3.11 are removed. Runtime floors already excluded older versions on some extensions, where pip then installed a release from before the scoped npm rename with no error. The dependency floors stay. `uv pip compile --python-version 3.12` resolves every runtime requirement, and CI runs Python 3.13.
+
+148. **Task - Declared dependency** (v1.2.77): declared `@jupyterlab/settingregistry` in `package.json`<br>
+    **Result**: `src/index.ts` imports `ISettingRegistry`, and the second audit found the package undeclared, so the build relied on another package bringing it in. It is declared at `^4.6.0`, the floor of `@jupyterlab/application`. `yarn.lock` and `package-lock.json` add the descriptor and move no version. `jlpm install --immutable`, `jlpm build:lib` and `jlpm run lint:check` pass. The comment in `hub_routes.py` states the minimum of 3.12; `Path.resolve` still raises on a link loop on 3.12, so `os.path.realpath` stays.

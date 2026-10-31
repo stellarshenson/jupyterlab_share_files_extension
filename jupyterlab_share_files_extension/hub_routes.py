@@ -469,7 +469,7 @@ class _HubBase(_Base):
             # by the hub, then refused whole with `bad_filename`, and the share
             # row holds no files (DEF-HUB-105). `os.path.realpath`, not
             # `Path.resolve`: resolve raises RuntimeError on a link loop up to
-            # Python 3.12, and this package supports 3.10.
+            # Python 3.12, and this package supports 3.12.
             if not Path(os.path.realpath(root / rel)).is_relative_to(root):
                 self.write_error_json(
                     400,
