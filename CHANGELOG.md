@@ -2,6 +2,12 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.77] - 2026-10-31
+
+### Fixed
+
+- Declare the settingregistry dependency the source imports
+
 ## [1.2.76] - 2026-10-31
 
 ### Changed
