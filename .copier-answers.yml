@@ -6,11 +6,11 @@ author_email: konrad.jelen+github@gmail.com
 author_name: Konrad Jelen
 has_ai_rules: false
 has_binder: false
-has_settings: false
+has_settings: true
 kind: frontend-and-server
 labextension_name: '@stellarshenson/jupyterlab-share-files-extension'
 project_short_description: A JupyterLab extension.
 python_name: jupyterlab_share_files_extension
-repository: ''
+repository: https://github.com/stellarshenson/jupyterlab_share_files_extension
 test: true
 

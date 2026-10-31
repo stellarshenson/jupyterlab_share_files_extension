@@ -14,3 +14,4 @@ docs/acc-crit.md
 docs/defects.md
 eslint.config.mjs
 .venv
+package-lock.json

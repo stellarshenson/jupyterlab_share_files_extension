@@ -24,7 +24,7 @@ The following workspace rules are STRICTLY ENFORCED for this project:
 JupyterLab extension that adds a "Share Files" context menu item to the file browser, enabling users to generate shareable links for files and directories. The extension consists of a TypeScript frontend plugin (`src/index.ts`) and a Python server extension (`jupyterlab_share_files_extension/routes.py`).
 
 - **Technology stack**: TypeScript (frontend), Python (server), JupyterLab 4, jupyter_server 2
-- **Package name (npm)**: `jupyterlab_share_files_extension`
+- **Package name (npm)**: `@stellarshenson/jupyterlab-share-files-extension`
 - **Package name (PyPI)**: `jupyterlab-share-files-extension`
 - **Build system**: hatchling with hatch-jupyter-builder
 - **Current version**: 0.1.0 (defined in `package.json`)
