@@ -115,7 +115,7 @@ async function setPollInterval(page: any, seconds: number): Promise<void> {
       '@jupyterlab/apputils-extension:settings'
     );
     await registry.set(
-      'jupyterlab_share_files_extension:plugin',
+      '@stellarshenson/jupyterlab-share-files-extension:plugin',
       'pollIntervalSeconds',
       s
     );

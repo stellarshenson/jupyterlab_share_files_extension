@@ -39,6 +39,7 @@ import tornado.httputil
 import tornado.simple_httpclient
 import tornado.ioloop
 import tornado.web
+from jupyter_server.auth.decorator import allow_unauthenticated
 from jupyter_server.base.handlers import APIHandler
 from jupyter_server.utils import url_path_join
 from tornado.iostream import StreamClosedError
@@ -531,6 +532,18 @@ class _ZipSink:
         return out
 
 
+class _PublicStaticFileHandler(StaticFileHandler):
+    """Assets of the standalone public pages, loaded by a visitor with no login."""
+
+    @allow_unauthenticated
+    def get(self, path, include_body=True):
+        return super().get(path, include_body)
+
+    @allow_unauthenticated
+    def head(self, path):
+        return super().head(path)
+
+
 class _PublicBase(tornado.web.RequestHandler):
     """Unauthenticated base for standalone pages and cross-peer endpoints.
 
@@ -606,6 +619,7 @@ class _PublicBase(tornado.web.RequestHandler):
             "Access-Control-Allow-Headers", "Content-Type, X-Share-Token"
         )
 
+    @allow_unauthenticated
     def options(self, *args, **kwargs):
         self.set_status(204)
         self.finish()
@@ -1145,6 +1159,7 @@ class PublicUnlockHandler(_PublicBase):
     download links). Wrong password and rate-limit both burn one attempt.
     """
 
+    @allow_unauthenticated
     def post(self, kind, id_):
         store = self.share_store if kind == "share" else self.request_store
         password = store.get_password(id_)
@@ -2144,6 +2159,7 @@ class _UncachedPublicMixin:
 
 
 class PublicSharePageHandler(_UncachedPublicMixin, _PublicBase):
+    @allow_unauthenticated
     def get(self, id_):
         if not self.share_store.exists(id_):
             self.set_status(404)
@@ -2167,6 +2183,7 @@ class PublicSharePageHandler(_UncachedPublicMixin, _PublicBase):
 
 
 class PublicRequestPageHandler(_UncachedPublicMixin, _PublicBase):
+    @allow_unauthenticated
     def get(self, id_):
         if not self.request_store.exists(id_):
             self.set_status(404)
@@ -2189,6 +2206,7 @@ class PublicRequestPageHandler(_UncachedPublicMixin, _PublicBase):
 
 
 class PublicShareManifestHandler(_UncachedPublicMixin, _PublicBase):
+    @allow_unauthenticated
     def get(self, id_):
         if not _password_gate(self, self.share_store, id_):
             return
@@ -2205,6 +2223,7 @@ class PublicShareManifestHandler(_UncachedPublicMixin, _PublicBase):
 
 
 class PublicRequestManifestHandler(_UncachedPublicMixin, _PublicBase):
+    @allow_unauthenticated
     def get(self, id_):
         if not _password_gate(self, self.request_store, id_):
             return
@@ -2231,6 +2250,7 @@ class PublicRequestManifestHandler(_UncachedPublicMixin, _PublicBase):
 
 
 class PublicShareDownloadHandler(_PublicBase):
+    @allow_unauthenticated
     async def get(self, id_, sub_path):
         if not _password_gate(self, self.share_store, id_):
             return
@@ -2259,6 +2279,7 @@ class PublicShareDownloadHandler(_PublicBase):
 
 
 class PublicShareDownloadAllHandler(_PublicBase):
+    @allow_unauthenticated
     async def get(self, id_):
         if not _password_gate(self, self.share_store, id_):
             return
@@ -2352,6 +2373,7 @@ class PublicRequestUploadHandler(_PublicBase):
         except OSError:
             self._refuse_store()
 
+    @allow_unauthenticated
     def post(self, id_):
         try:
             self._spool.close()
@@ -2392,6 +2414,7 @@ class PublicRequestUploadHandler(_PublicBase):
         super().on_connection_close()
         self._drop_spool()
 
+    @allow_unauthenticated
     def delete(self, id_):
         """Remove one of the caller's own uploads - identity from the cookie only."""
         if not _password_gate(self, self.request_store, id_):
@@ -2486,7 +2509,7 @@ def setup_route_handlers(web_app, config: ShareFilesConfig | None = None):
         (url_path_join(base_url, ns, "public", "request", r"([A-Z2-7]{6,16})", "manifest"), PublicRequestManifestHandler),
         (url_path_join(base_url, ns, "public", "request", r"([A-Z2-7]{6,16})", "upload"), PublicRequestUploadHandler),
         # static assets used by the standalone page
-        (url_path_join(base_url, ns, "static", "(.*)"), StaticFileHandler, {"path": static_path}),
+        (url_path_join(base_url, ns, "static", "(.*)"), _PublicStaticFileHandler, {"path": static_path}),
     ]
 
     web_app.add_handlers(host_pattern, handlers)

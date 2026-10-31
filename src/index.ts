@@ -17,7 +17,7 @@ import { ISettingRegistry } from '@jupyterlab/settingregistry';
 import { clearClip, getClip, setClip } from './clipboard';
 import { ShareFilesPanel } from './widget';
 
-const PLUGIN_ID = 'jupyterlab_share_files_extension:plugin';
+const PLUGIN_ID = '@stellarshenson/jupyterlab-share-files-extension:plugin';
 const COMMAND_CREATE_SHARE = 'share-files:create-share';
 const FILEBROWSER_SELECTOR = '.jp-DirListing-item';
 const CONTENTS_MIME = 'application/x-jupyter-icontents';
@@ -44,7 +44,7 @@ const DEFAULT_SETTINGS: IPluginSettings = {
 };
 
 /**
- * Initialization data for the jupyterlab_share_files_extension.
+ * Initialization data for the @stellarshenson/jupyterlab-share-files-extension.
  */
 const plugin: JupyterFrontEndPlugin<void> = {
   id: PLUGIN_ID,
@@ -62,7 +62,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
     settingRegistry: ISettingRegistry | null
   ) => {
     console.log(
-      'JupyterLab extension jupyterlab_share_files_extension is activated!'
+      'JupyterLab extension @stellarshenson/jupyterlab-share-files-extension is activated!'
     );
     const { commands, serviceManager } = app;
 

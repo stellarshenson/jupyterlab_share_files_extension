@@ -115,7 +115,7 @@ def test_standalone_table_keeps_public_and_static_routes(standalone_env):
     table = _table()
     patterns = [spec[0] for spec in table]
     assert any("/public/share/" in p for p in patterns)
-    assert any(spec[1] is StaticFileHandler for spec in table)
+    assert any(issubclass(spec[1], StaticFileHandler) for spec in table)
     assert any(issubclass(spec[1], _PublicBase) for spec in table)
     assert len(table) == 31
 

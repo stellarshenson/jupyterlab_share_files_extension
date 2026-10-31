@@ -16,7 +16,7 @@ from .storage import StorageError, resolve_shares_dir
 def _jupyter_labextension_paths():
     return [{
         "src": "labextension",
-        "dest": "jupyterlab_share_files_extension"
+        "dest": "@stellarshenson/jupyterlab-share-files-extension"
     }]
 
 

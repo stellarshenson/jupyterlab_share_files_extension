@@ -51,7 +51,7 @@ _BUILD = os.path.join(
     "labextension",
 )
 _SOURCES = [_BUILD] + [
-    os.path.join(d, "jupyterlab_share_files_extension") for d in jupyter_path("labextensions")
+    os.path.join(d, "@stellarshenson/jupyterlab-share-files-extension") for d in jupyter_path("labextensions")
 ]
 _SOURCE = next((p for p in _SOURCES if os.path.isfile(os.path.join(p, "package.json"))), None)
 # Say which copy is under test: the two candidates are different builds - the
@@ -63,7 +63,7 @@ _SOURCE = next((p for p in _SOURCES if os.path.isfile(os.path.join(p, "package.j
 print(f"labextension served from: {_SOURCE}", file=sys.stderr)
 _LABEXTENSIONS = tempfile.mkdtemp(prefix="labextensions-", dir=_GALATA_ROOT)
 if _SOURCE:
-    shutil.copytree(_SOURCE, os.path.join(_LABEXTENSIONS, "jupyterlab_share_files_extension"))
+    shutil.copytree(_SOURCE, os.path.join(_LABEXTENSIONS, "@stellarshenson/jupyterlab-share-files-extension"))
 c.LabServerApp.extra_labextensions_path = [
     _LABEXTENSIONS,
     c.LabServerApp.extra_labextensions_path,

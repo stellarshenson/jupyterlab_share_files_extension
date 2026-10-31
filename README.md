@@ -1,7 +1,7 @@
 # jupyterlab_share_files_extension
 
 [![GitHub Actions](https://github.com/stellarshenson/jupyterlab_share_files_extension/actions/workflows/build.yml/badge.svg)](https://github.com/stellarshenson/jupyterlab_share_files_extension/actions/workflows/build.yml)
-[![npm version](https://img.shields.io/npm/v/jupyterlab_share_files_extension.svg)](https://www.npmjs.com/package/jupyterlab_share_files_extension)
+[![npm version](https://img.shields.io/npm/v/@stellarshenson/jupyterlab-share-files-extension.svg)](https://www.npmjs.com/package/@stellarshenson/jupyterlab-share-files-extension)
 [![PyPI version](https://img.shields.io/pypi/v/jupyterlab-share-files-extension.svg)](https://pypi.org/project/jupyterlab-share-files-extension/)
 [![Total PyPI downloads](https://static.pepy.tech/badge/jupyterlab-share-files-extension)](https://pepy.tech/project/jupyterlab-share-files-extension)
 [![JupyterLab 4](https://img.shields.io/badge/JupyterLab-4-orange.svg)](https://jupyterlab.readthedocs.io/en/stable/)
@@ -153,7 +153,7 @@ A lab spawned by galaxahub carries `SHARE_FILES_PUBLIC_ZONE=hub`, `SHARE_FILES_H
 
 ## Releases
 
-Versioned releases ship to [npm](https://www.npmjs.com/package/jupyterlab_share_files_extension) and [PyPI](https://pypi.org/project/jupyterlab-share-files-extension/) together, tagged `RELEASE_v<version>`. Full delivered feature list: [RELEASE.md](RELEASE.md); per-version changes: [CHANGELOG.md](CHANGELOG.md).
+Versioned releases ship to [npm](https://www.npmjs.com/package/@stellarshenson/jupyterlab-share-files-extension) and [PyPI](https://pypi.org/project/jupyterlab-share-files-extension/) together, tagged `RELEASE_v<version>`. Full delivered feature list: [RELEASE.md](RELEASE.md); per-version changes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Uninstall
 

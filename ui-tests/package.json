@@ -1,7 +1,7 @@
 {
-  "name": "jupyterlab_share_files_extension-ui-tests",
+  "name": "@stellarshenson/jupyterlab-share-files-extension-ui-tests",
   "version": "1.0.0",
-  "description": "JupyterLab jupyterlab_share_files_extension Integration Tests",
+  "description": "JupyterLab @stellarshenson/jupyterlab-share-files-extension Integration Tests",
   "private": true,
   "scripts": {
     "start": "jupyter lab --config jupyter_server_test_config.py",

@@ -51,7 +51,7 @@ async function setDownloadLimit(page: any, gb: number): Promise<void> {
       '@jupyterlab/apputils-extension:settings'
     );
     await registry.set(
-      'jupyterlab_share_files_extension:plugin',
+      '@stellarshenson/jupyterlab-share-files-extension:plugin',
       'peerDownloadMaxGb',
       g
     );

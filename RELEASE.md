@@ -18,7 +18,7 @@ Every release ships the complete extension - there are no feature flags, edition
 
 ## What goes into a release
 
-- **npm package** - `jupyterlab_share_files_extension@<version>` ([registry](https://www.npmjs.com/package/jupyterlab_share_files_extension)): the prebuilt labextension (frontend)
+- **npm package** - `@stellarshenson/jupyterlab-share-files-extension@<version>` ([registry](https://www.npmjs.com/package/@stellarshenson/jupyterlab-share-files-extension)): the prebuilt labextension (frontend)
 - **PyPI package** - `jupyterlab-share-files-extension <version>` ([registry](https://pypi.org/project/jupyterlab-share-files-extension/)): wheel + sdist carrying the server extension, the `jupyterlab_share_files` CLI, the `tunnel` library and the bundled labextension - `pip install` alone gives the full feature set
 - **Git tag** - `RELEASE_v<version>` on the release commit
 - **GitHub release** - published against the tag, body mirroring the version's `CHANGELOG.md` section
