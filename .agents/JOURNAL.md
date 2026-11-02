@@ -308,3 +308,6 @@ This journal tracks substantive work on documents, diagrams, and documentation c
 
 148. **Task - Declared dependency** (v1.2.77): declared `@jupyterlab/settingregistry` in `package.json`<br>
     **Result**: `src/index.ts` imports `ISettingRegistry`, and the second audit found the package undeclared, so the build relied on another package bringing it in. It is declared at `^4.6.0`, the floor of `@jupyterlab/application`. `yarn.lock` and `package-lock.json` add the descriptor and move no version. `jlpm install --immutable`, `jlpm build:lib` and `jlpm run lint:check` pass. The comment in `hub_routes.py` states the minimum of 3.12; `Path.resolve` still raises on a link loop on 3.12, so `os.path.realpath` stays.
+
+149. **Task - Build lifecycle brought to Makefile 1.48** (v1.2.77): the canonical Makefile went to every extension on 2026-11-02<br>
+    **Result**: Makefile 1.48 verbatim; mrproper now removes tmp, logs, .venv, graphify-out, coverage and .pytest_cache; install and publish are .NOTPARALLEL; the cleaned tree carries the tag CHECKPOINT_JUPYTERLAB_4.6.5_UPGRADE_PORTED_1.2.77.
