@@ -1,8 +1,9 @@
 """Hub-mode handlers: the panel's ``api/*`` surface backed by the hub API.
 
 Registered instead of the standalone table when :func:`hub.hub_mode` is true.
-Every handler here is an ``APIHandler`` guarded by ``tornado.web.authenticated``;
-the module never defines a public or static route. The panel keeps calling
+Every handler here is an ``APIHandler`` guarded by ``tornado.web.authenticated``,
+or for the change stream a websocket guarded by ``ws_authenticated``; the
+module never defines a public or static route. The panel keeps calling
 the same ``api/*`` paths with the same response shapes - only the backend
 changes: paths are sent to the hub, which copies the bytes with its own
 transfer job, and recipients are served by the hub's fileshare app.
@@ -36,12 +37,15 @@ from urllib.parse import quote, unquote, urlencode, urlparse
 
 import tornado.httpclient
 import tornado.web
+import tornado.websocket
+from jupyter_server.auth.decorator import ws_authenticated
+from jupyter_server.base.handlers import JupyterHandler
+from jupyter_server.base.websocket import WebSocketMixin
 from jupyter_server.utils import url_path_join
-from tornado.iostream import StreamClosedError
 
 from .config import EXCLUDED_NAMES
 from .hub import HubClient, HubUnavailable, hub_api_origin
-from .hub_stream import CLOSE, KEEPALIVE_SECONDS, RELAY, RETRY_SECONDS
+from .hub_stream import CHANGED, RELAY
 from .routes import (
     _ZIP_UNREADABLE,
     GB,
@@ -153,12 +157,63 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _copying(item: dict) -> bool:
+    """The hub's row says its last add or the create has not settled."""
+    return (item.get("last_add") or {}).get("state") == "running" or item.get("state") == "staging"
+
+
+def _pending(item: dict) -> list[dict]:
+    """What a share's row still waits for, in order: the add the hub copies,
+    then the adds held in this lab."""
+    state = _ADDS.get(item.get("id", ""))
+    if not state:
+        return []
+    sent = []
+    if _copying(item):
+        progress = item.get("progress") or {}
+        if progress.get("total"):
+            # the hub reports no progress at either end of an add, so the highest read stands
+            # shortcut: last_add carries no id, so a read answered during the last add and applied after the next was accepted raises the next add's seen; upgrade when the hub names the add in last_add
+            state["seen"] = max(state["seen"], min(1, max(0, (progress.get("copied") or 0) / progress["total"])))
+        # shortcut: fractions assume the hub copies in sent order, which it does not report; upgrade when the hub reports per-file progress
+        done = state["seen"] * sum(entry["size"] for entry in state["sent"])
+        start = 0
+        for entry in state["sent"]:
+            size = entry["size"]
+            fraction = max(0, min(1, (done - start) / size)) if size else int(done >= start)
+            sent.append({**entry, "held": False, "fraction": fraction})
+            start += size
+    return sent + [{**entry, "held": True, "fraction": 0} for add in state["held"] for entry in add["entries"]]
+
+
+def _holding(state: dict) -> bool:
+    """A hold is the share's sending task being alive."""
+    task = state.get("task")
+    return task is not None and not task.done()
+
+
+def _add_reason(item: dict, add: dict) -> str:
+    """A row's newest refusal: the one the lab keeps until a drop after a read, else the hub's."""
+    last_add = item.get("last_add") or {}
+    return add.get("reason") or (
+        str(last_add.get("reason") or "no_reason") if last_add.get("state") == "refused" else ""
+    )
+
+
+def _listed(item: dict) -> set[str]:
+    """The names a hub row lists at the top of its share."""
+    return {str(f.get("name", "")).split("/")[0] for f in item.get("files") or []}
+
+
 def share_from_item(
     item: dict, link: str, excluded: Sequence[str] = EXCLUDED_NAMES
 ) -> dict:
     """One hub ``items`` row of kind share -> the panel's share shape."""
     files = item.get("files") or []
     last_add = item.get("last_add") or {}
+    add = _add_state(item.get("id", ""))
+    # what a read carried to a panel, which a drop may then end
+    add["shown"] = _add_reason(item, add)
     row = {
         "id": item.get("id", ""),
         "name": item.get("title") or item.get("id", ""),
@@ -179,10 +234,10 @@ def share_from_item(
         "bytes": int(item.get("bytes") or 0),
         # the hub's total for the share: the create and every add since
         "skipped": int(item.get("skipped") or 0),
-        # the hub's own record of the last add: running while it copies, and
-        # the reason when it refused
-        "adding": last_add.get("state") == "running",
-        "add_reason": str(last_add.get("reason") or "") if last_add.get("state") == "refused" else "",
+        # true while the hub copies an add or the share's task is alive
+        "adding": last_add.get("state") == "running" or _holding(add),
+        "add_reason": add["shown"],
+        "pending": _pending(item),
         # bytes copied and to copy, present only while the hub carries bytes
         "progress": item.get("progress") or None,
     }
@@ -237,6 +292,31 @@ def request_from_item(
         # a switch the listing could not apply: pending, or the hub's slug
         row["tunnel_reason"] = item["tunnel_reason"]
     return row
+
+
+def _with_left_out(answer: dict, left_out: list[str]) -> dict:
+    """An accepted add or create, naming the chosen items the hub takes no
+    copy of."""
+    return {**answer, "left_out": left_out} if left_out else answer
+
+
+def _chosen_size(path: Path, excluded: Sequence[str]) -> int:
+    """Bytes a chosen file or folder holds, without the catalogue's names. The
+    panel only draws this number, so what cannot be read counts 0."""
+
+    def size(name: str | Path) -> int:
+        try:
+            return os.stat(name).st_size
+        except OSError:
+            return 0
+
+    if not os.path.isdir(path):
+        return size(path)
+    total = 0
+    for folder, dirs, names in os.walk(path):
+        dirs[:] = [d for d in dirs if not is_excluded(d, excluded)]
+        total += sum(size(os.path.join(folder, n)) for n in names if not is_excluded(n, excluded))
+    return total
 
 
 def relay_error(code: int, data: Any) -> tuple[int, dict]:
@@ -410,6 +490,10 @@ class _HubBase(_Base):
         switched = False
         for item in behind:
             kind, id_ = item.get("kind", ""), item.get("id", "")
+            if on and _copying(item):
+                # the hub answers busy to a switch on while it copies, and the panel reads a copying row each second
+                refused[(kind, id_)] = PENDING_REASON
+                continue
             code, data = await self._set_tunnel(kind, id_, on)
             if code == 204 and tunnel_default() != on:
                 # The owner switched off while this write was in flight. Read
@@ -449,11 +533,14 @@ class _HubBase(_Base):
             return []
         return list(data.get("uploads") or [])
 
-    def _kept_paths(self, paths: Any) -> list[str] | None:
-        """The paths the hub is sent, or ``None`` with the 400 already written.
-        The hub copies what it is sent, so the excluded-names catalogue is
-        applied here on the chosen items themselves; below a sent folder the
-        hub applies the plain names of ``_hub_exclude`` beside its own skips."""
+    def _kept_paths(self, paths: Any) -> tuple[list[str], list[str]] | None:
+        """The paths the hub is sent and the chosen names left out, or ``None``
+        with the 400 already written. The hub copies what it is sent, so the
+        excluded-names catalogue is applied here on the chosen items
+        themselves; below a sent folder the hub applies the plain names of
+        ``_hub_exclude`` beside its own skips. The hub refuses a whole add over
+        one chosen name starting with . or ~ and a create skips that name, so
+        both leave it out here and the answer names it."""
         if not isinstance(paths, list):
             self.write_error_json(400, "'paths' must be a list")
             return None
@@ -482,7 +569,22 @@ class _HubBase(_Base):
         if paths and not kept:
             self.write_error_json(400, all_excluded_message([Path(rel).name for rel in paths]))
             return None
-        return kept
+        left_out = [Path(rel).name for rel in kept if Path(rel).name.startswith((".", "~"))]
+        kept = [rel for rel in kept if not Path(rel).name.startswith((".", "~"))]
+        if left_out and not kept:
+            # the names last: the panel's notice cuts a long message at its end
+            self.write_error_json(
+                400, f"A hub share takes no name starting with . or ~. Not added: {', '.join(left_out)}"
+            )
+            return None
+        return kept, left_out
+
+    async def _entries(self, paths: list[str]) -> list[dict]:
+        """The name and size of each chosen item, read off the event loop."""
+        root, excluded = Path(self.workspace_root), self.excluded_names
+        return await asyncio.to_thread(
+            lambda: [{"name": Path(rel).name, "size": _chosen_size(root / rel, excluded)} for rel in paths]
+        )
 
     def _workspace_dir(self, target_dir: str) -> Path | None:
         """The folder the hub is asked to write into, or ``None`` with the
@@ -537,7 +639,7 @@ class _HubBase(_Base):
         return await self._hub_quiet("PUT", f"{plural(kind)}/{id_}/tunnel", {"tunnel": tunnel})
 
     async def _items_quiet(self) -> list[dict]:
-        """The hub's items after a switch, or [] when the read fails."""
+        """The hub's items, or [] when the read fails."""
         code, data = await self._hub_quiet("GET", "items")
         return (data.get("items") or []) if code == 200 and isinstance(data, dict) else []
 
@@ -714,47 +816,43 @@ class HubTunnelHandler(_HubBase):
         self.write_json(self._tunnel_state(caps))
 
 
-class HubStreamHandler(_HubBase):
-    """api/stream - the panel's change stream, Server-Sent Events held open.
+class HubStreamHandler(WebSocketMixin, JupyterHandler, tornado.websocket.WebSocketHandler):
+    """api/stream - the panel's change stream, a WebSocket held open, because
+    an open HTTP request would hold one of the browser's six connections per
+    origin in every tab.
 
-    One ``changed`` event per ring of the hub's own stream (the lab holds one
-    hub stream for all its panels, ``hub_stream.RELAY``) and a keepalive
-    comment while idle. No payload: the panel
-    fetches its lists once per event and once per open.
+    One text message, the event name, per ring of the hub's own stream (the
+    lab holds one hub stream for all its panels, ``hub_stream.RELAY``). No
+    payload: the panel fetches its lists once per message and once per open.
     """
 
     _queue: asyncio.Queue | None = None
+    _sender: asyncio.Task | None = None
 
-    @tornado.web.authenticated
-    async def get(self):
-        self.set_header("Content-Type", "text/event-stream")
-        self.set_header("Cache-Control", "no-cache")
-        self.set_header("X-Accel-Buffering", "no")
+    @ws_authenticated
+    async def get(self, *args, **kwargs):
+        await super().get(*args, **kwargs)
+
+    def open(self):
+        super().open()  # starts the pings
         self._queue = RELAY.subscribe()
-        try:
-            self.write(f"retry: {RETRY_SECONDS * 1000}\n\n")
-            await self.flush()
-            while True:
-                try:
-                    event = await asyncio.wait_for(self._queue.get(), KEEPALIVE_SECONDS)
-                except asyncio.TimeoutError:
-                    self.write(": keepalive\n\n")
-                else:
-                    if event is CLOSE:
-                        break
-                    self.write(f"event: {event}\ndata:\n\n")
-                await self.flush()
-        except StreamClosedError:
-            pass
-        finally:
-            RELAY.unsubscribe(self._queue)
+        self._sender = asyncio.ensure_future(self._send_rings())
 
-    def on_connection_close(self):
-        if self._queue is None:
+    async def _send_rings(self):
+        try:
+            while True:
+                await self.write_message(await self._queue.get())
+        except tornado.websocket.WebSocketClosedError:
+            pass  # the peer vanished; on_close ends the subscription
+
+    def on_message(self, message):
+        pass  # the panel sends nothing, and tornado's default raises and logs the URI, which can hold the token
+
+    def on_close(self):
+        if self._queue is None:  # a client that left before the upgrade
             return
-        while not self._queue.empty():
-            self._queue.get_nowait()
-        self._queue.put_nowait(CLOSE)
+        self._sender.cancel()
+        RELAY.unsubscribe(self._queue)
 
 
 class HubLinkCheckHandler(_HubBase):
@@ -809,9 +907,11 @@ class HubSharesListHandler(_HubBase):
         password = str(body.get("password") or "")
         if not name:
             return self.write_error_json(400, "Missing 'name'")
-        paths = self._kept_paths(paths)
-        if paths is None:
+        kept = self._kept_paths(paths)
+        if kept is None:
             return
+        paths, left_out = kept
+        entries = await self._entries(paths)
         answer = await self._hub(
             "POST", "shares", {"title": name, "paths": paths, "password": password, "exclude": self._hub_exclude()}
         )
@@ -822,6 +922,7 @@ class HubSharesListHandler(_HubBase):
             return self._relay(code, data)
         if password:
             _PASSWORDS[data.get("id", "")] = password
+        _add_state(data.get("id", ""))["sent"] = entries
         item = {
             "id": data.get("id", ""),
             "title": name,
@@ -834,7 +935,7 @@ class HubSharesListHandler(_HubBase):
         row = share_from_item(
             item, self._link(item["url"]), excluded=self.excluded_names
         )
-        self.write_json(await self._apply_tunnel_default("share", row))
+        self.write_json(_with_left_out(await self._apply_tunnel_default("share", row), left_out))
 
 
 class HubShareItemHandler(_HubBase):
@@ -861,6 +962,7 @@ class HubShareItemHandler(_HubBase):
         if code != 204:
             return self._relay(code, data)
         _PASSWORDS.pop(id_, None)
+        _ADDS.pop(id_, None)
         self.write_json({"ok": True})
 
 
@@ -881,11 +983,94 @@ class HubShareItemsHandler(_HubBase):
             return None
         return code
 
+    def _add_body(self, id_: str, paths: list[str]) -> dict:
+        return {
+            "action": "add", "paths": paths, "password": _PASSWORDS.get(id_, ""),
+            "exclude": self._hub_exclude(),
+        }
+
+    async def _hold_task(self, id_: str, state: dict) -> None:
+        """A task that died would leave its adds held, with no refusal on the
+        row and a repeat drop of their names refused until the lab restarts."""
+        try:
+            await self._send_held(id_, state)
+        except Exception:
+            self.log.exception("The held adds of share %s stopped", id_)
+            # the hub refused nothing, so the row names the lab
+            state.update(held=[], reason="lab_failed")
+            RELAY.ring(CHANGED)
+
+    async def _send_held(self, id_: str, state: dict) -> None:
+        """Send a share's held adds in order, one drop at a time, and end once
+        the row shows the last one settled. The next add waits for that read,
+        because an accepted add replaces the hub's record of a refusal, and it
+        goes again while the hub answers busy or cannot be reached. An add
+        whose answer did not arrive may have reached the hub, so a row that
+        lists one of its names counts as the hub's acceptance. A refused add
+        keeps its reason and the next is still sent. HOLD_5XX_LIMIT answers of
+        HUB_5XX in a row to one add, with a read answering before each, are
+        such a refusal. The hub rings nothing for a refused call, so this
+        does."""
+        settling = True
+        in_doubt = False
+        failures = 0
+        while _ADDS.get(id_) is state and (settling or state["held"]):
+            code, data = await self._hub_quiet("GET", "items")
+            items = data.get("items") if code == 200 and isinstance(data, dict) else None
+            if not isinstance(items, list):
+                items = None
+            row = next((i for i in items or [] if i.get("id") == id_), {})
+            if items is None or _copying(row):
+                failures = 0
+                await asyncio.sleep(HOLD_RETRY_SECONDS)
+                continue
+            if settling and row:
+                settling = False
+                state["reason"] = _add_reason(row, {}) or state["reason"]
+            if not state["held"]:
+                break
+            # a drop reads the row under this lock, so a name it reads is held or sent, not between the two
+            async with state["lock"]:
+                held = state["held"][0]
+                if in_doubt and _listed(row) & {entry["name"] for entry in held["entries"]}:
+                    code, data = 202, {}
+                elif failures == HOLD_5XX_LIMIT:
+                    # the read before each answer came back, so the hub is there and this is about the add
+                    code, data = 500, {"reason": reason}
+                else:
+                    code, data = await self._hub_quiet("POST", f"shares/{id_}/content", self._add_body(id_, held["paths"]))
+                reason = data.get("reason") if isinstance(data, dict) else ""
+                failures = failures + 1 if code in HUB_5XX else 0
+                # a read with no row may be a hub fault and a 404 alone may mean the add's path, so it takes both
+                # shortcut: with no row a send can replace a refusal the read missed, read the one share if the hub adds that
+                if code == 404 and not row:
+                    _ADDS.pop(id_, None)
+                    break
+                # shortcut: a hub that never returns keeps the adds held until the lab stops, add a limit if a row sticks
+                again = code in HUB_DOWN or (code == 409 and reason == "busy")
+                in_doubt = code in HUB_DOWN or (in_doubt and again)
+                if code in HUB_DOWN:
+                    # this send waited for a settled row, so the last add is not copying any more
+                    state["sent"] = []
+                if not again:
+                    state["held"].pop(0)
+                    if code in (202, 204):
+                        state.update(sent=held["entries"], seen=0)
+                        settling = True
+                    else:
+                        state["reason"] = reason or "no_reason"
+                    RELAY.ring(CHANGED)
+            # after a 202 the row reads running only 0.01 to 0.02 s later, and a read before that calls the add settled
+            if again or settling:
+                await asyncio.sleep(HOLD_RETRY_SECONDS)
+        RELAY.ring(CHANGED)
+
     @tornado.web.authenticated
     async def post(self, id_):
-        paths = self._kept_paths((self.get_json_body() or {}).get("paths") or [])
-        if paths is None:
+        kept = self._kept_paths((self.get_json_body() or {}).get("paths") or [])
+        if kept is None:
             return
+        paths, left_out = kept
         # The hub lands every path at the share root under its own name. It
         # refuses a taken name without saying which, and drops two paths of
         # one name after its 202, so both are answered here by name.
@@ -895,39 +1080,62 @@ class HubShareItemsHandler(_HubBase):
             return self.write_error_json(
                 400, f"Two of the chosen items are named {', '.join(twice)} - a share holds one entry per name"
             )
-        items = await self._items("share")
-        if items is None:
-            return
-        held = {
-            str(f.get("name", "")).split("/")[0]
-            for item in items if item.get("id") == id_
-            for f in item.get("files") or []
-        }
-        taken = [n for n in names if n in held]
-        if taken:
-            return self.write_error_json(
-                400, f"The share already holds {', '.join(taken)} - remove or rename it there first"
-            )
-        body = {
-            "action": "add", "paths": paths, "password": _PASSWORDS.get(id_, ""),
-            "exclude": self._hub_exclude(),
-        }
-        answer = await self._hub("POST", f"shares/{id_}/content", body)
-        if answer is None:
-            return
-        code, data = answer
-        if isinstance(data, dict) and data.get("reason") in ("password_required", "password_wrong"):
-            # the hub keeps a hash only, and this process holds the password
-            # from the moment it was set here until it restarts
-            return self.write_error_json(
-                400,
-                "The hub asks for this share's password before it adds files, and the lab does not hold "
-                "the current one - open Change Password in the share's menu, enter the same password "
-                "again, then add the files",
-            )
-        if code not in (202, 204):
-            return self._relay(code, data)
-        self.write_json({"ok": True})
+        entries = await self._entries(paths)
+        state = _add_state(id_)
+        # one drop at a time: the name check and the record of what was sent are a hub call apart
+        async with state["lock"]:
+            items = await self._items("share")
+            if items is None:
+                return
+            row = next((item for item in items if item.get("id") == id_), {})
+            listed = _listed(row)
+            coming = {entry["name"] for entry in _pending(row)}
+            taken = [n for n in names if n in listed]
+            adding = [n for n in names if n in coming]
+            refusals = []
+            if taken:
+                refusals.append(f"The share already holds {', '.join(taken)} - remove or rename it there first")
+            if adding:
+                refusals.append(f"The share is still adding {', '.join(adding)} - wait until that add ends")
+            if refusals:
+                return self.write_error_json(400, ". ".join(refusals))
+            add = {"paths": paths, "entries": entries}
+            # a later add may land while the refusal stays on the row, so a drop ends it, once a read has carried it
+            refused = _add_reason(row, state)
+            state["reason"] = "" if refused == state["shown"] else refused
+            if _holding(state):
+                state["held"].append(add)
+                RELAY.ring(CHANGED)
+                return self.write_json(_with_left_out({"ok": True}, left_out))
+            # an accepted add replaces the hub's record, so a send follows a read that shows the last add settled
+            busy = _copying(row)
+            if not busy:
+                answer = await self._hub("POST", f"shares/{id_}/content", self._add_body(id_, paths))
+                if answer is None:
+                    return
+                code, data = answer
+                reason = data.get("reason") if isinstance(data, dict) else ""
+                if reason in ("password_required", "password_wrong"):
+                    # the hub keeps a hash only, and this process holds the password
+                    # from the moment it was set here until it restarts
+                    return self.write_error_json(
+                        400,
+                        "The hub asks for this share's password before it adds files, and the lab does not hold "
+                        "the current one - open Change Password in the share's menu, enter the same password "
+                        "again, then add the files",
+                    )
+                busy = code == 409 and reason == "busy"
+                if not busy and code not in (202, 204):
+                    return self._relay(code, data)
+            if busy:
+                state["held"].append(add)
+                state["task"] = asyncio.ensure_future(self._hold_task(id_, state))
+                _ADD_TASKS.add(state["task"])
+                state["task"].add_done_callback(_ADD_TASKS.discard)
+                RELAY.ring(CHANGED)
+            else:
+                state.update(sent=entries, seen=0)
+            self.write_json(_with_left_out({"ok": True}, left_out))
 
     @tornado.web.authenticated
     async def delete(self, id_):
@@ -1240,6 +1448,24 @@ _COOKIES: dict[tuple[str, str], str] = {}
 _UPLOADS: dict[str, dict] = {}
 _UPLOAD_TASKS: set = set()
 
+# adds by share id, kept here so that a page reload, a second tab and the CLI all see them
+# shortcut: a lab restart loses the held adds, persist them if a restart during a copy turns up
+_ADDS: dict[str, dict] = {}
+_ADD_TASKS: set = set()
+HOLD_RETRY_SECONDS = 1
+# a proxy answering for a hub that is away, or the hub itself on a failed fetch
+HUB_5XX = (502, 503, 504)
+# no answer at all, or one of those
+HUB_DOWN = (0, *HUB_5XX)
+HOLD_5XX_LIMIT = 5
+
+
+def _add_state(id_: str) -> dict:
+    return _ADDS.setdefault(
+        id_, {"sent": [], "seen": 0, "held": [], "reason": "", "shown": "", "lock": asyncio.Lock(), "task": None}
+    )
+
+
 # the page each connection read last: a request's page lists no uploads, so
 # while this lab's own upload runs the panel's progress reads are answered
 # from here and send nothing to the link
@@ -1374,6 +1600,21 @@ def remote_entries(files: list[dict]) -> list[dict]:
     return list(entries.values())
 
 
+# shortcut: a long upload answers the rows around the file in flight only, page them if an owner asks for the whole list
+UPLOAD_ROWS = 100
+
+
+def _upload_rows(upload: dict) -> list[dict]:
+    """Each file of a running upload with the fraction of it sent, in sent order."""
+    index = upload["index"]
+    start = max(0, index - UPLOAD_ROWS // 2)
+    rows = []
+    for at, f in enumerate(upload["files"][start:start + UPLOAD_ROWS], start):
+        fraction = 1 if at < index else min(1, f["copied"] / f["size"]) if at == index and f["size"] else 0
+        rows.append({"name": f["name"], "size": f["size"], "fraction": fraction})
+    return rows
+
+
 def manifest_from_page(page: dict, conn: dict, upload: dict | None) -> dict:
     """What a connected row draws: the record as its page reads now, and this
     user's own upload into a request as the lab is sending it."""
@@ -1393,6 +1634,7 @@ def manifest_from_page(page: dict, conn: dict, upload: dict | None) -> dict:
         "uploaded": upload.get("count", 0) if state in ("done", "refused") else 0,
         "upload_reason": upload.get("reason", "") if state == "refused" else "",
         "progress": {"copied": upload["copied"], "total": upload["total"]} if state == "running" else None,
+        "files": _upload_rows(upload) if state == "running" else [],
     }
     if page["kind"] == "share":
         manifest["entries"] = remote_entries(page["files"])
@@ -1765,8 +2007,6 @@ class HubConnectionUploadHandler(_HubConnectionBase):
         paths = (self.get_json_body() or {}).get("paths") or []
         if not isinstance(paths, list) or not paths:
             return self.write_error_json(400, "'paths' must be a non-empty list")
-        if _UPLOADS.get(key, {}).get("state") == "running":
-            return self.write_error_json(409, "An upload into this request is still running - wait for it to finish")
         files = self._files(paths)
         if files is None:
             return
@@ -1781,12 +2021,20 @@ class HubConnectionUploadHandler(_HubConnectionBase):
             return self.write_error_json(
                 413, f"This request accepts files up to {_size_text(cap)}; {', '.join(big)} {verb} larger"
             )
-        state = _UPLOADS[key] = {
-            "state": "running", "copied": 0, "total": sum(f.stat().st_size for f in files), "count": 0, "reason": "",
-        }
-        task = asyncio.ensure_future(self._send(conn, files, state))
-        _UPLOAD_TASKS.add(task)
-        task.add_done_callback(_UPLOAD_TASKS.discard)
+        added = [{"path": f, "name": f.name, "size": f.stat().st_size, "copied": 0} for f in files]
+        total = sum(f["size"] for f in added)
+        state = _UPLOADS.get(key)
+        if state and state["state"] == "running":
+            # `_send` walks this list by index, so these go after the rest
+            state["files"] += added
+            state["total"] += total
+        else:
+            state = _UPLOADS[key] = {
+                "state": "running", "copied": 0, "total": total, "count": 0, "reason": "", "files": added, "index": 0,
+            }
+            task = asyncio.ensure_future(self._send(conn, state))
+            _UPLOAD_TASKS.add(task)
+            task.add_done_callback(_UPLOAD_TASKS.discard)
         self.write_json({"ok": True, "uploaded": [Path(p).name for p in paths]})
 
     def _files(self, paths: list) -> list[Path] | None:
@@ -1824,20 +2072,22 @@ class HubConnectionUploadHandler(_HubConnectionBase):
             return None
         return files
 
-    async def _send(self, conn: dict, files: list[Path], state: dict) -> None:
-        """Send the files in turn; the first refusal ends the upload and is
-        kept as its reason."""
+    async def _send(self, conn: dict, state: dict) -> None:
+        """Send the files in turn, those a further drop adds meanwhile too;
+        the first refusal ends the upload and is kept as its reason."""
         client = tornado.httpclient.AsyncHTTPClient()
         reason = ""
         try:
-            for path in files:
+            while state["index"] < len(state["files"]):
                 if _UPLOADS.get(conn["key"]) is not state:
                     # the connection was removed: send nothing more
                     break
-                reason = await self._send_one(client, conn, path, state)
+                file = state["files"][state["index"]]
+                reason = await self._send_one(client, conn, file, state)
                 if reason:
                     break
                 state["count"] += 1
+                state["index"] += 1
         except PeerUntrusted as exc:
             # past tense and no instruction: Connect Again may trust the new
             # certificate while this reason still stands for the last upload
@@ -1846,10 +2096,13 @@ class HubConnectionUploadHandler(_HubConnectionBase):
             # the lab's own sentence: the hub never refused this
             reason = str(exc)
         except OSError as exc:
-            reason = f"Could not read {path.name} from the workspace: {exc.strerror or exc}"
+            reason = f"Could not read {file['name']} from the workspace: {exc.strerror or exc}"
+        except Exception as exc:
+            # a task that ended with the state running would leave a later drop on a list nothing reads
+            reason = f"Could not send {file['name']}: {exc}"
         state.update(state="refused" if reason else "done", reason=reason)
 
-    async def _send_one(self, client, conn: dict, path: Path, state: dict) -> str:
+    async def _send_one(self, client, conn: dict, file: dict, state: dict) -> str:
         """Send one file: '' when it landed, else the reason it did not. A
         request that asks for its password is unlocked once with the stored
         one; with none stored, or that one refused, the owner changed it."""
@@ -1857,12 +2110,14 @@ class HubConnectionUploadHandler(_HubConnectionBase):
 
         def sent(n: int) -> None:
             state["copied"] += n
+            file["copied"] += n
 
         async def send() -> str:
             state["copied"] = start
+            file["copied"] = 0
             try:
                 await _post_file(
-                    client, self._address(conn["link"]) + "/u", path, path.name,
+                    client, self._address(conn["link"]) + "/u", file["path"], file["name"],
                     validate_cert=self.verify_peer_tls, headers=self._cookie(conn), progress=sent,
                     certificate=conn.get("certificate", ""),
                 )

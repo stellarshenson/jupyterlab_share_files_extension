@@ -24,6 +24,44 @@ test('should emit an activation console message', async ({ page }) => {
   ).toHaveLength(1);
 });
 
+test('a standalone lab opens no change stream and reads on the timer', async ({
+  page
+}) => {
+  // ACC-HUBM-231-STREAM-SOCKET: the change stream is the hub's
+  const API = '/jupyterlab-share-files-extension/api';
+  const sockets: string[] = [];
+  const reads: string[] = [];
+  page.on('websocket', (ws: any) => {
+    if (ws.url().includes(`${API}/stream`)) {
+      sockets.push(ws.url());
+    }
+  });
+  page.on('request', (r: any) => {
+    if (r.method() === 'GET' && r.url().includes(`${API}/shares`)) {
+      reads.push(r.url());
+    }
+  });
+  await page.goto();
+  await page.sidebar.openTab('jupyterlab-share-files-extension-panel');
+  await expect(
+    page.locator('#jupyterlab-share-files-extension-panel')
+  ).toBeVisible();
+  await page.evaluate(async () => {
+    const registry = await (window as any).galata.getPlugin(
+      '@jupyterlab/apputils-extension:settings'
+    );
+    await registry.set(
+      '@stellarshenson/jupyterlab-share-files-extension:plugin',
+      'pollIntervalSeconds',
+      2
+    );
+  });
+  const seen = reads.length;
+  await page.waitForTimeout(5000);
+  expect(sockets).toEqual([]);
+  expect(reads.length - seen).toBeGreaterThanOrEqual(2);
+});
+
 test('the test lab reads no Cloudflare configuration', async ({ request }) => {
   // the developer's own config would let the suite start a real tunnel
   const response = await request.get(

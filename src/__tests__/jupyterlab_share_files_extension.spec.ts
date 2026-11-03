@@ -7,6 +7,8 @@
  */
 
 import {
+  addReasonText,
+  entryRange,
   hasTunnelPending,
   hubTunnelLook,
   hubReasonText,
@@ -94,11 +96,29 @@ describe('hub refusal slugs', () => {
     );
   });
 
+  it("says an add's password refusal is the lab's, not the group's", () => {
+    for (const slug of ['password_required', 'password_wrong']) {
+      expect(addReasonText(slug)).toMatch(/Change Password/);
+      expect(addReasonText(slug)).not.toMatch(/group/);
+    }
+    expect(addReasonText('over_cap')).toBe(hubReasonText('over_cap'));
+  });
+
   it('answers an unknown slug with a sentence, never the slug itself', () => {
     const text = hubReasonText('something_new');
     expect(text).not.toContain('something_new');
     expect(text).toMatch(/does not know/);
     expect(hubReasonText('')).toBe('');
+  });
+
+  it('says the lab, not the hub, when the lab could not send an add', () => {
+    expect(hubReasonText('lab_failed')).toBe(
+      'The lab could not send this add.'
+    );
+  });
+
+  it('says so when the hub refused an add and named no reason', () => {
+    expect(addReasonText('no_reason')).toBe('The hub gave no reason.');
   });
 });
 
@@ -286,18 +306,19 @@ describe('hub cloud icon', () => {
 describe('hub-mode change stream url', () => {
   const base = {
     baseUrl: 'https://hub.example.com/user/alice/',
+    wsUrl: 'wss://hub.example.com/user/alice/',
     token: 'abc def'
   } as any;
 
-  it('points at the extension stream route under the lab base url', () => {
+  it('points at the extension stream route under the lab websocket url', () => {
     expect(streamUrl({ ...base, appendToken: false })).toBe(
-      'https://hub.example.com/user/alice/jupyterlab-share-files-extension/api/stream'
+      'wss://hub.example.com/user/alice/jupyterlab-share-files-extension/api/stream'
     );
   });
 
-  it('carries the token in the query only when the settings say so - an EventSource cannot set headers', () => {
+  it('carries the token in the query only when the settings say so - a WebSocket cannot set headers', () => {
     expect(streamUrl({ ...base, appendToken: true })).toBe(
-      'https://hub.example.com/user/alice/jupyterlab-share-files-extension/api/stream?token=abc%20def'
+      'wss://hub.example.com/user/alice/jupyterlab-share-files-extension/api/stream?token=abc%20def'
     );
     expect(streamUrl({ ...base, appendToken: true, token: '' })).not.toContain(
       'token='
@@ -597,5 +618,29 @@ describe('the line after saving a connected share', () => {
       message: 'Nothing saved from Report: the share is empty',
       type: 'warning'
     });
+  });
+});
+
+describe('the range a shift-click selects', () => {
+  const order = ['a.txt', 'b.txt', 'c.txt', 'd.txt'];
+
+  it('takes every entry from the anchor to the clicked one, in display order', () => {
+    expect(entryRange(order, 'a.txt', 'c.txt')).toEqual([
+      'a.txt',
+      'b.txt',
+      'c.txt'
+    ]);
+    // a click above the anchor takes the same entries
+    expect(entryRange(order, 'd.txt', 'b.txt')).toEqual([
+      'b.txt',
+      'c.txt',
+      'd.txt'
+    ]);
+    expect(entryRange(order, 'b.txt', 'b.txt')).toEqual(['b.txt']);
+  });
+
+  it('takes the clicked entry alone when the anchor is not listed', () => {
+    expect(entryRange(order, '', 'c.txt')).toEqual(['c.txt']);
+    expect(entryRange(order, 'gone.txt', 'c.txt')).toEqual(['c.txt']);
   });
 });

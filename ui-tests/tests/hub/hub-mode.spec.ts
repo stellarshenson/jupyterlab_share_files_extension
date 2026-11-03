@@ -1,7 +1,9 @@
 import { expect, test } from '@jupyterlab/galata';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { readTrough, watchTrough } from '../helpers/breath';
-import { dragOnto } from '../helpers/drag';
+import { dragOnto, dragOver } from '../helpers/drag';
 
 /**
  * Hub mode end to end: a JupyterLab spawned with galaxahub's contract
@@ -19,6 +21,9 @@ const TUNNEL = `http://localhost:${process.env.MOCK_HUB_PORT || '8765'}`;
 // the group's policy id, the first segment of every public link
 const POLICY = 'mockpolicy';
 const CLOUD = `${PANEL} .jp-ShareFilesPanel-cloudIndicator`;
+// a listed entry takes the keyboard focus, a file still in transit does not
+const LISTED =
+  '.jp-ShareFilesPanel-entry[data-row-key] .jp-ShareFilesPanel-entryName';
 
 /** Call the extension API from the page so the request carries the lab's
  * own XSRF cookie, exactly as the panel does. */
@@ -130,6 +135,54 @@ async function notes(page: any, type: string, text: string): Promise<number> {
   ).length;
 }
 
+/** Record each text the named row's meta shows, for a test of what it must
+ * not show between two reads. */
+function watchMeta(page: any, title: string): Promise<void> {
+  return page.evaluate(
+    ([panel, name]: [string, string]) => {
+      const w = window as any;
+      w.__meta = [];
+      const read = () => {
+        const text = Array.from(
+          document.querySelectorAll(`${panel} .jp-ShareFilesPanel-item`)
+        )
+          .find(el => el.textContent?.includes(name))
+          ?.querySelector('.jp-ShareFilesPanel-itemMeta')
+          ?.textContent?.trim();
+        if (text && text !== w.__meta[w.__meta.length - 1]) {
+          w.__meta.push(text);
+        }
+      };
+      new MutationObserver(read).observe(document.querySelector(panel)!, {
+        subtree: true,
+        childList: true,
+        characterData: true
+      });
+      read();
+    },
+    [PANEL, title]
+  );
+}
+
+/** Run the panel's add on `paths`, as a drop on the share's row does: the file
+ * browser lists no dot-named row to drag. */
+async function addThroughPanel(
+  page: any,
+  shareId: string,
+  paths: string[]
+): Promise<void> {
+  await page.evaluate(
+    async ([panelId, id, chosen]: [string, string, string[]]) => {
+      const { shell } = (window as any).jupyterapp;
+      const panel = Array.from<any>(shell.widgets('right')).find(
+        w => w.id === panelId
+      );
+      await panel.addToShareFlow(id, chosen);
+    },
+    [PANEL.slice(1), shareId, paths]
+  );
+}
+
 /** The hub stops answering, as the panel sees it: api/info reports the hub
  * unavailable and the lists answer 502 hub_unavailable. */
 async function hubOutage(page: any): Promise<void> {
@@ -152,6 +205,82 @@ async function hubOutage(page: any): Promise<void> {
       route.fulfill({ status: 502, json: down })
     );
   }
+}
+
+/** The panel's stream ends at the test, as behind a proxy that buffers it:
+ * no ring arrives, the browser reports no failure and no timer takes over.
+ * Returns the sockets the panel opened. The page loads again because the
+ * panel opens its stream at startup. */
+async function blockStream(page: any): Promise<any[]> {
+  const sockets: any[] = [];
+  await page.routeWebSocket(`**${API}/stream*`, (ws: any) => {
+    sockets.push(ws);
+  });
+  await page.reload();
+  await openPanel(page);
+  await expect.poll(() => sockets.length).toBe(1);
+  // the open's own refresh lands before a test counts or holds a read
+  await page.waitForTimeout(1000);
+  return sockets;
+}
+
+/** The panel's reads of the share list from now on, as a list that grows. */
+function countShareReads(page: any): string[] {
+  const reads: string[] = [];
+  page.on('request', (r: any) => {
+    if (r.method() === 'GET' && /\/api\/shares(\?|$)/.test(r.url())) {
+      reads.push(r.url());
+    }
+  });
+  return reads;
+}
+
+/** A new share whose add of `name` the hub copies until the test posts
+ * `_control/release`. Returns the row, which reads adding. */
+async function aHeldAdd(
+  page: any,
+  request: any,
+  title: string,
+  name: string
+): Promise<any> {
+  await request.post(`${HUB}/_control/add`, { data: { hold: true } });
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: title,
+    paths: []
+  });
+  const add = await api(page, 'POST', `${API}/shares/${made.data.id}/items`, {
+    paths: [name]
+  });
+  expect(add.status).toBe(200);
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: title
+  });
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    /adding/
+  );
+  return row;
+}
+
+/** The next read of the share list reads the lab at once and answers the
+ * panel only when the test calls `answer`. */
+async function holdNextRead(page: any): Promise<any> {
+  const state = { held: false, answered: false };
+  let answer = (): void => undefined;
+  const gate = new Promise<void>(resolve => (answer = resolve));
+  await page.route(`**${API}/shares*`, async (route: any) => {
+    if (state.held || route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    state.held = true;
+    const response = await route.fetch();
+    await gate;
+    await route.fulfill({ response });
+    state.answered = true;
+  });
+  return { state, answer: () => answer() };
 }
 
 test.beforeEach(async ({ request }) => {
@@ -594,9 +723,849 @@ test('an add the hub refuses shows the hub reason on the row', async ({
   await row.locator('.jp-ShareFilesPanel-itemHeader').click();
   await expect(
     row.locator('.jp-ShareFilesPanel-empty', {
-      hasText: 'refused the last add'
+      hasText: 'refused an add'
     })
   ).toContainText('larger than your group allows');
+});
+
+test('two drops during a running add both land, with no busy notice and adding on the row until the last lands', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-219, ACC-EDIT-220, DEF-HUB-138: the hub answers busy to the
+  // second drop and the lab holds both, one copy after the other
+  await request.post(`${HUB}/_control/add`, { data: { seconds: 4 } });
+  for (const name of ['held-a.txt', 'held-b.txt', 'held-c.txt']) {
+    await page.contents.uploadContent(name, 'text', name);
+  }
+  await openPanel(page);
+  await api(page, 'POST', `${API}/shares`, {
+    name: 'back-to-back',
+    paths: []
+  });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'back-to-back'
+  });
+  const meta = row.locator('.jp-ShareFilesPanel-itemMeta');
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await watchMeta(page, 'back-to-back');
+
+  await dragOnto(page, 'held-a.txt', row);
+  await expect(meta).toHaveText(/adding/);
+  await dragOnto(page, 'held-b.txt', row);
+  await dragOnto(page, 'held-c.txt', row);
+
+  await expect(row.locator(LISTED)).toHaveText(
+    ['held-a.txt', 'held-b.txt', 'held-c.txt'],
+    { timeout: 30000 }
+  );
+  await expect(meta).toHaveText('3 items');
+  expect(await notes(page, 'warning', 'busy copying')).toBe(0);
+  // from the first adding on, the row counts its items once, at the end
+  const seen: string[] = await page.evaluate(() => (window as any).__meta);
+  expect(
+    seen
+      .slice(seen.findIndex(text => text.includes('adding')))
+      .filter(text => text.includes('item'))
+  ).toEqual(['3 items']);
+});
+
+test('each item of an add tints its own row by the fraction copied', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-217, ACC-PROG-218: the hub reports one copied and total for the
+  // whole add, and the lab divides it over the items in the order it sent them
+  await request.post(`${HUB}/_control/add`, { data: { hold: true } });
+  await request.post(`${HUB}/_control/progress`, {
+    data: { copied: 50, total: 500 }
+  });
+  await page.contents.uploadContent('a'.repeat(100), 'text', 'tint-a.txt');
+  await page.contents.uploadContent('b'.repeat(300), 'text', 'tint-b.txt');
+  await page.contents.uploadContent('c'.repeat(100), 'text', 'tint-c.txt');
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'tinted-items',
+    paths: []
+  });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'tinted-items'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const entry = (name: string) =>
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: name });
+  const layer = (name: string) =>
+    entry(name).locator('.jp-ShareFilesPanel-itemProgress');
+
+  await addThroughPanel(page, made.data.id, [
+    'tint-a.txt',
+    'tint-b.txt',
+    'tint-c.txt'
+  ]);
+
+  await expect(layer('tint-a.txt')).toHaveAttribute('aria-valuenow', '50');
+  await expect(layer('tint-a.txt')).toHaveAttribute(
+    'aria-label',
+    'Copying tint-a.txt'
+  );
+  await expect(layer('tint-b.txt')).toHaveAttribute('aria-valuenow', '0');
+  await expect(layer('tint-c.txt')).toHaveAttribute('aria-valuenow', '0');
+  // half the row's width for half the item
+  const half = (await layer('tint-a.txt').boundingBox())!;
+  const whole = (await entry('tint-a.txt').boundingBox())!;
+  expect(Math.abs(half.width - whole.width / 2)).toBeLessThan(2);
+  expect(half.height).toBe(whole.height);
+  // mid-transfer: the first item is copied and wears no layer, the second
+  // is half copied, the third waits with a layer 2px wide (the min-width)
+  await request.post(`${HUB}/_control/progress`, {
+    data: { copied: 250, total: 500 }
+  });
+  await expect(layer('tint-b.txt')).toHaveAttribute('aria-valuenow', '50');
+  await expect(entry('tint-a.txt')).toHaveCount(1);
+  await expect(layer('tint-a.txt')).toHaveCount(0);
+  await expect(layer('tint-c.txt')).toHaveAttribute('aria-valuenow', '0');
+  await expect(layer('tint-c.txt')).toHaveCSS('width', '2px');
+
+  await request.post(`${HUB}/_control/release`);
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '3 items'
+  );
+  await expect(row.locator(LISTED)).toHaveText([
+    'tint-a.txt',
+    'tint-b.txt',
+    'tint-c.txt'
+  ]);
+  await expect(row.locator('.jp-ShareFilesPanel-itemProgress')).toHaveCount(0);
+  for (const name of ['tint-a.txt', 'tint-b.txt', 'tint-c.txt']) {
+    await page.contents.deleteFile(name);
+  }
+});
+
+test('a file in transit has no remove button and takes no focus', async ({
+  page,
+  request
+}) => {
+  // a transfer row is there to be read: nothing on it acts on a file the
+  // share does not hold yet
+  await request.post(`${HUB}/_control/add`, { data: { hold: true } });
+  await page.contents.uploadContent('x'.repeat(10), 'text', 'in-transit.txt');
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'no-remove',
+    paths: []
+  });
+  await request.post(`${HUB}/_control/files`, {
+    data: { id: made.data.id, names: ['listed.txt'] }
+  });
+  const add = await api(page, 'POST', `${API}/shares/${made.data.id}/items`, {
+    paths: ['in-transit.txt']
+  });
+  expect(add.status).toBe(200);
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'no-remove'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const listed = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'listed.txt'
+  });
+  const transit = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'in-transit.txt'
+  });
+
+  await expect(
+    transit.locator('.jp-ShareFilesPanel-itemProgress')
+  ).toHaveAttribute('aria-valuenow', '50');
+  // a file in transit comes after the entries the share lists
+  await expect(row.locator('.jp-ShareFilesPanel-entryName')).toHaveText([
+    'listed.txt',
+    'in-transit.txt'
+  ]);
+  await expect(listed.locator('.jp-ShareFilesPanel-entryRemove')).toHaveCount(
+    1
+  );
+  await expect(transit.locator('.jp-ShareFilesPanel-entryRemove')).toHaveCount(
+    0
+  );
+  // no tab stop, so no Delete, F2 or menu key reaches it
+  await expect(listed).toHaveAttribute('tabindex', '0');
+  expect(await transit.getAttribute('tabindex')).toBeNull();
+  // a right-click opens no menu of the panel
+  await transit.click({ button: 'right' });
+  await expect(
+    page.locator('.lm-Menu-item', { hasText: 'Remove from Share' })
+  ).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  // a name the share lists already is drawn once, as the listed entry
+  await page.route(`**${API}/shares*`, async (route: any) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const share of body.shares) {
+      share.pending = [
+        ...(share.pending || []),
+        { name: 'listed.txt', size: 7, held: true, fraction: 0 }
+      ];
+    }
+    await route.fulfill({ response, json: body });
+  });
+  await refreshPanel(page);
+  await expect(listed).toHaveCount(1);
+  await expect(listed.locator('.jp-ShareFilesPanel-itemProgress')).toHaveCount(
+    0
+  );
+  await page.unroute(`**${API}/shares*`);
+  // once the file has landed it is a listed entry, which can be removed
+  await request.post(`${HUB}/_control/release`);
+  await expect(transit.locator('.jp-ShareFilesPanel-entryRemove')).toHaveCount(
+    1
+  );
+  await page.contents.deleteFile('in-transit.txt');
+});
+
+test('a file in transit is drawn at the top of the share and not in its folders', async ({
+  page,
+  request
+}) => {
+  // an added item lands at the top of the share, so an open folder lists
+  // only what the hub holds in it
+  await request.post(`${HUB}/_control/add`, { data: { hold: true } });
+  await page.contents.uploadContent('x'.repeat(10), 'text', 'top-transit.txt');
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'transit-top',
+    paths: []
+  });
+  await request.post(`${HUB}/_control/files`, {
+    data: { id: made.data.id, names: ['inner/kept.txt'] }
+  });
+  const add = await api(page, 'POST', `${API}/shares/${made.data.id}/items`, {
+    paths: ['top-transit.txt']
+  });
+  expect(add.status).toBe(200);
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'transit-top'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const transit = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'top-transit.txt'
+  });
+  await expect(
+    transit.locator('.jp-ShareFilesPanel-itemProgress')
+  ).toHaveAttribute('aria-valuenow', '50');
+
+  await row
+    .locator('.jp-ShareFilesPanel-entry', { hasText: 'inner' })
+    .dblclick();
+  await expect(row.locator(LISTED)).toHaveText(['..', 'kept.txt']);
+  await expect(transit).toHaveCount(0);
+  await row.locator('.jp-ShareFilesPanel-entry', { hasText: '..' }).dblclick();
+  await expect(
+    transit.locator('.jp-ShareFilesPanel-itemProgress')
+  ).toHaveAttribute('aria-valuenow', '50');
+  await request.post(`${HUB}/_control/release`);
+  await expect(
+    row.locator(LISTED).filter({ hasText: 'top-transit.txt' })
+  ).toHaveCount(1);
+  await page.contents.deleteFile('top-transit.txt');
+});
+
+test('a share the hub still stages lists its files in transit', async ({
+  page
+}) => {
+  // ACC-PROG-217: a create's files are copied as an add's are, and the row
+  // lists them instead of a line saying it is empty
+  await page.contents.uploadContent('x'.repeat(10), 'text', 'staged.txt');
+  await openPanel(page);
+  await api(page, 'POST', `${API}/shares`, {
+    name: 'stay-staging-rows',
+    paths: ['staged.txt']
+  });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'stay-staging-rows'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await expect(
+    row
+      .locator('.jp-ShareFilesPanel-entry', { hasText: 'staged.txt' })
+      .locator('.jp-ShareFilesPanel-itemProgress')
+  ).toHaveAttribute('aria-valuenow', '50');
+  await expect(row.locator('.jp-ShareFilesPanel-empty')).toHaveCount(0);
+  await page.contents.deleteFile('staged.txt');
+});
+
+test('a drop on a collapsed share opens the row on the file it copies', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-229: the row the transfer goes to shows its files, at the top of
+  // the share where they are drawn, even when the owner closed it in a folder
+  await request.post(`${HUB}/_control/add`, { data: { hold: true } });
+  await page.contents.uploadContent('x'.repeat(10), 'text', 'opens-row.txt');
+  await page.contents.uploadContent('y'.repeat(10), 'text', 'opens-held.txt');
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'opens-on-drop',
+    paths: []
+  });
+  await request.post(`${HUB}/_control/files`, {
+    data: { id: made.data.id, names: ['inner/kept.txt'] }
+  });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'opens-on-drop'
+  });
+  const header = row.locator('.jp-ShareFilesPanel-itemHeader');
+  const twisty = row.locator('.jp-ShareFilesPanel-itemTwisty');
+  const layer = (name: string) =>
+    row
+      .locator('.jp-ShareFilesPanel-entry', { hasText: name })
+      .locator('.jp-ShareFilesPanel-itemProgress');
+  await header.click();
+  await row
+    .locator('.jp-ShareFilesPanel-entry', { hasText: 'inner' })
+    .dblclick();
+  await expect(row.locator(LISTED)).toHaveText(['..', 'kept.txt']);
+  await header.click();
+  await expect(twisty).toHaveAttribute('aria-expanded', 'false');
+
+  await dragOnto(page, 'opens-row.txt', row);
+
+  await expect(twisty).toHaveAttribute('aria-expanded', 'true');
+  await expect(layer('opens-row.txt')).toHaveAttribute('aria-valuenow', '50');
+  // a drop the lab holds behind the running add opens the row as well
+  await header.click();
+  await expect(twisty).toHaveAttribute('aria-expanded', 'false');
+  await dragOnto(page, 'opens-held.txt', row);
+  await expect(twisty).toHaveAttribute('aria-expanded', 'true');
+  await expect(layer('opens-held.txt')).toHaveAttribute('aria-valuenow', '0');
+  await request.post(`${HUB}/_control/release`);
+  // the lab sends the held add once the first lands, and the hub copies it
+  await expect(layer('opens-held.txt')).toHaveAttribute('aria-valuenow', '50', {
+    timeout: 15000
+  });
+  await request.post(`${HUB}/_control/release`);
+  await expect(row.locator(LISTED)).toHaveText([
+    'inner/',
+    'opens-row.txt',
+    'opens-held.txt'
+  ]);
+  await page.contents.deleteFile('opens-row.txt');
+  await page.contents.deleteFile('opens-held.txt');
+});
+
+test('a row the owner closes during a transfer stays closed', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-229: the transfer opens the row once, and the reads that follow
+  // it do not open it again
+  await request.post(`${HUB}/_control/add`, { data: { hold: true } });
+  await page.contents.uploadContent('x'.repeat(10), 'text', 'stays-shut.txt');
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'stays-shut',
+    paths: []
+  });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'stays-shut'
+  });
+  const twisty = row.locator('.jp-ShareFilesPanel-itemTwisty');
+  await addThroughPanel(page, made.data.id, ['stays-shut.txt']);
+  await expect(twisty).toHaveAttribute('aria-expanded', 'true');
+
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await expect(twisty).toHaveAttribute('aria-expanded', 'false');
+  const reads = countShareReads(page);
+  await request.post(`${HUB}/_control/progress`, {
+    data: { copied: 30, total: 42 }
+  });
+  // the row follows the copy once a second, and each read renders it
+  await expect.poll(() => reads.length, { timeout: 5000 }).toBeGreaterThan(2);
+  await expect(twisty).toHaveAttribute('aria-expanded', 'false');
+  await request.post(`${HUB}/_control/release`);
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '1 item'
+  );
+  await expect(twisty).toHaveAttribute('aria-expanded', 'false');
+  await page.contents.deleteFile('stays-shut.txt');
+});
+
+test('a selection holding a dot-named folder adds the plain file and names the folder', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-207, ACC-EDIT-208, DEF-HUB-140: the hub refuses a whole add over
+  // one such name, so the lab sends the rest
+  await page.contents.uploadContent('plain', 'text', 'dot-selection.md');
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'dot-selection',
+    paths: []
+  });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'dot-selection'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+
+  await addThroughPanel(page, made.data.id, [
+    '.images-mockup',
+    'dot-selection.md'
+  ]);
+
+  await expect(row.locator('.jp-ShareFilesPanel-entryName')).toHaveText(
+    'dot-selection.md'
+  );
+  expect(await notes(page, 'warning', 'Not added: .images-mockup')).toBe(1);
+  const calls = (await (await request.get(`${HUB}/_control/calls`)).json())
+    .calls;
+  const added = calls.filter((c: any) => c.path.endsWith('/content'));
+  expect(added.map((c: any) => JSON.parse(c.body).paths)).toEqual([
+    ['dot-selection.md']
+  ]);
+});
+
+test('a held add the hub refuses shows its reason and the next held add lands', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-221: the name is free at the drop and taken when the add is sent
+  await request.post(`${HUB}/_control/add`, { data: { seconds: 2 } });
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'held-refusal',
+    paths: []
+  });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'held-refusal'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const items = `${API}/shares/${made.data.id}/items`;
+  for (const name of ['running.txt', 'clashes.txt', 'held-last.txt']) {
+    const add = await api(page, 'POST', items, { paths: [name] });
+    expect(add.status).toBe(200);
+  }
+  await request.post(`${HUB}/_control/files`, {
+    data: { id: made.data.id, names: ['clashes.txt'] }
+  });
+
+  const entry = (name: string) => row.locator(LISTED, { hasText: name });
+  await expect(entry('held-last.txt')).toHaveCount(1, { timeout: 15000 });
+  await expect(entry('running.txt')).toHaveCount(1);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-empty', {
+      hasText: 'refused an add'
+    })
+  ).toContainText('already holds an entry');
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '3 items - add refused'
+  );
+  expect(await notes(page, 'warning', 'refused an add')).toBe(1);
+});
+
+test('a held add refused for the password says how to set it again', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-221: the lab lost the password, and no group rule is the cause
+  await request.post(`${HUB}/_control/add`, { data: { seconds: 2 } });
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'held-password',
+    paths: []
+  });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'held-password'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const items = `${API}/shares/${made.data.id}/items`;
+  for (const name of ['pw-running.txt', 'refuse-password.txt']) {
+    const add = await api(page, 'POST', items, { paths: [name] });
+    expect(add.status).toBe(200);
+  }
+
+  await expect(
+    row.locator('.jp-ShareFilesPanel-empty', { hasText: 'refused an add' })
+  ).toContainText('open Change Password', { timeout: 15000 });
+  await page
+    .locator('.Toastify__toast', { hasText: 'refused an add' })
+    .getByRole('button', { name: 'Show all' })
+    .click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText('then add the files');
+  await dialog.locator('.jp-mod-accept').click();
+});
+
+test('a row follows the hub once a second with no ring, and the reads stop when it settles', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-230, DEF-HUB-141: the row depends on no ring from the stream
+  await blockStream(page);
+  const row = await aHeldAdd(page, request, 'no-ring', 'no-ring.txt');
+  // a second read of the copying row arms no second timer
+  await refreshPanel(page);
+  const reads = countShareReads(page);
+
+  await page.waitForTimeout(3000);
+  expect(reads.length).toBeGreaterThanOrEqual(2);
+  expect(reads.length).toBeLessThanOrEqual(4);
+  await request.post(`${HUB}/_control/release`);
+
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '1 item',
+    { timeout: 3000 }
+  );
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await expect(row.locator('.jp-ShareFilesPanel-entryName')).toHaveText(
+    'no-ring.txt'
+  );
+  const settled = reads.length;
+  await page.waitForTimeout(3000);
+  expect(reads.length).toBe(settled);
+});
+
+test("a create's staging row follows the hub with no ring", async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-230: a create reads staging, and the hub lands it by itself
+  await blockStream(page);
+  await request.post(`${HUB}/_control/staging`, { data: { seconds: 2 } });
+  await openPanel(page);
+  await api(page, 'POST', `${API}/shares`, {
+    name: 'no-ring-create',
+    paths: ['no-ring-create.txt']
+  });
+  await refreshPanel(page);
+  const meta = page
+    .locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+      hasText: 'no-ring-create'
+    })
+    .locator('.jp-ShareFilesPanel-itemMeta');
+  await expect(meta).toContainText('staging');
+  await expect(meta).toHaveText('1 item', { timeout: 5000 });
+});
+
+test('an older read answering late leaves the row as the newer read showed it', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-230: the read of adding answers after the read of the landed file
+  await blockStream(page);
+  const row = await aHeldAdd(page, request, 'late-read', 'late-read.txt');
+  const meta = row.locator('.jp-ShareFilesPanel-itemMeta');
+  const older = await holdNextRead(page);
+
+  const refresh = page.locator(`${PANEL} button[title="Refresh"]`);
+  await refresh.click();
+  await expect.poll(() => older.state.held).toBe(true);
+  await request.post(`${HUB}/_control/release`);
+  await refresh.click();
+  await expect(meta).toHaveText('1 item');
+  // a read that heals the row a second later must not hide one wrong render
+  await watchMeta(page, 'late-read');
+  older.answer();
+  await expect.poll(() => older.state.answered).toBe(true);
+  await page.waitForTimeout(2500);
+  expect(await page.evaluate(() => (window as any).__meta)).toEqual(['1 item']);
+});
+
+test('a read that throws leaves the reads going while the row copies', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-230: on a stream that rings nothing, no click on Refresh is
+  // needed after a failed read
+  await blockStream(page);
+  const row = await aHeldAdd(page, request, 'read-fails', 'read-fails.txt');
+  let failed = 0;
+  await page.route(`**${API}/shares*`, (route: any) => {
+    failed += 1;
+    return route.fulfill({ status: 500, json: { error: 'failed' } });
+  });
+  await expect.poll(() => failed).toBe(1);
+  await page.waitForTimeout(2500);
+  // one read each second, as before the failure
+  expect(failed).toBeGreaterThanOrEqual(2);
+  expect(failed).toBeLessThanOrEqual(4);
+  await page.unroute(`**${API}/shares*`);
+
+  await request.post(`${HUB}/_control/release`);
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '1 item',
+    { timeout: 3000 }
+  );
+});
+
+test('an accepted add is read again a second later, whatever the read after its answer shows', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-230: the hub reports an add 0.01 to 0.02 s after its answer, so
+  // the panel's read after that answer can still show the row settled
+  await blockStream(page);
+  await request.post(`${HUB}/_control/add`, { data: { hold: true } });
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'early-read',
+    paths: []
+  });
+  await refreshPanel(page);
+  const meta = page
+    .locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: 'early-read' })
+    .locator('.jp-ShareFilesPanel-itemMeta');
+  await expect(meta).toHaveText('0 items');
+  let early = true;
+  await page.route(`**${API}/shares*`, async (route: any) => {
+    if (!early || route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    early = false;
+    // the row as the hub shows it before it reports the add
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const share of body.shares) {
+      share.adding = false;
+      share.pending = [];
+    }
+    await route.fulfill({ response, json: body });
+  });
+
+  await addThroughPanel(page, made.data.id, ['early-read.txt']);
+  await expect(meta).toHaveText('0 items');
+  await expect(meta).toHaveText(/adding/, { timeout: 2500 });
+  await request.post(`${HUB}/_control/release`);
+  await expect(meta).toHaveText('1 item', { timeout: 3000 });
+});
+
+test('a detached panel stops reading the rows', async ({ page, request }) => {
+  // ACC-PROG-230: no timer outlives the panel's place in the shell, and the
+  // close the detach asks for does not start the timer of a lost socket
+  const [socket] = await blockStream(page);
+  await setPollInterval(page, 2);
+  await aHeldAdd(page, request, 'detached', 'detached.txt');
+  let closed = false;
+  socket.onClose(() => {
+    closed = true;
+    return socket.close();
+  });
+  await page.evaluate((panelId: string) => {
+    const { shell } = (window as any).jupyterapp;
+    Array.from<any>(shell.widgets('right')).find(w => w.id === panelId).parent =
+      null;
+  }, PANEL.slice(1));
+  const reads = countShareReads(page);
+  await expect.poll(() => closed).toBe(true);
+  await page.waitForTimeout(2500);
+  expect(reads.length).toBe(0);
+});
+
+test('a read under way at a detach starts no further read', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-230: the read answers on a panel that has left the shell
+  await blockStream(page);
+  await aHeldAdd(page, request, 'detached-read', 'detached-read.txt');
+  const held = await holdNextRead(page);
+  await expect.poll(() => held.state.held).toBe(true);
+  await page.evaluate((panelId: string) => {
+    const { shell } = (window as any).jupyterapp;
+    Array.from<any>(shell.widgets('right')).find(w => w.id === panelId).parent =
+      null;
+  }, PANEL.slice(1));
+  held.answer();
+  await expect.poll(() => held.state.answered).toBe(true);
+  const reads = countShareReads(page);
+  await page.waitForTimeout(3000);
+  expect(reads.length).toBe(0);
+});
+
+test('a follow read answering after a newer refresh changes nothing on the row', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-230, ACC-EDIT-221: the older read still shows the add copying,
+  // and taking it would raise the refusal's notice a second time
+  await blockStream(page);
+  const row = await aHeldAdd(page, request, 'older-follow', 'refuse-add.txt');
+  const held = await holdNextRead(page);
+  await expect.poll(() => held.state.held).toBe(true);
+  await request.post(`${HUB}/_control/release`);
+  await refreshPanel(page);
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '0 items - add refused'
+  );
+  await watchMeta(page, 'older-follow');
+  held.answer();
+  await expect.poll(() => held.state.answered).toBe(true);
+  await page.waitForTimeout(2500);
+  expect(await page.evaluate(() => (window as any).__meta)).toEqual([
+    '0 items - add refused'
+  ]);
+  expect(await notes(page, 'warning', 'refused an add')).toBe(1);
+});
+
+test('an add the lab could not send says so, and not that the hub refused it', async ({
+  page
+}) => {
+  // the lab's hold task stopped: the hub refused nothing
+  await openPanel(page);
+  await api(page, 'POST', `${API}/shares`, { name: 'lab-failed', paths: [] });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'lab-failed'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await page.route(`**${API}/shares*`, async (route: any) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const share of body.shares) {
+      share.add_reason = 'lab_failed';
+    }
+    await route.fulfill({ response, json: body });
+  });
+  await refreshPanel(page);
+
+  await expect(
+    row.locator('.jp-ShareFilesPanel-empty', { hasText: 'could not send' })
+  ).toHaveText('The lab could not send this add.');
+  expect(
+    await notes(page, 'warning', 'lab-failed: The lab could not send this add.')
+  ).toBe(1);
+  expect(await notes(page, 'warning', 'hub refused')).toBe(0);
+});
+
+test('a refused add read by the follow raises its notice once', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-230, ACC-EDIT-221: the refusal arrives with no ring
+  await blockStream(page);
+  const row = await aHeldAdd(
+    page,
+    request,
+    'no-ring-refusal',
+    'refuse-add.txt'
+  );
+  await request.post(`${HUB}/_control/release`);
+
+  await expect(row.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    '0 items - add refused',
+    { timeout: 3000 }
+  );
+  await refreshPanel(page);
+  expect(await notes(page, 'warning', 'refused an add')).toBe(1);
+});
+
+test('a new share from a selection holding a dot-named folder names the folder', async ({
+  page
+}) => {
+  // ACC-EDIT-208, ACC-EDIT-209: the create says what it left out
+  await page.contents.uploadContent('plain', 'text', 'dot-create.md');
+  await openPanel(page);
+  await page.evaluate(
+    ([panelId, chosen]: [string, string[]]) => {
+      const { shell } = (window as any).jupyterapp;
+      void Array.from<any>(shell.widgets('right'))
+        .find(w => w.id === panelId)
+        .createShareFlow(chosen);
+    },
+    [PANEL.slice(1), ['.images-mockup', 'dot-create.md']]
+  );
+  await page.locator('.jp-Dialog .jp-mod-accept').click();
+
+  await expect
+    .poll(() => notes(page, 'warning', 'Not added: .images-mockup'))
+    .toBe(1);
+  await page.contents.deleteFile('dot-create.md');
+});
+
+test('a new share of only refused names makes no share and a long list can be read whole', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-223: nothing is left to share, so the lab answers and the hub
+  // is not called
+  await openPanel(page);
+  const names = [0, 1, 2, 3, 4].map(n => `.create-backup-${n}`);
+  await page.evaluate(
+    ([panelId, chosen]: [string, string[]]) => {
+      const { shell } = (window as any).jupyterapp;
+      void Array.from<any>(shell.widgets('right'))
+        .find(w => w.id === panelId)
+        .createShareFlow(chosen);
+    },
+    [PANEL.slice(1), names]
+  );
+  await page.locator('.jp-Dialog .jp-mod-accept').click();
+
+  await expect
+    .poll(() => notes(page, 'error', `Not added: ${names.join(', ')}`))
+    .toBe(1);
+  await page
+    .locator('.Toastify__toast', { hasText: 'Could not create share' })
+    .getByRole('button', { name: 'Show all' })
+    .click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText(names[4]);
+  await dialog.locator('.jp-mod-accept').click();
+  await expect(
+    page.locator('.Toastify__toast', { hasText: 'Creating share' })
+  ).toHaveCount(0);
+  await expect(page.locator(`${PANEL} .jp-ShareFilesPanel-item`)).toHaveCount(
+    0
+  );
+  const calls = (await (await request.get(`${HUB}/_control/calls`)).json())
+    .calls;
+  expect(
+    calls.filter((c: any) => c.method === 'POST' && c.path.endsWith('/shares'))
+  ).toEqual([]);
+});
+
+test('a long list of left-out names can be read whole', async ({ page }) => {
+  // ACC-EDIT-208: the toast cuts a message at 140 characters
+  await page.contents.uploadContent('plain', 'text', 'long-left-out.md');
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'long-left-out',
+    paths: []
+  });
+  await refreshPanel(page);
+  const names = [0, 1, 2, 3, 4].map(n => `.config-backup-${n}`);
+  const readWhole = async (toast: string, last: string) => {
+    await page
+      .locator('.Toastify__toast', { hasText: toast })
+      .getByRole('button', { name: 'Show all' })
+      .click();
+    const dialog = page.locator('.jp-Dialog');
+    await expect(dialog).toContainText(last);
+    await dialog.locator('.jp-mod-accept').click();
+    await expect(dialog).toHaveCount(0);
+  };
+
+  // some names taken, then none
+  await addThroughPanel(page, made.data.id, [...names, 'long-left-out.md']);
+  await readWhole('Not added', names[4]);
+  await addThroughPanel(page, made.data.id, names);
+  await readWhole('Could not add items', names[4]);
+  await page.contents.deleteFile('long-left-out.md');
 });
 
 test('a file copied in the file browser is pasted into a hub share by keyboard', async ({
@@ -730,6 +1699,433 @@ test('a file in a hub share is renamed with F2, moved by a drag and removed', as
   await dialog.locator('button.jp-mod-accept').click();
   await expect(entry('renamed.txt')).toHaveCount(0);
   expect(await hubNames()).not.toContain('renamed.txt');
+});
+
+test('a workspace drag over a hub folder row marks the share, not the row, and the add lands at the top', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-232, ACC-EDIT-233: the hub lands every add at the top until it
+  // takes a target folder, so no folder row may promise otherwise
+  await page.contents.uploadContent('w', 'text', 'over-hub-folder.txt');
+  const { id, row, entry, hubNames } = await selectionShare(
+    page,
+    request,
+    'hub-folder-top',
+    ['docs/a.txt', 'b.txt']
+  );
+  const sent: any[] = [];
+  page.on('request', (r: any) => {
+    if (r.method() === 'POST' && r.url().includes(`/shares/${id}/items`)) {
+      sent.push(r.postDataJSON());
+    }
+  });
+
+  await dragOver(page, 'over-hub-folder.txt', entry('docs/'), [], row);
+  await expect(entry('docs/')).not.toHaveClass(/jp-mod-dropTarget/);
+  await page.mouse.up();
+
+  await expect
+    .poll(hubNames, { timeout: 20000 })
+    .toContain('over-hub-folder.txt');
+  expect(await hubNames()).not.toContain('docs/over-hub-folder.txt');
+  expect(sent).toEqual([{ paths: ['over-hub-folder.txt'] }]);
+});
+
+test('a hub entry dragged over a folder row of its share outlines that row', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-233: the move target is drawn, not only marked by class
+  const { entry, hubNames } = await selectionShare(
+    page,
+    request,
+    'hub-folder-outline',
+    ['docs/a.txt', 'b.txt']
+  );
+  const from = (await entry('b.txt').boundingBox())!;
+  const to = (await entry('docs/').boundingBox())!;
+  await page.mouse.move(from.x + 40, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 55, from.y + from.height / 2);
+  await page.mouse.move(to.x + 40, to.y + to.height / 2, { steps: 10 });
+  await expect(entry('docs/')).toHaveClass(/jp-mod-dropTarget/);
+  const outline = await entry('docs/').evaluate((el: HTMLElement) => {
+    const s = getComputedStyle(el);
+    return `${s.outlineStyle} ${s.outlineWidth}`;
+  });
+  expect(outline).toBe('solid 2px');
+  await page.mouse.up();
+
+  await expect.poll(hubNames, { timeout: 20000 }).toContain('docs/b.txt');
+});
+
+/** A hub share holding `names`, open in the panel: its row, a locator of one
+ * entry, the selected entries' names, the names the hub holds, and the names
+ * of each remove call the panel sends from now on. */
+async function selectionShare(
+  page: any,
+  request: any,
+  title: string,
+  names: string[]
+): Promise<any> {
+  await openPanel(page);
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: title,
+    paths: []
+  });
+  const id = made.data.id;
+  await request.post(`${HUB}/_control/files`, { data: { id, names } });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: title
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const removals: string[][] = [];
+  page.on('request', (r: any) => {
+    if (r.method() === 'DELETE' && r.url().includes(`/shares/${id}/items`)) {
+      removals.push(new URL(r.url()).searchParams.getAll('name'));
+    }
+  });
+  return {
+    id,
+    row,
+    entry: (name: string) =>
+      row.locator('.jp-ShareFilesPanel-entry', { hasText: name }),
+    selected: row.locator(
+      '.jp-ShareFilesPanel-entry.jp-mod-selected .jp-ShareFilesPanel-entryName'
+    ),
+    hubNames: async () =>
+      (await (await request.get(`${HUB}/_control/items`)).json()).items
+        .find((i: any) => i.id === id)
+        .files.map((f: any) => f.name),
+    removals
+  };
+}
+
+test('ctrl-click toggles an entry, shift-click takes a range and a plain click takes one entry alone', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-210, ACC-EDIT-211, ACC-EDIT-224
+  const { entry, selected } = await selectionShare(page, request, 'picked', [
+    'a1.txt',
+    'b2.txt',
+    'c3.txt',
+    'd4.txt'
+  ]);
+  await expect(entry('a1.txt')).toHaveAttribute('aria-selected', 'false');
+  // ctrl-click two entries, ctrl-click the first again: only the second
+  await entry('a1.txt').click({ modifiers: ['Control'] });
+  await entry('b2.txt').click({ modifiers: ['Control'] });
+  await expect(selected).toHaveText(['a1.txt', 'b2.txt']);
+  await entry('a1.txt').click({ modifiers: ['Control'] });
+  await expect(selected).toHaveText(['b2.txt']);
+  await expect(entry('b2.txt')).toHaveAttribute('aria-selected', 'true');
+  await expect(entry('a1.txt')).toHaveAttribute('aria-selected', 'false');
+  // the row the owner selects is an option of a list that takes several
+  await expect(entry('b2.txt')).toHaveAttribute('role', 'option');
+  await expect(entry('b2.txt').locator('..')).toHaveAttribute(
+    'aria-multiselectable',
+    'true'
+  );
+  // cmd-click is the same
+  await entry('c3.txt').click({ modifiers: ['Meta'] });
+  await expect(selected).toHaveText(['b2.txt', 'c3.txt']);
+  // select two entries, click a third with no modifier: only the third
+  await entry('d4.txt').click();
+  await expect(selected).toHaveText(['d4.txt']);
+  // click the first of four, shift-click the third: three rows, and no text
+  await entry('a1.txt').click();
+  await entry('c3.txt').click({ modifiers: ['Shift'] });
+  await expect(selected).toHaveText(['a1.txt', 'b2.txt', 'c3.txt']);
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe('');
+  // a range upwards from the same anchor replaces it
+  await entry('a1.txt').click({ modifiers: ['Shift'] });
+  await expect(selected).toHaveText(['a1.txt']);
+  // shift with ctrl adds the range to the selection
+  await entry('d4.txt').click();
+  await entry('a1.txt').click({ modifiers: ['Control'] });
+  await entry('b2.txt').click({ modifiers: ['Control', 'Shift'] });
+  await expect(selected).toHaveText(['a1.txt', 'b2.txt', 'd4.txt']);
+});
+
+test('ctrl-click selects a folder without entering it, and another folder clears the selection', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-210, ACC-EDIT-213
+  const { row, entry, selected } = await selectionShare(
+    page,
+    request,
+    'folders',
+    ['a1.txt', 'sub/inside.txt', 'sub/more.txt']
+  );
+  const up = row.locator('.jp-ShareFilesPanel-entry', { hasText: '..' });
+  await entry('sub/').click({ modifiers: ['Control'] });
+  await expect(selected).toHaveText(['sub/']);
+  // a ctrl double-click does not open the folder either
+  await entry('sub/').dblclick({ modifiers: ['Control'] });
+  await expect(up).toHaveCount(0);
+  await expect(entry('a1.txt')).toBeVisible();
+  // a selection in the top folder is cleared inside another folder
+  await entry('a1.txt').click();
+  await expect(selected).toHaveText(['a1.txt']);
+  await entry('sub/').dblclick();
+  await expect(up).toBeVisible();
+  await expect(selected).toHaveCount(0);
+  // the .. row takes no selection, an entry inside the folder does
+  await up.click({ modifiers: ['Control'] });
+  await expect(up).not.toHaveClass(/jp-mod-selected/);
+  expect(await up.getAttribute('aria-selected')).toBeNull();
+  await entry('inside.txt').click({ modifiers: ['Control'] });
+  await expect(selected).toHaveText(['inside.txt']);
+  await up.dblclick();
+  await expect(entry('a1.txt')).toBeVisible();
+  await expect(selected).toHaveCount(0);
+});
+
+test('remove on a selected entry asks once and removes the selection, and on another entry removes that entry alone', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-212, ACC-EDIT-228
+  const { entry, selected, hubNames, removals } = await selectionShare(
+    page,
+    request,
+    'removed',
+    ['a1.txt', 'b2.txt', 'c3.txt', 'd4.txt', 'e5.txt']
+  );
+  const dialog = page.locator('.jp-Dialog');
+  const removeOn = (name: string) =>
+    entry(name).locator('.jp-ShareFilesPanel-entryRemove').click();
+  await entry('a1.txt').click();
+  await entry('c3.txt').click({ modifiers: ['Shift'] });
+  await expect(selected).toHaveText(['a1.txt', 'b2.txt', 'c3.txt']);
+  // select three entries, choose remove: one dialog naming 3; cancel removes nothing
+  await removeOn('b2.txt');
+  await expect(dialog).toHaveCount(1);
+  await expect(dialog).toContainText('Remove 3 entries from the share?');
+  await dialog.locator('button.jp-mod-reject').click();
+  await expect(dialog).toHaveCount(0);
+  expect(removals).toEqual([]);
+  expect(await hubNames()).toHaveLength(5);
+  await expect(selected).toHaveText(['a1.txt', 'b2.txt', 'c3.txt']);
+  // remove on an entry outside the selection removes it alone, as before
+  await removeOn('e5.txt');
+  await expect(dialog).toContainText('Remove "e5.txt" from the share?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(entry('e5.txt')).toHaveCount(0);
+  await expect(selected).toHaveText(['a1.txt', 'b2.txt', 'c3.txt']);
+  // select three of four entries, choose remove on one: one entry stays
+  await removeOn('b2.txt');
+  await expect(dialog).toContainText('Remove 3 entries from the share?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(entry('a1.txt')).toHaveCount(0);
+  await expect(entry('c3.txt')).toHaveCount(0);
+  expect(await hubNames()).toEqual(['d4.txt']);
+  expect(removals).toEqual([['e5.txt'], ['a1.txt', 'b2.txt', 'c3.txt']]);
+  // the render after the removal dropped the removed names and the anchor: a
+  // shift-click takes one
+  await entry('d4.txt').click({ modifiers: ['Shift'] });
+  await expect(selected).toHaveText(['d4.txt']);
+});
+
+test('Space selects a focused entry, and Delete and the row menu remove the selection', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-227, ACC-EDIT-212
+  const { row, entry, selected, hubNames } = await selectionShare(
+    page,
+    request,
+    'keyed',
+    ['a1.txt', 'b2.txt', 'c3.txt', 'd4.txt', 'e5.txt']
+  );
+  const dialog = page.locator('.jp-Dialog');
+  const scroll = () =>
+    page.evaluate(
+      (sel: string) => document.querySelector(sel)!.scrollTop,
+      `${PANEL} .jp-ShareFilesPanel-body`
+    );
+  // Tab to an entry, Space: highlighted and aria-selected; Space again: not
+  await entry('a1.txt').focus();
+  await page.keyboard.press('Tab'); // the row's remove button
+  await page.keyboard.press('Tab');
+  await expect(entry('b2.txt')).toBeFocused();
+  const top = await scroll();
+  await page.keyboard.press('Space');
+  await expect(entry('b2.txt')).toHaveAttribute('aria-selected', 'true');
+  await expect(selected).toHaveText(['b2.txt']);
+  await expect(entry('b2.txt')).toBeFocused();
+  expect(await scroll()).toBe(top);
+  await page.keyboard.press('Space');
+  await expect(entry('b2.txt')).toHaveAttribute('aria-selected', 'false');
+  await expect(selected).toHaveCount(0);
+  await expect(entry('b2.txt')).toBeFocused();
+  // Delete on a selected entry removes the selection
+  await page.keyboard.press('Space');
+  await entry('c3.txt').click({ modifiers: ['Control'] });
+  await entry('c3.txt').focus();
+  await page.keyboard.press('Delete');
+  await expect(dialog).toContainText('Remove 2 entries from the share?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(entry('b2.txt')).toHaveCount(0);
+  await expect(entry('c3.txt')).toHaveCount(0);
+  expect(await hubNames()).toEqual(['a1.txt', 'd4.txt', 'e5.txt']);
+  // the menu of an entry outside the selection removes it alone
+  const menuRemove = page.locator('.lm-Menu-item', {
+    hasText: 'Remove from Share'
+  });
+  await entry('a1.txt').click({ modifiers: ['Control'] });
+  await entry('d4.txt').click({ modifiers: ['Control'] });
+  await entry('e5.txt').click({ button: 'right' });
+  await menuRemove.click();
+  await expect(dialog).toContainText('Remove "e5.txt" from the share?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(entry('e5.txt')).toHaveCount(0);
+  await expect(selected).toHaveText(['a1.txt', 'd4.txt']);
+  // and the menu of a selected entry removes the selection
+  await entry('a1.txt').click({ button: 'right' });
+  await menuRemove.click();
+  await expect(dialog).toContainText('Remove 2 entries from the share?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(row.locator(LISTED)).toHaveCount(0);
+  expect(await hubNames()).toEqual([]);
+});
+
+test('a selection keeps its entries through a ring and a refresh, and an entry gone from the share leaves it', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-213
+  const { id, row, entry, selected, removals } = await selectionShare(
+    page,
+    request,
+    'stale',
+    ['a1.txt', 'b2.txt', 'c3.txt']
+  );
+  await entry('a1.txt').click({ modifiers: ['Control'] });
+  await entry('b2.txt').click({ modifiers: ['Control'] });
+  await expect(selected).toHaveText(['a1.txt', 'b2.txt']);
+  // mark the rows so the test sees the ring rebuild them
+  const marked = row.locator('.jp-ShareFilesPanel-entry[data-old]');
+  await row
+    .locator('.jp-ShareFilesPanel-entry')
+    .evaluateAll((rows: HTMLElement[]) =>
+      rows.forEach(r => (r.dataset.old = '1'))
+    );
+  await request.post(`${HUB}/_control/nudge`);
+  await expect(marked).toHaveCount(0);
+  await expect(selected).toHaveText(['a1.txt', 'b2.txt']);
+  await refreshPanel(page);
+  await expect(selected).toHaveText(['a1.txt', 'b2.txt']);
+  // select an entry, remove it through the API, refresh: remove on another
+  // entry sends only that name
+  const gone = await api(
+    page,
+    'DELETE',
+    `${API}/shares/${id}/items?name=a1.txt`
+  );
+  expect(gone.status).toBe(200);
+  await refreshPanel(page);
+  await expect(entry('a1.txt')).toHaveCount(0);
+  await expect(selected).toHaveText(['b2.txt']);
+  removals.length = 0;
+  await entry('b2.txt').locator('.jp-ShareFilesPanel-entryRemove').click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText('Remove "b2.txt" from the share?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(entry('b2.txt')).toHaveCount(0);
+  expect(removals).toEqual([['b2.txt']]);
+});
+
+test('a removal the hub refuses part way names the refusal once and lists what remains', async ({
+  page,
+  request
+}) => {
+  // ACC-EDIT-214: the mock refuses a name holding refuse-remove
+  const { row, entry, selected, hubNames } = await selectionShare(
+    page,
+    request,
+    'partial',
+    ['a1.txt', 'b2-refuse-remove.txt', 'c3.txt']
+  );
+  await entry('a1.txt').click();
+  await entry('c3.txt').click({ modifiers: ['Shift'] });
+  await expect(selected).toHaveCount(3);
+  await entry('a1.txt').locator('.jp-ShareFilesPanel-entryRemove').click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText('Remove 3 entries from the share?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(entry('a1.txt')).toHaveCount(0);
+  // the hub stopped at the refusal, so the name after it stays listed
+  await expect(row.locator(LISTED)).toHaveText([
+    'b2-refuse-remove.txt',
+    'c3.txt'
+  ]);
+  await expect(selected).toHaveText(['b2-refuse-remove.txt', 'c3.txt']);
+  expect(await hubNames()).toEqual(['b2-refuse-remove.txt', 'c3.txt']);
+  const busy = () => notes(page, 'warning', 'busy copying other files');
+  await expect.poll(busy).toBe(1);
+  // and it stays one once the panel's refresh after the removal has landed
+  await refreshPanel(page);
+  expect(await busy()).toBe(1);
+});
+
+test('a removal of 51 entries goes in two calls and names may hold a space, a non-ASCII letter or an ampersand', async ({
+  page,
+  request
+}) => {
+  const names = Array.from(
+    { length: 51 },
+    (_, i) => `f${String(i).padStart(2, '0')} &é.txt`
+  );
+  const { row, entry, hubNames, removals } = await selectionShare(
+    page,
+    request,
+    'many',
+    names
+  );
+  await entry('f00 &é.txt').click();
+  await entry('f50 &é.txt').click({ modifiers: ['Shift'] });
+  await entry('f50 &é.txt').locator('.jp-ShareFilesPanel-entryRemove').click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText('Remove 51 entries from the share?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(row.locator(LISTED)).toHaveCount(0);
+  expect(await hubNames()).toEqual([]);
+  expect(removals).toEqual([names.slice(0, 50), names.slice(50)]);
+});
+
+test('a file in transit takes no selection', async ({ page, request }) => {
+  // ACC-EDIT-210: rows drawn from the share's pending adds are not entries
+  await request.post(`${HUB}/_control/add`, { data: { hold: true } });
+  await page.contents.uploadContent('x'.repeat(10), 'text', 'unpicked.txt');
+  const { id, entry, selected } = await selectionShare(
+    page,
+    request,
+    'transit',
+    ['listed.txt']
+  );
+  const add = await api(page, 'POST', `${API}/shares/${id}/items`, {
+    paths: ['unpicked.txt']
+  });
+  expect(add.status).toBe(200);
+  await refreshPanel(page);
+  const transit = entry('unpicked.txt');
+  // the row in transit is drawn, and is not a listed entry
+  await expect(transit).toHaveCount(1);
+  expect(await transit.getAttribute('data-row-key')).toBeNull();
+  await entry('listed.txt').click({ modifiers: ['Control'] });
+  await expect(selected).toHaveText(['listed.txt']);
+  await transit.click({ modifiers: ['Control'] });
+  await transit.click({ modifiers: ['Shift'] });
+  await transit.click();
+  await expect(selected).toHaveText(['listed.txt']);
+  expect(await transit.getAttribute('aria-selected')).toBeNull();
+  await request.post(`${HUB}/_control/release`);
+  await page.contents.deleteFile('unpicked.txt');
 });
 
 test('a recipient upload is fetched into the workspace through the hub', async ({
@@ -1068,6 +2464,117 @@ test('the panel refreshes on the hub change stream, not on a timer', async ({
   );
   await page.waitForTimeout(1000);
   expect(await refreshes(request)).toBe(before + 1);
+});
+
+test('the change stream is one WebSocket and sends no HTTP request', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-231-STREAM-SOCKET: an open request would hold one of the six
+  // connections per origin, in every tab
+  const held: string[] = [];
+  const sockets: string[] = [];
+  page.on('request', (r: any) => {
+    if (r.url().includes(`${API}/stream`)) {
+      held.push(r.url());
+    }
+  });
+  page.on('websocket', (ws: any) => {
+    if (ws.url().includes(`${API}/stream`)) {
+      sockets.push(ws.url());
+    }
+  });
+  await page.reload();
+  await openPanel(page);
+  await expect.poll(() => sockets.length).toBe(1);
+  expect(sockets[0]).toMatch(/^ws:/);
+  await expect
+    .poll(
+      async () =>
+        (await (await request.get(`${HUB}/_control/streams`)).json()).open
+    )
+    .toBe(1);
+  await refreshPanel(page);
+  await page.waitForTimeout(1000);
+  expect(sockets.length).toBe(1);
+  expect(held).toEqual([]);
+});
+
+test('a message on the socket refreshes the rows', async ({ page }) => {
+  // ACC-HUBM-231-STREAM-SOCKET: nothing else reads the rows while it stands
+  const [socket] = await blockStream(page);
+  await api(page, 'POST', `${API}/requests`, { name: 'Rung' });
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Rung'
+  });
+  await page.waitForTimeout(1000);
+  await expect(row).toHaveCount(0);
+  socket.send('changed');
+  await expect(row).toBeVisible();
+});
+
+test('a closed socket falls back to the timer and the next refresh opens a new one', async ({
+  page
+}) => {
+  // ACC-HUBM-231-STREAM-SOCKET: a WebSocket does not reconnect by itself
+  const sockets = await blockStream(page);
+  await setPollInterval(page, 2);
+  const reads = countShareReads(page);
+  await page.waitForTimeout(3000);
+  expect(reads.length).toBe(0);
+  await sockets[0].close();
+  await expect.poll(() => sockets.length).toBe(2);
+  // the timer's read, then the new socket's own; after those the timer is off
+  await expect.poll(() => reads.length).toBe(2);
+  await page.waitForTimeout(3000);
+  expect(reads.length).toBe(2);
+});
+
+test('a socket that closes as it opens is opened again at the pace of the timer', async ({
+  page
+}) => {
+  // ACC-HUBM-231-STREAM-SOCKET: a refused socket does not loop
+  const opened: number[] = [];
+  await page.routeWebSocket(`**${API}/stream*`, (ws: any) => {
+    opened.push(Date.now());
+    void ws.close();
+  });
+  await page.reload();
+  await openPanel(page);
+  await setPollInterval(page, 2);
+  await page.waitForTimeout(1000);
+  const before = opened.length;
+  await page.waitForTimeout(6000);
+  expect(opened.length - before).toBeGreaterThanOrEqual(2);
+  expect(opened.length - before).toBeLessThanOrEqual(4);
+});
+
+test('a refresh during the handshake opens no second socket', async ({
+  page
+}) => {
+  // ACC-HUBM-231-STREAM-SOCKET: a socket still connecting is the panel's stream
+  await page.addInitScript((path: string) => {
+    const w = window as any;
+    w.__handshakes = 0;
+    w.WebSocket = new Proxy(w.WebSocket, {
+      construct(target: any, args: any[]) {
+        if (!String(args[0]).includes(path)) {
+          return new target(...args);
+        }
+        w.__handshakes += 1;
+        // a handshake that never answers: the socket stays CONNECTING
+        return { readyState: 0, close: () => undefined };
+      }
+    });
+  }, `${API}/stream`);
+  await page.reload();
+  await openPanel(page);
+  const handshakes = () =>
+    page.evaluate(() => (window as any).__handshakes as number);
+  await expect.poll(handshakes).toBe(1);
+  await refreshPanel(page);
+  await refreshPanel(page);
+  expect(await handshakes()).toBe(1);
 });
 
 test('a group policy that requires a password makes the create dialog ask for one', async ({
@@ -2244,6 +3751,177 @@ test('a connected request takes a dropped file and folder and tints its row whil
   await page.contents.deleteDirectory('conn-updir');
 });
 
+test('a second drop on a connected request joins the running upload', async ({
+  page,
+  request
+}) => {
+  // ACC-HUBM-222, DEF-HUB-139: one upload, both files, and no refusal
+  await request.post(`${HUB}/_control/add`, { data: { seconds: 4 } });
+  await page.contents.uploadContent('a', 'text', 'join-one.txt');
+  await page.contents.uploadContent('b', 'text', 'join-two.txt');
+  const made = await foreign(request, {
+    kind: 'request',
+    title: 'Joined Inbox'
+  });
+  await openPanel(page);
+  await connect(page, made.url);
+  const row = connected(page, 'Joined Inbox');
+  await expect(row).toHaveCount(1);
+
+  await dragOnto(page, 'join-one.txt', row);
+  const header = row.locator('.jp-ShareFilesPanel-itemHeader');
+  await expect(header.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    'uploading'
+  );
+  await dragOnto(page, 'join-two.txt', row);
+
+  await expect
+    .poll(() => notes(page, 'success', '2 item(s) uploaded to Joined Inbox'), {
+      timeout: 20000
+    })
+    .toBe(1);
+  expect(await notes(page, 'error', 'Upload failed')).toBe(0);
+  const calls = (await (await request.get(`${HUB}/_control/calls`)).json())
+    .calls;
+  expect(
+    calls.filter((c: any) => c.path.endsWith('/u')).map((c: any) => c.filename)
+  ).toEqual(['join-one.txt', 'join-two.txt']);
+  await page.contents.deleteFile('join-one.txt');
+  await page.contents.deleteFile('join-two.txt');
+});
+
+test('each file of an upload tints its own row by the fraction sent', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-216, ACC-PROG-218, ACC-PROG-229: the request reads the large
+  // file no further than 4 MB, so the lab has sent part of it and waits; the
+  // first file has landed and the third has not started
+  const big = 'rows-2-big.bin';
+  fs.writeFileSync(
+    path.join(process.env.JUPYTERLAB_GALATA_ROOT_DIR!, big),
+    Buffer.alloc(64 * 1024 * 1024)
+  );
+  await page.contents.uploadContent('a', 'text', 'rows-1-first.txt');
+  await page.contents.uploadContent('c', 'text', 'rows-3-last.txt');
+  await request.post(`${HUB}/_control/receive`, {
+    data: { hold: 4 * 1024 * 1024 }
+  });
+  const made = await foreign(request, {
+    kind: 'request',
+    title: 'Rows Inbox'
+  });
+  await openPanel(page);
+  await connect(page, made.url);
+  const row = connected(page, 'Rows Inbox');
+  await expect(row).toHaveCount(1);
+  const twisty = row.locator('.jp-ShareFilesPanel-itemTwisty');
+  await expect(twisty).toHaveAttribute('aria-expanded', 'false');
+  const [conn] = (await api(page, 'GET', `${API}/connections`)).data
+    .connections;
+  const entry = (name: string) =>
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: name });
+  const layer = (name: string) =>
+    entry(name).locator('.jp-ShareFilesPanel-itemProgress');
+
+  // the panel's own upload, as a drop calls it, with the files in this order
+  await page.evaluate(
+    async ([panelId, key, chosen]: [string, string, string[]]) => {
+      const { shell } = (window as any).jupyterapp;
+      const panel = Array.from<any>(shell.widgets('right')).find(
+        w => w.id === panelId
+      );
+      await panel.uploadToConnectionFlow(key, chosen);
+    },
+    [PANEL.slice(1), conn.key, ['rows-1-first.txt', big, 'rows-3-last.txt']]
+  );
+
+  await expect(twisty).toHaveAttribute('aria-expanded', 'true');
+  await expect(layer(big)).toHaveAttribute('aria-valuenow', /^[1-9]\d?$/);
+  await expect(layer(big)).toHaveAttribute('aria-label', `Uploading ${big}`);
+  await expect(entry('rows-1-first.txt')).toHaveCount(1);
+  await expect(layer('rows-1-first.txt')).toHaveCount(0);
+  await expect(layer('rows-3-last.txt')).toHaveAttribute('aria-valuenow', '0');
+  // the row header wears the whole upload
+  await expect(
+    row.locator(
+      '.jp-ShareFilesPanel-itemHeader .jp-ShareFilesPanel-itemProgress'
+    )
+  ).toHaveCount(1);
+  // a row that reads offline keeps its last manifest and draws no file of
+  // the upload from it. The lab answers a running upload's reads from the
+  // page it read last, so here the lab itself does not answer
+  await page.route('**/manifest*', (route: any) => route.abort());
+  const badge = row.locator('.jp-ShareFilesPanel-offline');
+  await expect(badge).toHaveText('offline');
+  await expect(row.locator('.jp-ShareFilesPanel-entry')).toHaveCount(0);
+  await page.unroute('**/manifest*');
+  await refreshPanel(page);
+  await expect(badge).toHaveCount(0);
+  await expect(layer('rows-3-last.txt')).toHaveAttribute('aria-valuenow', '0');
+
+  await request.post(`${HUB}/_control/receive`, { data: { hold: 0 } });
+  await expect
+    .poll(() => notes(page, 'success', '3 item(s) uploaded to Rows Inbox'), {
+      timeout: 20000
+    })
+    .toBe(1);
+  await expect(row.locator('.jp-ShareFilesPanel-entry')).toHaveCount(0);
+  for (const name of ['rows-1-first.txt', big, 'rows-3-last.txt']) {
+    await page.contents.deleteFile(name);
+  }
+});
+
+test('a request row the owner closes during an upload stays closed', async ({
+  page,
+  request
+}) => {
+  // ACC-PROG-229, as for an add: the upload opens the row once, and the
+  // reads that follow it do not open it again. Each file waits 3 s for the
+  // link's answer
+  await request.post(`${HUB}/_control/add`, { data: { seconds: 3 } });
+  await page.contents.uploadContent('a', 'text', 'shut-up-1.txt');
+  await page.contents.uploadContent('b', 'text', 'shut-up-2.txt');
+  const made = await foreign(request, {
+    kind: 'request',
+    title: 'Shut Inbox'
+  });
+  await openPanel(page);
+  await connect(page, made.url);
+  const row = connected(page, 'Shut Inbox');
+  await expect(row).toHaveCount(1);
+  const twisty = row.locator('.jp-ShareFilesPanel-itemTwisty');
+  await expect(twisty).toHaveAttribute('aria-expanded', 'false');
+
+  await dragOnto(page, 'shut-up-1.txt', row, ['shut-up-2.txt']);
+  await expect(twisty).toHaveAttribute('aria-expanded', 'true');
+
+  const header = row.locator('.jp-ShareFilesPanel-itemHeader');
+  await header.click();
+  await expect(twisty).toHaveAttribute('aria-expanded', 'false');
+  const reads: string[] = [];
+  page.on('request', (r: any) => {
+    if (r.method() === 'GET' && /\/manifest(\?|$)/.test(r.url())) {
+      reads.push(r.url());
+    }
+  });
+  // the row is read again each second while the lab sends, and each read
+  // renders it
+  await expect.poll(() => reads.length, { timeout: 5000 }).toBeGreaterThan(1);
+  await expect(header.locator('.jp-ShareFilesPanel-itemMeta')).toHaveText(
+    'uploading'
+  );
+  await expect(twisty).toHaveAttribute('aria-expanded', 'false');
+  await expect
+    .poll(() => notes(page, 'success', '2 item(s) uploaded to Shut Inbox'), {
+      timeout: 20000
+    })
+    .toBe(1);
+  await expect(twisty).toHaveAttribute('aria-expanded', 'false');
+  await page.contents.deleteFile('shut-up-1.txt');
+  await page.contents.deleteFile('shut-up-2.txt');
+});
+
 test('an upload the hub refuses says why', async ({ page, request }) => {
   // ACC-HUBM-180
   await page.contents.uploadContent('x', 'text', 'refuse-upload.txt');
@@ -2262,9 +3940,8 @@ test('an upload the hub refuses says why', async ({ page, request }) => {
   const meta = row.locator('.jp-ShareFilesPanel-itemMeta');
   await expect(meta).toHaveText('request - upload refused');
   await expect(meta).toHaveClass(/jp-mod-refused/);
-  // expanded, it says why - the limit is the request's, not the uploader's
-  // group policy
-  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  // the drop opened the row, which says why - the limit is the request's,
+  // not the uploader's group policy
   await expect(row.locator('.jp-ShareFilesPanel-empty').first()).toHaveText(
     'The hub refused the last upload - A file is larger than this request accepts.'
   );

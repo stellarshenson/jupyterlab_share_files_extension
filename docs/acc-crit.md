@@ -865,6 +865,7 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - mechanism: 2026-09-05T09:01:14Z @kj hub_stream.Relay subscribes on the first panel stream and cancels the hub read with the last; HubStreamHandler relays changed and keepalives; the panel's \_syncLiveness opens the EventSource and stops polling
   - log: 2026-09-05T09:01:14Z @kj added
   - log: 2026-09-05T09:32:41Z @kj closed
+  - log: 2026-11-03T03:08:20Z @kj 2026-11-03: the panel stream is now a WebSocket per ACC-HUBM-231-STREAM-SOCKET; no EventSource and no keepalive comment; test_stream_relays_the_hub_rings is now test_stream_sends_one_message_per_ring
 - [x] `ACC-HUBM-137` **A dropped panel stream closes its hub connection at once** - HIGH; when the last panel stream of a lab ends, the lab's hub stream socket is closed immediately, so no hub connection and no client slot outlives the panel; a tornado client fetch cannot be cancelled, which is why the read is a raw asyncio socket
   - evidence: test_hub_mode.py::test_hold_reads_the_hub_stream_and_the_cancel_closes_the_socket green 2026-09-05: the in-process SSE server sees on_connection_close within 5s of the cancel; review round 1 found and fixed the Relay.\_run finally that cleared a task it no longer owned
   - test: pytest: hold() against an in-process SSE server - cancel the task and the server's on_connection_close fires within 5s
@@ -1151,6 +1152,21 @@ Lab spawned by galaxahub with SHARE_FILES_PUBLIC_ZONE=hub: the panel works only 
   - log: 2026-10-21T18:39:37Z @kj amended: also waits out rate_limited; the toggle and the create path share SWITCH_RETRY_REASONS, and an expired rate-limited create names that reason
   - log: 2026-10-21T22:18:21Z @kj amended text "a switch pressed while the hub still starts its connector is retried while the hub says busy, up to 30 s, instead of failing" -> "MEDIUM; a switch pressed while the hub still starts its connector, or seconds after the last one, keeps the owner's default and returns; the panel keeps probing and the next list read applies the switch when the hub is ready"
   - log: 2026-10-21T22:18:21Z @kj edited test "run pytest test_a_toggle_the_hub_answers_busy_is_asked_again; it passes, and the live-hub tunnel test passes" -> "run the pytest busy-toggle cases and the live-hub tunnel test; the toggle keeps the default and the next list read switches the records"; evidence "test_a_toggle_the_hub_answers_busy_is_asked_again passes; live-hub Galata 7 of 7; pytest 511 passed 8 skipped" -> "pytest 519 passed 8 skipped; galata live hub 7 of 7, switch-on 28.7 s; round-2 review SHIP"
+- [x] `ACC-HUBM-222-UPLOAD-RUNNING` **Upload while an upload runs** - HIGH; hub mode: files dropped or pasted on a connected request while an upload to it runs land in that request with no refusal and no second drop
+  - evidence: 2-add-hold and 2b: a second upload joins the running one; test_a_second_upload_joins_the_running_one; Galata second drop on a connected request; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - mechanism: 2026-11-02T17:41:50Z @kj _send walks a list held in _UPLOADS[key]; a further drop extends that list and raises total instead of answering 409
+  - test: mock hub: drop a second file during a running upload; both files arrive and no running-upload notice appears
+  - test-tags: E2E
+  - log: 2026-11-02T17:11:07Z @kj added
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-HUBM-231-STREAM-SOCKET` **The panel's change stream holds no browser connection** - HIGH; hub mode: the panel's change stream is a WebSocket, so it takes none of the browser's six HTTP connections per origin, in any number of tabs
+  - evidence: 2h: api/stream is a WebSocket; 3 tabs full set adds 2.5 to 3.2 s against 24 to 47 s before; Galata one WebSocket, no HTTP request to api/stream; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - related: ACC-HUBM-136 - the stream it describes is now a WebSocket
+  - test: 3 tabs, full labextension set: an add lists within 10 s, and no HTTP request to api/stream is sent
+  - test-tags: E2E
+  - mechanism: 2026-11-03T00:13:22Z @kj HubStreamHandler is a websocket handler; a message means changed; on close the panel falls back to its timer and the next refresh reopens the stream
+  - log: 2026-11-03T00:13:22Z @kj added
+  - log: 2026-11-03T12:54:15Z @kj closed
 
 ## Drag and drop into the panel `DRAG`
 
@@ -1291,6 +1307,138 @@ Changing a share's contents once it exists - adding, removing, renaming and movi
   - log: 2026-10-02T05:17:17Z @kj amended text "hub mode offers the same Rename on a share row, carried out by the hub; the hub has no endpoint that renames a share (not in the mock hub, not in galaxahub design-fileshare.md), so this waits on the hub" -> "HIGH; hub mode offers the same Rename on a share row, carried out by the hub through PUT shares/<id>/title; the id, the link, the password and the files stay; spaces alone are refused by the lab, a hub refusal is shown and the name stays"
   - log: 2026-10-02T05:29:34Z @kj ux-designer review: SHIP, six minors; fixed one: the row spins while the hub answers a rename; confirming round SHIP, closure confirmed; declined: reopen the dialog on a refusal, toast level and wording, right-click focus, no-op request on surrounding spaces
   - log: 2026-10-02T05:29:37Z @kj closed
+- [x] `ACC-EDIT-207-DOT-SELECTION` **A selection adds what the hub takes** - HIGH; hub mode: a selection holding a name the hub refuses adds every other selected item
+  - evidence: 2-add-hold and 2b: _kept_paths leaves out . and ~ names, rest added; test_hub_handlers left_out cases; hub-mode.spec dot-named folder plus plain file; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - mechanism: 2026-11-02T17:41:50Z @kj _kept_paths drops chosen names starting with . or ~ for add and create, and the answer carries left_out; the hub refuses a whole add over one such name
+  - test: drop .images-mockup and a.md on a share: a.md is listed
+  - test-tags: INTEGRATION, E2E
+  - log: 2026-11-02T17:10:49Z @kj added
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-EDIT-208-DOT-NOTICE` **The notice names each item left out** - HIGH; hub mode: a chosen name starting with . or ~ that the lab leaves out is named in the notice
+  - evidence: 2-add-hold: notice names each left-out name, Show all past 140 chars; hub-mode.spec notice holds .images-mockup; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: drop .images-mockup and a.md on a share: the notice text holds .images-mockup
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:49Z @kj added
+  - log: 2026-11-02T20:04:24Z @kj amended text "hub mode: when the hub cannot take a chosen item the notice names that item" -> "HIGH; hub mode: a chosen name starting with . or ~ that the lab leaves out is named in the notice"
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-EDIT-209-DOT-CREATE` **A new share from such a selection** - MEDIUM; hub mode: a new share made from a selection holding a name the hub refuses holds every other selected item
+  - evidence: 2-add-hold: a create leaves out . and ~ names and names them; test_a_create_leaves_out_a_chosen_name_the_hub_skips_and_names_it; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: drop .images-mockup and a.md on the drop zone: the new share lists a.md
+  - test-tags: INTEGRATION
+  - log: 2026-11-02T17:10:49Z @kj added
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-EDIT-210-SELECT-CTRL` **Ctrl-click selects a share entry** - HIGH; ctrl-click or cmd-click on a share entry adds it to the selection or takes it out, and a selected row is highlighted
+  - evidence: 4-entry-select: ctrl or cmd toggles; hub-mode.spec ctrl-click toggles an entry; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: ctrl-click two entries, ctrl-click the first again: only the second row is highlighted
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:49Z @kj added
+  - log: 2026-11-03T12:54:15Z @kj closed
+- [x] `ACC-EDIT-211-SELECT-SHIFT` **Shift-click selects a range of share entries** - HIGH; shift-click on a share entry selects every visible entry from the anchor to the clicked one; the anchor is the last entry clicked without shift, ctrl-clicked or toggled with Space, as the file browser does
+  - evidence: 4-entry-select: shift selects from the anchor; hub-mode.spec shift-click takes a range; jest entryRange; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: click the first of four entries, shift-click the third: three rows are highlighted
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:49Z @kj added
+  - log: 2026-11-03T07:25:52Z @kj amended text "shift-click on a share entry selects every visible entry from the last clicked entry to the clicked one" -> "HIGH; shift-click on a share entry selects every visible entry from the anchor to the clicked one; the anchor is the last entry clicked without shift, ctrl-clicked or toggled with Space, as the file browser does"
+  - log: 2026-11-03T12:54:15Z @kj closed
+- [x] `ACC-EDIT-212-SELECT-REMOVE` **Remove acts on the selection** - HIGH; the remove action on a selected entry removes every selected entry in one action; on an entry outside the selection it removes that entry alone
+  - evidence: 4-entry-select: remove on a selected entry takes the selection, else that entry; hub-mode.spec remove asks once and removes the selection; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: select three of four entries, choose remove on one: one entry stays listed
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:49Z @kj added
+  - log: 2026-11-03T12:54:15Z @kj closed
+- [x] `ACC-EDIT-213-SELECT-STALE` **Edge: a selected entry leaves the share** - MEDIUM; an entry no longer listed leaves the selection, and moving to another folder of the share clears the selection
+  - evidence: 4-entry-select: a name gone from the share leaves the selection, another folder clears it; hub-mode.spec selection through a ring and a refresh; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: select an entry, remove it through the API, refresh: remove on another entry sends only that name
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:50Z @kj added
+  - log: 2026-11-03T12:54:15Z @kj closed
+- [x] `ACC-EDIT-214-SELECT-PARTIAL` **Edge: a removal is refused part way** - MEDIUM; when one removal of a selection is refused the panel shows the refusal and the list shows what remains
+  - evidence: 4-entry-select and review round 1: one notice, refresh, remaining entries stay selected; hub-mode.spec removal refused part way; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: mock hub refusing the second of three removals: the notice appears and the list shows the two entries left
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:50Z @kj added
+  - log: 2026-11-03T12:54:15Z @kj closed
+- [x] `ACC-EDIT-215-SELECT-STANDALONE` **Standalone: selection and removal** - HIGH; at the top of a standalone share, where entries take the remove action, ctrl-click and shift-click select entries and remove acts on the selection
+  - evidence: 4-entry-select: entry-select.spec ctrl and shift select standalone entries and remove acts on the selection; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: standalone server: select two of three entries, choose remove: one entry stays listed
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:50Z @kj added
+  - log: 2026-11-03T07:25:52Z @kj amended text "on a standalone share ctrl-click and shift-click select entries and remove acts on the selection" -> "HIGH; at the top of a standalone share, where entries take the remove action, ctrl-click and shift-click select entries and remove acts on the selection"
+  - log: 2026-11-03T12:54:15Z @kj closed
+- [x] `ACC-EDIT-219-ADD-COPYING` **Add while the hub copies** - HIGH; hub mode: items dropped or pasted on a share while its row shows adding or staging land on that share with no refusal and no second drop
+  - evidence: 2-add-hold, 2b, 2e: lab holds adds in _ADDS until the hub takes them; hub-mode.spec two drops during a running add both land with no busy notice; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - mechanism: 2026-11-02T19:15:41Z @kj the lab keeps _ADDS per share: names sent and paths held; a task reads the row each second, sends the next held add once the row shows the last add settled, and retries on busy, no answer, 502, 503 and 504; share_from_item reports adding and pending
+  - test: mock hub with a slow add: drop a.txt, drop b.txt during the copy; both are listed and no busy notice appears
+  - test-tags: E2E
+  - log: 2026-11-02T17:11:07Z @kj added
+  - log: 2026-11-02T19:15:41Z @kj mechanism updated "2026-11-02T17:41:50Z @kj the lab keeps _ADDS per share: names sent and paths held; a task sends the next held add, one drop at a time, retrying each second while the hub answers busy; share_from_item reports adding and pending" -> "the lab keeps _ADDS per share: names sent and paths held; a task reads the row each second, sends the next held add once the row shows the last add settled, and retries on busy, no answer, 502, 503 and 504; share_from_item reports adding and pending"
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-EDIT-220-HELD-ROW` **A held add keeps the row adding** - MEDIUM; hub mode: the row shows adding from the first drop until the last held add lands
+  - evidence: 2b: the hold lasts until the last add settles and adding stays true; test_adding_holds_across_the_send_of_the_last_held_add; Galata row reads adding throughout; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: mock hub: hold two adds; between the two copies the row meta still reads adding
+  - test-tags: E2E
+  - log: 2026-11-02T17:11:07Z @kj added
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-EDIT-221-HELD-REFUSED` **Edge: a held add is refused** - MEDIUM; hub mode: a held add the hub or the lab refuses shows its refusal and the next held add is still sent
+  - evidence: 2b and 2e: a held refusal shows on the row and as one notice, next held add sent; Galata held add refused shows its reason and the next lands; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: mock hub: hold two adds, the first holding a taken name; the notice appears and the second lands
+  - test-tags: E2E
+  - log: 2026-11-02T17:11:07Z @kj added
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-EDIT-223-DOT-REFUSED` **Edge: every chosen item is refused** - MEDIUM; hub mode: a selection holding only names the hub refuses sends nothing and the notice names them
+  - evidence: 2-add-hold and 2b: only refused names answer 400 with no hub call; pytest refused-only cases; Galata create of only refused names makes no share; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: drop .images-mockup alone on a share: no add reaches the hub and the notice names it
+  - test-tags: INTEGRATION
+  - log: 2026-11-02T17:11:07Z @kj added
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-EDIT-224-SELECT-PLAIN` **A plain click selects that entry alone** - MEDIUM; a click with no modifier keeps its current action on the row and selects that entry alone, as the file browser does
+  - evidence: 4-entry-select: a plain click keeps its action and selects one entry; hub-mode.spec plain click takes one entry alone; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: select two entries, click a third with no modifier: only the third row is highlighted
+  - test-tags: E2E
+  - log: 2026-11-02T17:11:07Z @kj added
+  - log: 2026-11-02T17:41:50Z @kj amended text "a click with no modifier keeps its current action on the row and clears the selection" -> "a click with no modifier keeps its current action on the row and selects that entry alone, as the file browser does"
+  - log: 2026-11-02T17:41:50Z @kj edited test "select two entries, click a third with no modifier: no row is highlighted" -> "select two entries, click a third with no modifier: only the third row is highlighted"
+  - log: 2026-11-02T17:41:50Z @kj amended title "A plain click clears the selection" -> "A plain click selects that entry alone"
+  - log: 2026-11-03T12:54:15Z @kj closed
+- [x] `ACC-EDIT-225-HELD-RELOAD` **A held add outlives the page** - MEDIUM; hub mode: a held add still lands when the page is reloaded while it waits
+  - evidence: 2-add-hold: held adds live in the lab, a new request reads them; test_a_held_add_is_on_the_row_read_through_a_new_request; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: pytest: hold an add, read the row through a new request; the row shows it held and the add is sent when the hub stops answering busy
+  - test-tags: UNIT
+  - log: 2026-11-02T17:41:50Z @kj added
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-EDIT-226-HELD-TAKEN` **Edge: the same name dropped during a copy** - MEDIUM; hub mode: a name dropped while that name is still copying or held is refused at once and names it
+  - evidence: 2b: a name held or copying is refused by name under the share lock; test_a_name_still_copying_is_refused, test_a_name_already_held_is_refused; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: pytest: add a.txt, add a.txt again during the copy; 400 naming a.txt and no second add reaches the hub
+  - test-tags: UNIT
+  - log: 2026-11-02T17:41:50Z @kj added
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-EDIT-227-SELECT-KEYBOARD` **Space selects a focused share entry** - MEDIUM; Space on a focused share entry adds it to the selection or takes it out, and a selected row carries aria-selected true
+  - evidence: 4-entry-select: Space toggles, aria-selected follows, focus stays; hub-mode.spec Space selects a focused entry; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: Tab to an entry, press Space: the row is highlighted and aria-selected is true; press Space again: it is not
+  - test-tags: E2E
+  - log: 2026-11-02T17:41:50Z @kj added
+  - log: 2026-11-03T12:54:16Z @kj closed
+- [x] `ACC-EDIT-228-SELECT-CONFIRM` **Removing several entries asks once** - MEDIUM; removing two or more selected entries asks once and the dialog gives their count, in both modes
+  - evidence: 4-entry-select: two or more ask once with the count, cancel removes nothing; hub-mode.spec and entry-select.spec; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: select three entries, choose remove: one dialog naming 3 entries; cancel removes nothing
+  - test-tags: E2E
+  - log: 2026-11-02T17:41:50Z @kj added
+  - log: 2026-11-03T12:54:16Z @kj closed
+- [x] `ACC-EDIT-232-ADD-FOLDER` **A standalone add lands in the folder it targets** - HIGH; standalone: an item dropped on a folder row of a share, or dropped or pasted while a folder of the share is open, lands in that folder, as in the file browser; hub mode lands at the top until the hub takes a target folder (owner, 2026-11-03)
+  - evidence: 7 and 7b: standalone drop or paste lands in the targeted folder, self-copy refused; drag-drop.spec, test_add_into_folder.py; hub stays at the top by owner decision; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: drop a.txt on folder docs/: the share lists docs/a.txt; open docs/, drop b.txt: the share lists docs/b.txt
+  - test-tags: INTEGRATION, E2E
+  - log: 2026-11-03T08:59:24Z @kj added
+  - log: 2026-11-03T09:21:15Z @kj amended title "An add lands in the folder it targets" -> "A standalone add lands in the folder it targets"; text "an item dropped on a folder row of a share, or dropped or pasted while a folder of the share is open, lands in that folder, as in the file browser; both modes" -> "HIGH; standalone: an item dropped on a folder row of a share, or dropped or pasted while a folder of the share is open, lands in that folder, as in the file browser; hub mode lands at the top until the hub takes a target folder (owner, 2026-11-03)"
+  - log: 2026-11-03T09:21:15Z @kj hub probe wf_7a047de9-2d5: content add honours no target field; add then move works but fails on a name taken at the top or in the folder; owner chose to ask the hub author for a target field and keep hub adds at the top
+  - log: 2026-11-03T12:54:16Z @kj closed
+- [x] `ACC-EDIT-233-DROP-TARGET` **The drop target is shown during a drag** - MEDIUM; while a drag is over a share, the place that will receive the drop is highlighted: standalone, the folder row under the pointer, else the share showing its open folder; hub mode, the share, because the hub lands every add at the top
+  - evidence: 7 and 7b: folder row under the pointer marked, also when selected; drag-drop.spec computed outline and background; hub-mode.spec hub marks the share; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: drag over folder row docs/: that row carries the drop highlight; over a file row inside docs/: the open folder carries it
+  - test-tags: E2E
+  - log: 2026-11-03T08:59:24Z @kj added
+  - log: 2026-11-03T09:21:15Z @kj amended text "while a drag is over a share, the folder that will receive the drop is highlighted: the folder row under the pointer, else the open folder, else the share row, as the file browser marks its drop target" -> "MEDIUM; while a drag is over a share, the place that will receive the drop is highlighted: standalone, the folder row under the pointer, else the share showing its open folder; hub mode, the share, because the hub lands every add at the top"
+  - log: 2026-11-03T12:54:16Z @kj closed
 
 ## Saving out of the panel into the workspace `SAVE`
 
@@ -1368,6 +1516,44 @@ How a transfer still in flight is shown, on every surface that shows one
   - log: 2026-09-22T10:40:06Z @kj the layer's leading edge is drawn at full accent strength (a 2px inset shadow) while the wash behind it stays translucent. The wash alone measures about 1.24:1 against an untinted row, under the 3:1 this stylesheet holds non-text indicators to, and since the percentage text was removed the edge is the only thing that states the fraction. Same pairing the drop target already uses
   - log: 2026-09-22T11:08:08Z @kj closed
   - log: 2026-09-22T11:14:00Z @kj the second clause, a row with nothing in flight carries no overlay at all, now holds on the recipient upload page too: uploadOne's three terminal branches remove the layer, matching the panel, which stops producing one when the hub settles the row. Closed as DEF-PUBLIC-99
+- [x] `ACC-PROG-216-FILE-UPLOAD` **Each uploading file tints its own row** - HIGH; hub mode: during an upload from the panel to a connected request each file has a row carrying the progress layer of ACC-PROG-172 at that file's fraction sent
+  - evidence: 3-file-progress: manifest files with fraction per file; hub-mode.spec each file of an upload tints its own row; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - mechanism: 2026-11-02T17:41:51Z @kj _UPLOADS[key] holds name, size and copied per file; the manifest answers them while running; the panel draws one row per file with _progressOverlay
+  - test: mock hub: upload two files; each row's layer reports its own aria-valuenow
+  - test-tags: INTEGRATION, E2E
+  - log: 2026-11-02T17:10:50Z @kj added
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-PROG-217-FILE-ADD` **Each added item tints its own row** - HIGH; hub mode: during an add to a share each added item has a row carrying the progress layer of ACC-PROG-172 at that item's fraction copied
+  - evidence: 3-file-progress: pending fractions in sent order; hub-mode.spec each item of an add tints its own row by the fraction copied; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - mechanism: 2026-11-02T17:41:51Z @kj the hub reports one copied and total per add and lists files only at the end; the lab sizes each chosen item and derives its fraction in sent order; a shortcut until the hub reports per-file progress
+  - test: mock hub: add two files with progress reported; each row's layer reports its own aria-valuenow
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:50Z @kj added
+  - log: 2026-11-03T12:54:14Z @kj closed
+- [x] `ACC-PROG-218-FILE-WAITING` **A waiting file and a finished file** - MEDIUM; a file not yet started shows its row with an empty layer, and a finished file shows no layer
+  - evidence: 3-file-progress and review round 1: waiting row shows a 2px layer, finished row none; hub-mode.spec width 2px and no layer; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: mock hub: mid-transfer the first file has no layer and the third has aria-valuenow 0
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:50Z @kj added
+  - log: 2026-11-03T12:54:15Z @kj closed
+- [x] `ACC-PROG-229-ROW-EXPAND` **A transfer opens its row** - MEDIUM; hub mode: an add or an upload started on a collapsed row expands that row so its files show
+  - evidence: 3-file-progress: an accepted transfer opens its collapsed row once; hub-mode.spec drop on a collapsed share opens it, a row closed stays closed; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: mock hub: drop a file on a collapsed share; the row expands and the file row is listed
+  - test-tags: E2E
+  - log: 2026-11-02T17:41:50Z @kj added
+  - log: 2026-11-03T12:54:15Z @kj closed
+- [x] `ACC-PROG-230-ADD-FOLLOW` **A row learns an add ended with no ring** - HIGH; hub mode: a row reading adding or staging leaves that state within 3 s of the hub settling the add, with no ring from the stream
+  - evidence: 2e: _followAdd reads the share list each second while a row copies; Galata row follows with the stream blocked; live-hub T3 3.22 to 3.23 s; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - test: mock hub with api/stream blocked: add a file; the row lists it and stops reading adding
+  - test-tags: E2E
+  - mechanism: 2026-11-02T21:23:47Z @kj while a row reads adding or staging the panel reads the share list once a second, as _followUpload does for an upload; a read that started earlier never replaces a newer one
+  - log: 2026-11-02T21:23:47Z @kj added
+  - log: 2026-11-03T12:54:15Z @kj closed
+- [-] `ACC-PROG-234-FOLDER-ROWS` **Rows in transit show in the folder they land in** - MEDIUM; hub mode: the per-file rows of an add are drawn in the folder the add lands in, so an add into an open folder shows its rows there
+  - test: mock hub: open docs/, drop a.txt during a held add: the row of a.txt with its layer is listed in docs/
+  - test-tags: E2E
+  - log: 2026-11-03T08:59:25Z @kj added
+  - log: 2026-11-03T09:21:33Z @kj rejected: owner 2026-11-03: hub adds land at the top of the share until the hub takes a target folder (probe wf_7a047de9-2d5: 7 field names, 14 adds, all ignored), so the rows already show where the files land; reopen when the hub gains the field
 
 ## Command-line interface `CLI`
 

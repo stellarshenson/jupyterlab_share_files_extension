@@ -22,11 +22,30 @@ export async function dragOnto(
   target: any,
   others: string[] = []
 ): Promise<void> {
+  await dragOver(page, name, target, others);
+  await page.mouse.up();
+}
+
+/**
+ * `dragOnto` without the release: the drag is held over `target` until the
+ * caller releases the mouse. `marked` is the element that takes the
+ * highlight, the target itself unless the target passes the drag on to an
+ * element around it.
+ */
+export async function dragOver(
+  page: any,
+  name: string,
+  target: any,
+  others: string[] = [],
+  marked: any = target
+): Promise<void> {
   await page.filebrowser.openHomeDirectory();
   await page.filebrowser.revealFileInBrowser(name);
+  // a path opens its folder, whose list shows the last part
+  const listed = name.split('/').pop();
   const source = page
     .getByRole('region', { name: 'File Browser Section' })
-    .getByRole('listitem', { name: new RegExp(`^Name: ${name}`) });
+    .getByRole('listitem', { name: new RegExp(`^Name: ${listed}`) });
   await source.click();
   // a multi-selection: the drag of one selected row carries them all
   for (const other of others) {
@@ -47,9 +66,9 @@ export async function dragOnto(
   // past Lumino's 5px drag threshold first, then onto the target
   await page.mouse.move(from.x + from.width / 2 + 12, from.y + from.height / 2);
   await page.mouse.move(toX, toY, { steps: 12 });
-  // nudge until the target takes the highlight, so the release lands on it
+  // nudge until the marked element takes the highlight, so the release lands on the target
   for (let i = 0; i < 20; i++) {
-    const lit = await target.evaluate((el: HTMLElement) =>
+    const lit = await marked.evaluate((el: HTMLElement) =>
       el.classList.contains('jp-mod-dropTarget')
     );
     if (lit) {
@@ -57,6 +76,5 @@ export async function dragOnto(
     }
     await page.mouse.move(toX, toY + (i % 2 === 0 ? 1 : -1));
   }
-  await expect(target).toHaveClass(/jp-mod-dropTarget/);
-  await page.mouse.up();
+  await expect(marked).toHaveClass(/jp-mod-dropTarget/);
 }

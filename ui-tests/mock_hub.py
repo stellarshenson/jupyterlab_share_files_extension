@@ -35,9 +35,10 @@ certificate ``peer-a`` until ``/_control/certificate`` loads ``peer-b``.
 ``/_control/*`` is the test's own side door: reset the store, change the
 capabilities, the policy, the tunnel (its base, its delay and its ready
 verdict), how long a share copies and whether a switch on is refused
-``busy`` meanwhile, the recipient page and the status a Cloudflare switch off answers,
-add an upload, add or close another user's record, swap the https
-certificate, ring the change stream, read the recorded calls.
+``busy`` meanwhile, the progress an add reports, where an upload's body
+stops until it is let go, the recipient page and the status a Cloudflare
+switch off answers, add an upload, add or close another user's record, swap
+the https certificate, ring the change stream, read the recorded calls.
 """
 
 from __future__ import annotations
@@ -96,6 +97,17 @@ class Store:
         self.cloudflare_enabled = True
         # how long an add stays running before it settles
         self.add_seconds = ADD_SECONDS
+        # with `hold_adds` an add stays running until /_control/release lands it
+        self.hold_adds = False
+        self.held_land = None
+        # the one copied and total the hub reports for an add, set by /_control/progress
+        self.add_progress = {"copied": 21, "total": 42}
+        # with `receive_hold` an upload's body is read no further once that
+        # many bytes of it arrived, until /_control/receive lets it go
+        if getattr(self, "received", None) is not None:
+            self.received.set()
+        self.received = asyncio.Event()
+        self.receive_hold = 0
         # a share's copy: 0 lands it on the next listing; otherwise it lands
         # this many seconds after the create, whatever is read meanwhile, and
         # `busy_while_staging` refuses a switch on until then, as the DEV hub
@@ -184,6 +196,12 @@ class Store:
             item["state"] = "ready"
             item.pop("progress", None)
             self.nudge()
+
+
+def _dot_named(path: str) -> bool:
+    """The hub takes no chosen name starting with . or ~; a dot-named parent
+    is not checked."""
+    return posixpath.basename(path.rstrip("/")).startswith((".", "~"))
 
 
 def _files(paths) -> list[dict]:
@@ -292,12 +310,13 @@ class Create(_Hub):
             for p in paths:
                 if not isinstance(p, str) or not p or p.startswith("/") or ".." in p.split("/"):
                     return self.answer(400, {"status": 400, "message": "each path must be inside the workspace"})
+        kept = [p for p in paths if not _dot_named(p)]
         id_ = STORE.new_id("r_" if kind == "request" else "")
         # a share with no paths has nothing to copy and is born ready
         state = "staging" if kind == "share" and paths else "ready"
         STORE.items.append({
             "id": id_, "kind": kind, "owner": "alice", "title": title, "state": state,
-            "files": [], "bytes": 0, "skipped": 0,
+            "files": [], "bytes": 0, "skipped": len(paths) - len(kept),
             "created_at": "2026-09-03T20:00:00Z", "expires_at": "2026-09-17T20:00:00Z",
             "has_password": bool(body.get("password")), "tunnel": False,
         })
@@ -305,7 +324,7 @@ class Create(_Hub):
             # the hub carries bytes while it stages, and says how far along
             STORE.items[-1]["progress"] = {"copied": 21, "total": 42}
         if kind == "share":
-            STORE.pending_paths[id_] = list(paths)
+            STORE.pending_paths[id_] = kept
         if state == "staging" and STORE.stage_seconds:
             STORE.stage_timers[id_] = asyncio.get_running_loop().call_later(
                 STORE.stage_seconds, lambda: STORE.land_copy(id_))
@@ -328,9 +347,13 @@ class Close(_Hub):
 class Content(_Hub):
     """POST shares/<id>/content - add, remove, rename. An add answers 202 and
     lands later; meanwhile the row carries ``last_add`` running with
-    ``progress`` and every content call is refused ``busy``. An added name
-    holding ``refuse-add`` settles as refused ``over_cap``. ``exclude`` must
-    be a list, as on the hub."""
+    ``progress`` and every content call is refused ``busy``, as it is while
+    the row is ``staging``. An add holding a chosen name that starts with . or
+    ~ is refused whole with ``bad_filename``. An added name holding
+    ``refuse-add`` settles as refused ``over_cap``, and one holding
+    ``refuse-password`` is refused ``password_required``. A removed name
+    holding ``refuse-remove`` is refused ``busy``. ``exclude`` must be a list,
+    as on the hub."""
 
     def refuse(self, action, reason, code=400):
         self.answer(code, {"reason": reason, "message": f"The {action} was refused: {reason}"})
@@ -343,7 +366,7 @@ class Content(_Hub):
         action = body.get("action")
         if action not in ("add", "remove", "rename"):
             return self.answer(400, {"status": 400, "message": "action must be one of: add, remove, rename"})
-        if id_ in STORE.adding:
+        if id_ in STORE.adding or item["state"] == "staging":
             return self.refuse(action, "busy", 409)
         names = [f["name"] for f in item["files"]]
         held = lambda n: [x for x in names if x == n or x.startswith(n + "/")]  # noqa: E731
@@ -354,11 +377,15 @@ class Content(_Hub):
             if not paths:
                 return self.answer(204)
             added = [posixpath.basename(p.rstrip("/")) for p in paths]
+            if any(_dot_named(p) for p in paths):
+                return self.refuse(action, "bad_filename")
             if any(held(n) for n in added):
                 return self.refuse(action, "name_taken")
+            if any("refuse-password" in n for n in added):
+                return self.refuse(action, "password_required")
             STORE.adding.add(id_)
             item["last_add"] = {"state": "running"}
-            item["progress"] = {"copied": 21, "total": 42}
+            item["progress"] = dict(STORE.add_progress)
 
             def land():
                 STORE.adding.discard(id_)
@@ -374,7 +401,10 @@ class Content(_Hub):
                 # the hub rings on a refused add as well as on a landed one
                 STORE.nudge()
 
-            tornado.ioloop.IOLoop.current().call_later(STORE.add_seconds, land)
+            if STORE.hold_adds:
+                STORE.held_land = land
+            else:
+                tornado.ioloop.IOLoop.current().call_later(STORE.add_seconds, land)
             return self.answer(202)
         name = str(body.get("name") or "")
         if not name or ".." in name.split("/"):
@@ -382,6 +412,8 @@ class Content(_Hub):
         if not held(name):
             return self.refuse(action, "unknown_entry")
         if action == "remove":
+            if "refuse-remove" in name:
+                return self.refuse(action, "busy", 409)
             item["files"] = [f for f in item["files"] if f["name"] not in held(name)]
         else:
             new = str(body.get("new_name") or "")
@@ -647,10 +679,21 @@ class LinkArchive(_Link):
         self.finish(buf.getvalue())
 
 
+@tornado.web.stream_request_body
 class LinkUpload(_Link):
     """One file per request, the raw body under ``X-Filename``; it lands
     after ``add_seconds``, and a name holding ``refuse-upload`` is over the
-    request's limit."""
+    request's limit. The body is read as it comes, so ``receive_hold`` can
+    stop a file part way."""
+
+    def prepare(self):
+        super().prepare()
+        self.size = 0
+
+    async def data_received(self, chunk):
+        before, self.size = self.size, self.size + len(chunk)
+        if before < STORE.receive_hold <= self.size:
+            await STORE.received.wait()
 
     async def post(self, id_):
         item = self.foreign(id_)
@@ -665,10 +708,10 @@ class LinkUpload(_Link):
             return self.refuse(413, "over_cap")
         await asyncio.sleep(STORE.add_seconds)
         STORE.uploads.setdefault(id_, []).append({
-            "upload_id": STORE.new_id("u_"), "filename": name, "size": len(self.request.body),
+            "upload_id": STORE.new_id("u_"), "filename": name, "size": self.size,
             "sha256": "0" * 64, "uploaded_at": "2026-09-03T21:00:00Z",
         })
-        self.finish({"ok": True, "filename": name, "size": len(self.request.body)})
+        self.finish({"ok": True, "filename": name, "size": self.size})
 
 
 class Control(_Base):
@@ -707,7 +750,26 @@ class Control(_Base):
             return self.answer(200, {"ok": True})
         if action == "add":
             STORE.add_seconds = float(body.get("seconds") or ADD_SECONDS)
+            STORE.hold_adds = bool(body.get("hold"))
             return self.answer(200, {"ok": True})
+        if action == "release":
+            STORE.held_land()
+            return self.answer(200, {"ok": True})
+        if action == "progress":
+            # how far the running add is, and every add after it
+            STORE.add_progress = {"copied": int(body.get("copied") or 0), "total": int(body.get("total") or 0)}
+            for item in STORE.items:
+                if item["id"] in STORE.adding:
+                    item["progress"] = dict(STORE.add_progress)
+            STORE.nudge()
+            return self.answer(200, STORE.add_progress)
+        if action == "receive":
+            # read every upload body no further than `hold` bytes; 0 lets them go
+            STORE.receive_hold = int(body.get("hold") or 0)
+            if not STORE.receive_hold:
+                STORE.received.set()
+                STORE.received = asyncio.Event()
+            return self.answer(200, {"hold": STORE.receive_hold})
         if action == "files":
             # put files on a share's row without running a transfer
             item = next((i for i in STORE.items if i["id"] == str(body.get("id") or "")), None)

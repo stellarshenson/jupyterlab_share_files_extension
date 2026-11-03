@@ -278,7 +278,8 @@
   flex-direction: column;
 }
 
-.jp-ShareFilesPanel-item.jp-mod-dropTarget {
+.jp-ShareFilesPanel-item.jp-mod-dropTarget,
+.jp-ShareFilesPanel-entry.jp-mod-dropTarget {
   /* Thick accent frame with a faint overlay - keeps the original row
      content readable instead of blanketing it with a brand-tinted block. */
   outline: 2px solid var(--jp-brand-color1);
@@ -311,6 +312,7 @@
   top: 0;
   bottom: 0;
   left: 0;
+  min-width: 2px;
 
   /* The wash is the same accent at the same strength, but stated in the
      colour rather than in `opacity`, which would dim the edge with it. The
@@ -465,6 +467,9 @@
   line-height: 22px;
   cursor: default;
   user-select: none;
+
+  /* holds the transfer overlay of a file in transit */
+  position: relative;
 }
 
 .jp-ShareFilesPanel-entry:hover {
@@ -475,11 +480,35 @@
   cursor: pointer;
 }
 
+/* the file browser's mark for a selected row, after :hover so a hover keeps it */
+.jp-ShareFilesPanel-entry.jp-mod-selected {
+  background: var(--jp-brand-color1);
+}
+
+/* the file browser's drop mark on a selected row: the accent outline would not show on the accent background */
+.jp-ShareFilesPanel-entry.jp-mod-selected.jp-mod-dropTarget {
+  background: var(--jp-brand-color3);
+}
+
+.jp-ShareFilesPanel-entry.jp-mod-selected .jp-ShareFilesPanel-entryName,
+.jp-ShareFilesPanel-entry.jp-mod-selected .jp-ShareFilesPanel-entrySize {
+  color: var(--jp-ui-inverse-font-color1);
+}
+
+.jp-ShareFilesPanel-entry.jp-mod-selected .jp-icon-selectable[fill] {
+  fill: #fff;
+}
+
 /* keyboard focus on a connected peer's entry (Shift+F10 opens its menu);
    inset so the list edge does not clip it */
 .jp-ShareFilesPanel-entry:focus-visible {
   outline: 1px solid var(--jp-brand-color1);
   outline-offset: -1px;
+}
+
+/* the accent outline would not show on the accent background */
+.jp-ShareFilesPanel-entry.jp-mod-selected:focus-visible {
+  outline-color: var(--jp-layout-color1);
 }
 
 .jp-ShareFilesPanel-entryIndent {

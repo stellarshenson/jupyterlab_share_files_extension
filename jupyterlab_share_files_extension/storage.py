@@ -687,12 +687,30 @@ class ShareStore(BaseStore):
         )
         return manifest
 
-    def add_items(self, id_: str, source_paths: list[str]) -> dict[str, Any]:
+    def add_items(
+        self, id_: str, source_paths: list[str], folder: str = ""
+    ) -> dict[str, Any]:
+        """Copy source_paths into the share, or into `folder`, a
+        workspace-relative path of a directory inside the share."""
         content_dir = self._path_for(id_)
         if not content_dir.exists():
             raise NotFoundError(f"Share content missing: {id_}")
-        for source in self._resolve_sources(source_paths):
-            _copy_into(source, content_dir, self.excluded_names)
+        target_dir = content_dir
+        if folder:
+            target_dir = (self.workspace_root / folder).resolve()
+            if not (
+                target_dir.is_relative_to(content_dir.resolve()) and target_dir.is_dir()
+            ):
+                raise StorageError(f"This share has no folder {folder}")
+        sources = self._resolve_sources(source_paths)
+        for source in sources:
+            # copytree into its own tree walks its own copy without end
+            if target_dir.resolve().is_relative_to(source.resolve()):
+                raise StorageError(
+                    f"Cannot add {source.name} into itself or into a folder inside it"
+                )
+        for source in sources:
+            _copy_into(source, target_dir, self.excluded_names)
         return self.get(id_)
 
     def rename(self, id_: str, name: str) -> dict[str, Any]:

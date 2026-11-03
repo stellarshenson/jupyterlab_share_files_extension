@@ -23,6 +23,11 @@ module.exports = {
     '!src/**/.ipynb_checkpoints/*'
   ],
   coverageReporters: ['lcov', 'text'],
+  // tmp/ holds the workflows' scratch copies of the source, with their own spec files
+  testPathIgnorePatterns: [
+    ...baseConfig.testPathIgnorePatterns,
+    '<rootDir>/tmp/'
+  ],
   testRegex: 'src/.*/.*.spec.ts[x]?$',
   transformIgnorePatterns: [`/node_modules/(?!${esModules}).+`]
 };

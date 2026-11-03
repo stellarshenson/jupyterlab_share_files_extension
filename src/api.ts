@@ -143,11 +143,11 @@ export function setTunnel(
   return requestAPI('api/tunnel', s, jsonBody(body));
 }
 
-/** Hub mode: the panel's change stream (Server-Sent Events). The browser
- * cannot set headers on an EventSource, so the token rides the query
- * string when the server settings say it must. */
+/** Hub mode: the panel's change stream (a WebSocket). The browser cannot
+ * set headers on a WebSocket, so the token rides the query string when the
+ * server settings say it must. */
 export function streamUrl(s: ServerConnection.ISettings): string {
-  const url = URLExt.join(s.baseUrl, NAMESPACE, 'api', 'stream');
+  const url = URLExt.join(s.wsUrl, NAMESPACE, 'api', 'stream');
   return s.appendToken && s.token
     ? `${url}?token=${encodeURIComponent(s.token)}`
     : url;
@@ -229,12 +229,15 @@ export function deleteShare(
   return requestAPI(`api/shares/${id}`, s, { method: 'DELETE' });
 }
 
+/** `folder` is the workspace path of a folder inside the share; without it
+ * the items land at the top of the share. */
 export function addShareItems(
   s: ServerConnection.ISettings,
   id: string,
-  paths: string[]
+  paths: string[],
+  folder?: string
 ): Promise<IShare> {
-  return requestAPI(`api/shares/${id}/items`, s, jsonBody({ paths }));
+  return requestAPI(`api/shares/${id}/items`, s, jsonBody({ paths, folder }));
 }
 
 export function removeShareItems(
@@ -371,6 +374,8 @@ export function hubReasonText(slug: string): string {
     bad_filename: 'A file name was rejected by the hub.',
     name_taken: 'The share already holds an entry with that name.',
     unknown_entry: 'The share no longer holds that entry.',
+    no_reason: 'The hub gave no reason.',
+    lab_failed: 'The lab could not send this add.',
     closed: 'The owner closed this share or request, or it expired.',
     password_required:
       'Your group requires a password on every share and request.',
@@ -397,6 +402,15 @@ export function hubReasonText(slug: string): string {
       ? 'The hub refused this and named a reason this version does not know - ask the administrator.'
       : '')
   );
+}
+
+/** Why the hub refused an add. Each add carries the share's password, so
+ * these two slugs mean the lab no longer holds it, not the group rule that
+ * `hubReasonText` names for a create. */
+export function addReasonText(slug: string): string {
+  return slug === 'password_required' || slug === 'password_wrong'
+    ? "The hub asks for this share's password before it adds files, and the lab does not hold the current one - open Change Password in the share's menu, enter the same password again, then add the files."
+    : hubReasonText(slug);
 }
 
 /** The link dialog's reachability line: what answered, in plain words, and
@@ -488,6 +502,22 @@ export function hubTunnelLook(
     pressed: false,
     title: 'Cloudflare sharing off - hub network only\nClick to switch it on'
   };
+}
+
+/** The entries a shift-click selects: every name of `order` from `anchor` to
+ * `target`, both included, in display order; `target` alone when `anchor` is
+ * not in `order`. */
+export function entryRange(
+  order: string[],
+  anchor: string,
+  target: string
+): string[] {
+  const from = order.indexOf(anchor);
+  const to = order.indexOf(target);
+  if (from < 0) {
+    return [target];
+  }
+  return order.slice(Math.min(from, to), Math.max(from, to) + 1);
 }
 
 /** Kind and id from a share or request link: the standalone

@@ -38,12 +38,14 @@ import {
   createShare,
   deleteRequest,
   deleteShare,
+  entryRange,
   fetchConnectionManifest,
   fetchRequestUpload,
   generatePassword,
   getInfo,
   getPassword,
   hasTunnelPending,
+  addReasonText,
   hubReasonText,
   hubTunnelLook,
   IExtensionInfo,
@@ -106,6 +108,11 @@ const STREAM_REFRESH_DELAY_MS = 300;
 // hub mode: how soon a connected request is read again while this lab's
 // upload into it runs
 const UPLOAD_FOLLOW_MS = 1000;
+// hub mode: how soon the share list is read again while a row reads adding or
+// staging
+const ADD_FOLLOW_MS = 1000;
+// the lab's toast cuts a message at this many characters
+const TOAST_MAX_CHARS = 140;
 const CONTENTS_MIME = 'application/x-jupyter-icontents';
 // Our own MIME for dragging a connected (remote) share entry out of the panel.
 // Carries `[{ key, name, type }]`; the file browser drop patch resolves it to a
@@ -117,6 +124,13 @@ const REMOTE_MIME = 'application/x-share-files-remote';
 const FACTORY_MIME = 'application/vnd.lumino.widget-factory';
 /** A file or folder of a hub share, dragged inside the panel to move it */
 const HUB_ENTRY_MIME = 'application/x-share-files-hub-entry';
+// at most this many names in one remove call, so its query string stays short
+const REMOVE_CHUNK = 50;
+
+/** A click that selects entries runs none of the row's other actions. */
+function selects(evt: MouseEvent): boolean {
+  return evt.ctrlKey || evt.metaKey || evt.shiftKey;
+}
 
 interface IPanelState {
   shares: IShare[];
@@ -276,14 +290,73 @@ export class ShareFilesPanel extends Widget {
     }
   }
 
+  /** A button that shows a whole message the toast would cut. */
+  private _showAll(text: string): Notification.IAction[] {
+    if (text.length <= TOAST_MAX_CHARS) {
+      return [];
+    }
+    return [
+      {
+        label: 'Show all',
+        callback: () => {
+          void showDialog({
+            title: this.title.caption,
+            body: text,
+            buttons: [Dialog.okButton()]
+          });
+        }
+      }
+    ];
+  }
+
+  /** A hub add or create was accepted without these chosen names. */
+  private _noteLeftOut(names?: string[]): void {
+    if (names?.length) {
+      const text = `A hub share takes no name starting with . or ~. Not added: ${names.join(', ')}`;
+      Notification.warning(text, {
+        autoClose: 8000,
+        actions: this._showAll(text)
+      });
+    }
+  }
+
+  /** A refusal reaches the panel on a read, after the add's answer: say so
+   * once, when the row first carries it. */
+  private _noteAddRefused(before: IShare[], now: IShare[]): void {
+    // shortcut: a second refusal with the same reason raises no second notice, count refusals on the row if that matters
+    for (const share of now) {
+      const seen = before.find(s => s.id === share.id);
+      if (seen && share.add_reason && share.add_reason !== seen.add_reason) {
+        const text = `${share.name}: ${this._addRefusedText(share.add_reason)}`;
+        Notification.warning(text, {
+          autoClose: 8000,
+          actions: this._showAll(text)
+        });
+      }
+    }
+  }
+
+  /** Take one read of the share list, unless a read that started later was
+   * taken first: reads may answer out of order. */
+  private _applyShares(read: number, shares: IShare[]): void {
+    if (read < this._sharesTaken) {
+      return;
+    }
+    this._sharesTaken = read;
+    this._noteAddRefused(this._state.shares, shares);
+    this._state.shares = shares;
+  }
+
   /** A share edit the server did not apply: a refusal the hub named is a
    * warning in its own words; anything else carries the server's sentence. */
   private _noteEditFailure(what: string, err: any): void {
     if (err?.reason) {
       Notification.warning(hubReasonText(err.reason), { autoClose: 8000 });
     } else {
-      Notification.error(`Could not ${what}: ${err?.message || err}`, {
-        autoClose: 8000
+      const text = `Could not ${what}: ${err?.message || err}`;
+      Notification.error(text, {
+        autoClose: 8000,
+        actions: this._showAll(text)
       });
     }
   }
@@ -385,12 +458,14 @@ export class ShareFilesPanel extends Widget {
         autoClose: 5000
       });
       this._noteCloudRefusal(share.tunnel_reason);
+      this._noteLeftOut(share.left_out);
     } catch (err: any) {
-      Notification.update({
-        id: pending,
-        message: `Could not create share: ${err.message || err}`,
-        type: 'error',
-        autoClose: 8000
+      const text = `Could not create share: ${err.message || err}`;
+      // the lab refuses in milliseconds, and an update ahead of the first toast's render is lost
+      Notification.dismiss(pending);
+      Notification.error(text, {
+        autoClose: 8000,
+        actions: this._showAll(text)
       });
     } finally {
       this._state.busyKeys.delete(tempKey);
@@ -436,20 +511,38 @@ export class ShareFilesPanel extends Widget {
     }
   }
 
-  /** Add files (workspace-relative paths) to an existing share by id.
-   * Resolves to whether the server took the add. */
-  async addToShareFlow(shareId: string, paths: string[]): Promise<boolean> {
+  /** Add files (workspace-relative paths) to an existing share by id, into
+   * `folder` when given. Resolves to whether the server took the add. */
+  async addToShareFlow(
+    shareId: string,
+    paths: string[],
+    folder?: string
+  ): Promise<boolean> {
     this._state.busyKeys.add(shareId);
     this._render();
     try {
-      await addShareItems(this._serverSettings, shareId, paths);
+      const share = await addShareItems(
+        this._serverSettings,
+        shareId,
+        paths,
+        folder
+      );
       // on a hub the copy runs after the answer: the row says the hub is
       // copying and says when the hub refused
       if (!this._hubMode) {
         Notification.success(`${paths.length} item(s) added`, {
           autoClose: 5000
         });
+      } else {
+        this._addsAccepted += 1;
+        // ACC-PROG-229: the row opens on its files once, and the owner may close it again
+        if (!this._state.expandedItems.has(`share:${shareId}`)) {
+          // files in transit are drawn at the top only, and a closed row keeps its folder
+          this._state.shareSubPath.delete(shareId);
+          this._state.expandedItems.add(`share:${shareId}`);
+        }
       }
+      this._noteLeftOut(share.left_out);
       return true;
     } catch (err: any) {
       this._noteEditFailure('add items', err);
@@ -510,6 +603,10 @@ export class ShareFilesPanel extends Widget {
           });
         }
       }
+      if (this._hubMode) {
+        // ACC-PROG-229, as for an add
+        this._state.expandedItems.add(`conn:${connectionKey}`);
+      }
       return true;
     } catch (err: any) {
       if (this._hubMode && err?.response?.status === 413) {
@@ -555,12 +652,13 @@ export class ShareFilesPanel extends Widget {
         } catch {
           // keep the previous value - we just won't update the hints
         }
+        const read = ++this._shareReads;
         const [s, r, c] = await Promise.all([
           listShares(this._serverSettings),
           listRequests(this._serverSettings),
           listConnections(this._serverSettings)
         ]);
-        this._state.shares = s.shares || [];
+        this._applyShares(read, s.shares || []);
         this._state.requests = r.requests || [];
         this._state.connections = c.connections || [];
         // Drop per-connection bookkeeping for connections that no longer
@@ -803,6 +901,10 @@ export class ShareFilesPanel extends Widget {
   protected onBeforeDetach(): void {
     this._stopPolling();
     this._closeStream();
+    if (this._addFollower) {
+      window.clearTimeout(this._addFollower);
+      this._addFollower = null;
+    }
   }
 
   /** Pick the refresh source for the mode the server reported: the hub's
@@ -816,7 +918,8 @@ export class ShareFilesPanel extends Widget {
     if (!this.isAttached) {
       return;
     }
-    if (this._hubMode && typeof EventSource !== 'undefined') {
+    this._followAdd();
+    if (this._hubMode && typeof WebSocket !== 'undefined') {
       if (this._tunnelPending()) {
         this._startPolling();
       } else {
@@ -835,10 +938,11 @@ export class ShareFilesPanel extends Widget {
     return hasTunnelPending([...this._state.shares, ...this._state.requests]);
   }
 
-  /** Hub mode: one EventSource to the lab's `api/stream`. The lab holds one
-   * stream to the hub for all its panels and relays each ring as `changed`;
-   * the panel fetches its lists once per ring and once per (re)open, so a
-   * ring lost while disconnected is covered by the next open. */
+  /** Hub mode: one WebSocket to the lab's `api/stream`, which holds none of
+   * the browser's six connections per origin. The lab holds one stream to
+   * the hub for all its panels and relays each ring as a message; the panel
+   * fetches its lists once per ring and once per open, so a ring lost while
+   * disconnected is covered by the next open. */
   private _openStream(): void {
     if (this._stream) {
       return;
@@ -849,25 +953,21 @@ export class ShareFilesPanel extends Widget {
       this._stopPolling();
     }
     this._startConnectionPolling();
-    const stream = new EventSource(streamUrl(this._serverSettings));
-    stream.addEventListener('changed', () => this._scheduleRefresh());
-    // fetch on open and on every reconnect (EventSource retries by itself)
+    const stream = new WebSocket(streamUrl(this._serverSettings));
     stream.onopen = () => this._scheduleRefresh();
-    // A non-200 or non-event-stream answer (the lab restarting behind the
-    // proxy, a lapsed session) closes the EventSource for good - only network
-    // drops are retried by the browser. Fall back to the timer; its next
-    // refresh reopens the stream through _syncLiveness.
-    stream.onerror = () => {
-      if (stream.readyState === EventSource.CLOSED) {
-        this._closeStream();
-        this._startPolling();
-      }
+    stream.onmessage = () => this._scheduleRefresh();
+    // A WebSocket never reconnects: the timer's next refresh reopens this one
+    stream.onclose = () => {
+      this._closeStream();
+      this._startPolling();
     };
     this._stream = stream;
   }
 
   private _closeStream(): void {
     if (this._stream) {
+      // a close asked for here reports later and must not end a newer stream
+      this._stream.onclose = null;
       this._stream.close();
       this._stream = null;
     }
@@ -920,6 +1020,46 @@ export class ShareFilesPanel extends Widget {
         void this._refreshConnection(conn).then(() => this._render());
       }, UPLOAD_FOLLOW_MS)
     );
+  }
+
+  /** Hub mode: the end of a copy may ring nothing this panel hears, so while
+   * a row reads adding or staging the share list is read each second. Only
+   * that list: a refresh also reads each connection's peer page and each
+   * request's uploads. Each accepted add is read at least once by a timer
+   * armed after it, because the hub reports an add 0.01 to 0.02 s after its
+   * answer and the read that follows the answer can come first. */
+  private _followAdd(): void {
+    if (
+      this._addFollower ||
+      (this._addsFollowed === this._addsAccepted &&
+        !this._state.shares.some(s => s.adding || s.state === 'staging'))
+    ) {
+      return;
+    }
+    const accepted = this._addsAccepted;
+    const timer = window.setTimeout(async () => {
+      const read = ++this._shareReads;
+      let shares: IShare[] | undefined;
+      try {
+        shares = (await listShares(this._serverSettings)).shares || [];
+      } catch (err) {
+        console.warn('Share Files: could not read the shares', err);
+      }
+      // the panel was detached during the read
+      if (this._addFollower !== timer) {
+        return;
+      }
+      this._addFollower = null;
+      if (shares) {
+        this._addsFollowed = accepted;
+        this._applyShares(read, shares);
+        this._updateCloudIndicator();
+        this._render();
+      }
+      // after a failed read the last rows read decide, so a copy goes on being read
+      this._followAdd();
+    }, ADD_FOLLOW_MS);
+    this._addFollower = timer;
   }
 
   /** Coalesce a burst of rings (the hub rings once per changed record, and
@@ -1377,7 +1517,7 @@ export class ShareFilesPanel extends Widget {
     } else {
       meta.textContent = `${share.entries.length} item${share.entries.length === 1 ? '' : 's'}`;
       if (share.add_reason) {
-        // a collapsed row must still say the last add did not happen
+        // a collapsed row must still say an add did not happen
         meta.classList.add('jp-mod-refused');
         meta.textContent += ' - add refused';
         meta.title = `${this._addRefusedText(share.add_reason)}\nrefused: ${share.add_reason}`;
@@ -1454,10 +1594,21 @@ export class ShareFilesPanel extends Widget {
   private _renderShareEntries(share: IShare): HTMLElement {
     const list = document.createElement('div');
     list.className = 'jp-ShareFilesPanel-entryList';
+    // the owner selects entries here, and aria-selected needs this role
+    // shortcut: the .. row and rows in transit sit in the listbox with no option role, and an option holds the remove button, upgrade to a grid when an accessibility checker must pass
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-multiselectable', 'true');
+    list.setAttribute('aria-label', `Entries of ${share.name}`);
     if (this._hubMode) {
       return this._renderHubShareEntries(share, list);
     }
     const subPath = this._state.shareSubPath.get(share.id) || '';
+    // shortcut: entries inside a sub-folder take no selection, as they take no remove, upgrade when they can be removed
+    this._keepSelection(
+      share.id,
+      subPath,
+      subPath ? [] : this._applyHiddenFilter(share.entries).map(e => e.name)
+    );
     // At the share root we use share.entries (synced via the extension's own
     // /api/shares listing). Inside a sub-folder we query JupyterLab's
     // Contents API on demand and cache the result for the current render.
@@ -1466,6 +1617,20 @@ export class ShareFilesPanel extends Widget {
         this._state.shareSubPath.set(share.id, entry.path);
         this._render();
       }
+    };
+    // a folder row takes a drop into itself, as in the file browser
+    const takeDrop = (row: HTMLElement, entry: IShareEntry) => {
+      const folder = entry.path;
+      if (entry.type === 'directory' && folder) {
+        this._attachDropTarget(
+          row,
+          paths => {
+            void this.addToShareFlow(share.id, paths, folder);
+          },
+          `folder:${folder}`
+        );
+      }
+      return row;
     };
     if (!subPath) {
       const visible = this._applyHiddenFilter(share.entries);
@@ -1480,17 +1645,17 @@ export class ShareFilesPanel extends Widget {
         return list;
       }
       for (const entry of visible) {
-        list.appendChild(
-          this._renderEntryRow(
-            entry,
-            () => {
-              void this._removeEntryFromShare(share.id, entry.name);
-            },
-            0,
-            drillIn,
-            `share:${share.id}/${entry.name}`
-          )
+        const row = this._renderEntryRow(
+          entry,
+          () => {
+            void this._removeEntry(share.id, entry.name);
+          },
+          0,
+          drillIn,
+          `share:${share.id}/${entry.name}`
         );
+        this._attachSelect(row, share.id, '', entry.name);
+        list.appendChild(takeDrop(row, entry));
       }
       return list;
     }
@@ -1518,7 +1683,9 @@ export class ShareFilesPanel extends Widget {
       return list;
     }
     for (const entry of visibleCached) {
-      list.appendChild(this._renderEntryRow(entry, undefined, 0, drillIn));
+      list.appendChild(
+        takeDrop(this._renderEntryRow(entry, undefined, 0, drillIn), entry)
+      );
     }
     return list;
   }
@@ -1557,6 +1724,15 @@ export class ShareFilesPanel extends Widget {
       }
     }
     const visible = this._applyHiddenFilter([...rows.values()]);
+    this._keepSelection(
+      share.id,
+      folder,
+      visible.map(e => prefix + e.name)
+    );
+    // the hub lists an add's files only once it lands, so the lab draws them meanwhile
+    const coming = folder
+      ? []
+      : (share.pending || []).filter(p => !rows.has(p.name));
     if (folder) {
       list.appendChild(this._renderUpRow(share.id, folder));
     }
@@ -1568,7 +1744,7 @@ export class ShareFilesPanel extends Widget {
         this._renderEmpty(this._addRefusedText(share.add_reason))
       );
     }
-    if (visible.length === 0 && !share.adding) {
+    if (visible.length === 0 && !share.adding && coming.length === 0) {
       list.appendChild(
         this._renderEmpty(
           share.state === 'staging'
@@ -1582,16 +1758,42 @@ export class ShareFilesPanel extends Widget {
       );
     }
     for (const entry of visible) {
+      const row = this._renderHubEntryRow(share.id, prefix + entry.name, entry);
+      this._attachSelect(row, share.id, folder, prefix + entry.name);
+      list.appendChild(row);
+    }
+    for (const p of coming) {
       list.appendChild(
-        this._renderHubEntryRow(share.id, prefix + entry.name, entry)
+        this._renderTransferRow(p.name, p.size, p.fraction, `Copying ${p.name}`)
       );
     }
     return list;
   }
 
-  /** The hub keeps the refusal of the last add until the next add. */
+  /** A file in transit (ACC-PROG-216, ACC-PROG-217): the entry row's look
+   * with its own tint, and nothing to act on until it has landed. */
+  private _renderTransferRow(
+    name: string,
+    size: number,
+    fraction: number,
+    label: string
+  ): HTMLElement {
+    // shortcut: pending and files name no type, so a folder in transit shows the file icon and no trailing /, upgrade when they carry the type
+    const row = this._renderEntryRow({ name, type: 'file', size });
+    if (fraction < 1) {
+      row.appendChild(this._progressOverlay(fraction, label));
+    }
+    return row;
+  }
+
+  /** A refusal stays on the row until a drop after a read has carried it, and
+   * later held adds may land before that, so this does not say which add it
+   * was. */
   private _addRefusedText(reason: string): string {
-    return `The hub refused the last add - ${hubReasonText(reason)}`;
+    // the lab's hold task stopped, and the hub refused nothing
+    return reason === 'lab_failed'
+      ? hubReasonText(reason)
+      : `The hub refused an add - ${addReasonText(reason)}`;
   }
 
   /** Why an upload into another user's request was refused. Its size limit
@@ -1635,7 +1837,7 @@ export class ShareFilesPanel extends Widget {
     entry: IShareEntry
   ): HTMLElement {
     const key = `share:${shareId}/${fullName}`;
-    const remove = () => void this._removeHubEntry(shareId, fullName);
+    const remove = () => void this._removeEntry(shareId, fullName);
     const row = this._renderEntryRow(entry, remove, 0, undefined, key);
     row.classList.add('jp-mod-clickable');
     const menu = (evt: MouseEvent): Menu => {
@@ -1674,7 +1876,11 @@ export class ShareFilesPanel extends Widget {
         this._render();
       }
     };
-    row.addEventListener('dblclick', openFolder);
+    row.addEventListener('dblclick', evt => {
+      if (!selects(evt)) {
+        openFolder(evt);
+      }
+    });
     row.addEventListener('keydown', evt => {
       if (evt.target !== row) {
         return;
@@ -1792,17 +1998,131 @@ export class ShareFilesPanel extends Widget {
     }
   }
 
-  private async _removeHubEntry(shareId: string, name: string): Promise<void> {
-    const restore = this._keepFocus();
-    const result = await showDialog({
-      title: `Remove "${name}" from the share?`,
-      body: 'The hub deletes its copy. The file in your workspace stays.',
-      buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Remove' })]
-    });
-    restore();
-    if (result.button.accept) {
-      await this._removeEntryFromShare(shareId, name);
+  /** Remove `name`, or every selected entry when the selection holds it
+   * (ACC-EDIT-212). Two or more ask once and give their count; one asks in
+   * hub mode only, as before (ACC-EDIT-228). */
+  private async _removeEntry(shareId: string, name: string): Promise<void> {
+    const sel = this._selection;
+    const ofSelection = sel?.shareId === shareId && sel.names.has(name);
+    const names = ofSelection ? [...sel.names] : [name];
+    if (names.length > 1 || this._hubMode) {
+      const restore = this._keepFocus();
+      const where = this._hubMode ? 'The hub' : 'The share';
+      const result = await showDialog({
+        title:
+          names.length > 1
+            ? `Remove ${names.length} entries from the share?`
+            : `Remove "${name}" from the share?`,
+        body:
+          names.length > 1
+            ? `${where} deletes its copies. The files in your workspace stay.`
+            : 'The hub deletes its copy. The file in your workspace stays.',
+        buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Remove' })]
+      });
+      restore();
+      if (!result.button.accept) {
+        return;
+      }
     }
+    await this._removeEntriesFromShare(shareId, names);
+  }
+
+  /** At render: a name the folder no longer lists leaves the selection, so a
+   * ring or a refresh keeps the rest, and a selection made in another folder
+   * of the share is dropped (ACC-EDIT-213). */
+  private _keepSelection(
+    shareId: string,
+    folder: string,
+    listed: string[]
+  ): void {
+    const sel = this._selection;
+    if (sel?.shareId !== shareId) {
+      return;
+    }
+    if (sel.folder !== folder) {
+      this._selection = null;
+      return;
+    }
+    // display order, which is the order a removal sends them in
+    sel.names = new Set(listed.filter(n => sel.names.has(n)));
+    if (!listed.includes(sel.anchor)) {
+      sel.anchor = '';
+    }
+  }
+
+  /** Make `row` an entry the owner can select: ctrl or cmd toggles it, shift
+   * selects the range from the anchor, a plain click selects it alone, and
+   * Space toggles it from the keyboard (ACC-EDIT-210, 211, 224, 227). */
+  private _attachSelect(
+    row: HTMLElement,
+    shareId: string,
+    folder: string,
+    name: string
+  ): void {
+    const sel = this._selection;
+    const on = sel?.shareId === shareId && sel.names.has(name);
+    row.classList.toggle('jp-mod-selected', on);
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(on));
+    row.dataset.selectName = name;
+    row.addEventListener('mousedown', evt => {
+      // a shift-click selects the rows, not their text
+      if (evt.shiftKey) {
+        evt.preventDefault();
+      }
+    });
+    row.addEventListener('click', evt => {
+      if (!(evt.target as HTMLElement).closest('button, input')) {
+        this._select(row, shareId, folder, name, evt);
+      }
+    });
+    row.addEventListener('keydown', evt => {
+      if (evt.key === ' ' && evt.target === row) {
+        // Space would scroll the panel
+        evt.preventDefault();
+        this._select(row, shareId, folder, name);
+      }
+    });
+  }
+
+  /** Apply a click, or Space when `evt` is absent, on the entry `name`. */
+  private _select(
+    row: HTMLElement,
+    shareId: string,
+    folder: string,
+    name: string,
+    evt?: MouseEvent
+  ): void {
+    let sel = this._selection;
+    if (sel?.shareId !== shareId || sel.folder !== folder) {
+      sel = { shareId, folder, names: new Set(), anchor: '' };
+      this._selection = sel;
+    }
+    const toggle = !evt || evt.ctrlKey || evt.metaKey;
+    if (evt?.shiftKey) {
+      const order = Array.from(
+        row.parentElement?.querySelectorAll<HTMLElement>(
+          '[data-select-name]'
+        ) || [],
+        r => r.dataset.selectName || ''
+      );
+      if (!toggle) {
+        sel.names.clear();
+      }
+      sel.anchor = sel.anchor || name;
+      for (const n of entryRange(order, sel.anchor, name)) {
+        sel.names.add(n);
+      }
+    } else {
+      if (!toggle) {
+        sel.names.clear();
+        sel.names.add(name);
+      } else if (!sel.names.delete(name)) {
+        sel.names.add(name);
+      }
+      sel.anchor = name;
+    }
+    this._render();
   }
 
   /** A hub entry row is dragged inside the panel only - the bytes are on the
@@ -2325,6 +2645,21 @@ export class ShareFilesPanel extends Widget {
             )
           );
         }
+        if (requestData?.uploading && !this._state.offlineKeys.has(conn.key)) {
+          const files = document.createElement('div');
+          files.className = 'jp-ShareFilesPanel-entryList';
+          for (const f of requestData.files || []) {
+            files.appendChild(
+              this._renderTransferRow(
+                f.name,
+                f.size,
+                f.fraction,
+                `Uploading ${f.name}`
+              )
+            );
+          }
+          item.appendChild(files);
+        }
         const hint = document.createElement('div');
         hint.className = 'jp-ShareFilesPanel-empty';
         hint.textContent = 'Drag files here to upload to this request';
@@ -2726,7 +3061,12 @@ export class ShareFilesPanel extends Widget {
           void this._openEntry(entry);
         }
       };
-      row.addEventListener('dblclick', open);
+      row.addEventListener('dblclick', evt => {
+        // only a row that takes a selection reads the click as one
+        if (row.dataset.selectName === undefined || !selects(evt)) {
+          open(evt);
+        }
+      });
       // the keyboard's double-click: Enter on the focused row itself, not on
       // a button inside it (a button's Enter is its click)
       row.addEventListener('keydown', evt => {
@@ -2973,7 +3313,7 @@ export class ShareFilesPanel extends Widget {
         icon: closeIcon,
         label: 'Remove from Share',
         execute: args => {
-          void this._removeHubEntry(
+          void this._removeEntry(
             String(args.id || ''),
             String(args.name || '')
           );
@@ -3246,7 +3586,13 @@ export class ShareFilesPanel extends Widget {
     this._state.busyKeys.add(shareId);
     this._render();
     try {
-      await addShareItems(this._serverSettings, shareId, paths);
+      // into the folder the share shows, as a drop on the share
+      await addShareItems(
+        this._serverSettings,
+        shareId,
+        paths,
+        this._shownFolder(shareId)
+      );
       if (mode === 'cut') {
         await Promise.all(paths.map(p => this._contents.delete(p)));
         clearClip(clip);
@@ -3596,14 +3942,22 @@ export class ShareFilesPanel extends Widget {
   // Internal: actions
   // ------------------------------------------------------------------ //
 
-  private async _removeEntryFromShare(
+  /** The hub stops at the first name it refuses, so the refusal is shown
+   * once and the refresh lists what is left (ACC-EDIT-214). */
+  private async _removeEntriesFromShare(
     shareId: string,
-    name: string
+    names: string[]
   ): Promise<void> {
     this._state.busyKeys.add(shareId);
     this._render();
     try {
-      await removeShareItems(this._serverSettings, shareId, [name]);
+      for (let i = 0; i < names.length; i += REMOVE_CHUNK) {
+        await removeShareItems(
+          this._serverSettings,
+          shareId,
+          names.slice(i, i + REMOVE_CHUNK)
+        );
+      }
     } catch (err: any) {
       this._noteEditFailure('remove', err);
     } finally {
@@ -3894,6 +4248,13 @@ export class ShareFilesPanel extends Widget {
     );
   }
 
+  /** The folder an open share shows; a collapsed share shows none, so its adds land at the top. */
+  private _shownFolder(id: string): string | undefined {
+    return this._state.expandedItems.has(`share:${id}`)
+      ? this._state.shareSubPath.get(id)
+      : undefined;
+  }
+
   private _attachDropTargetOnItem(
     el: HTMLElement,
     kind: 'share' | 'connection-request',
@@ -3903,7 +4264,9 @@ export class ShareFilesPanel extends Widget {
       el,
       paths => {
         if (kind === 'share') {
-          void this.addToShareFlow(id, paths);
+          // the hub lands every add at the top, and its folder is share-relative
+          const folder = this._hubMode ? undefined : this._shownFolder(id);
+          void this.addToShareFlow(id, paths, folder);
         } else {
           void this.uploadToConnectionFlow(id, paths);
         }
@@ -3973,6 +4336,10 @@ export class ShareFilesPanel extends Widget {
       event.dropAction = event.proposedAction;
       // keep the highlight on - we're a valid drop target
       node.classList.add('jp-mod-dropTarget');
+      // one place is marked: a folder row takes the mark from its share
+      node.parentElement
+        ?.closest('.jp-mod-dropTarget')
+        ?.classList.remove('jp-mod-dropTarget');
     });
     node.addEventListener('lm-drop', (event: any) => {
       const paths = getPaths(event);
@@ -5020,15 +5387,34 @@ export class ShareFilesPanel extends Widget {
   private _filterInput: HTMLInputElement | null = null;
   private _filterText = '';
   private _filterVisible = false;
+  /** The entries the owner selected in one folder of one share; `anchor` is
+   * where a shift-click range starts. Rows are rebuilt at every render, so
+   * it lives here and each render applies it. */
+  private _selection: {
+    shareId: string;
+    folder: string;
+    names: Set<string>;
+    anchor: string;
+  } | null = null;
   private _pollHandle: number | null = null;
   /** Hub mode: the change stream, open while the panel is attached. */
-  private _stream: EventSource | null = null;
+  private _stream: WebSocket | null = null;
   /** Hub mode: a pending ring-driven refresh, so a burst costs one fetch. */
   private _refreshTimer: number | null = null;
   /** Hub mode: the poll of connected rows, and per connected request the
    * pending read that follows this lab's upload into it. */
   private _connectionPoll: number | null = null;
   private _uploadFollowers = new Map<string, number>();
+  /** Hub mode: the read that follows a row reading adding or staging, armed
+   * or under way. */
+  private _addFollower: number | null = null;
+  /** Hub mode: adds the hub accepted, and how many of them a read armed
+   * after them has taken. */
+  private _addsAccepted = 0;
+  private _addsFollowed = 0;
+  /** Reads of the share list started so far, and the newest one taken. */
+  private _shareReads = 0;
+  private _sharesTaken = 0;
   /** True while the server is unreachable (offline / suspended / restarting),
    * so a poll storm is logged once instead of every tick. */
   private _networkOffline = false;

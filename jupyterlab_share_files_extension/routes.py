@@ -1261,8 +1261,11 @@ class ShareItemsHandler(_Base):
         paths = body.get("paths") or []
         if not isinstance(paths, list) or not paths:
             return self.write_error_json(400, "'paths' must be a non-empty list")
+        folder = body.get("folder") or ""
+        if not isinstance(folder, str):
+            return self.write_error_json(400, "'folder' must be a string")
         try:
-            manifest = self.share_store.add_items(id_, paths)
+            manifest = self.share_store.add_items(id_, paths, folder)
         except NotFoundError as exc:
             return self.write_error_json(404, str(exc))
         except StorageError as exc:

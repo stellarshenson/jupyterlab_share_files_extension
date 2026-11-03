@@ -23,7 +23,6 @@ from urllib.parse import urlparse
 from .hub import HubClient, HubUnavailable
 
 CHANGED = "changed"
-CLOSE = object()
 
 # seconds between reconnects to the hub, the hub's own `retry:` hint
 RETRY_SECONDS = 5
@@ -32,9 +31,6 @@ CONNECT_TIMEOUT_SECONDS = 10
 # than three of them is a dead connection nobody closed (the hub vanished
 # without a FIN) and is reconnected
 READ_TIMEOUT_SECONDS = 90
-# seconds between keepalive comments on a panel stream - proxies and the
-# browser keep an idle stream across it
-KEEPALIVE_SECONDS = 25
 
 
 def parse_events(buffer: bytearray, data: bytes) -> list[str]:

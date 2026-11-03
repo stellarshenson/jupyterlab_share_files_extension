@@ -41,14 +41,22 @@ export interface IShare {
   /** Hub mode, on a freshly created row only: why the tunnel switch could
    * not be applied to it (a refusal slug) */
   tunnel_reason?: string;
-  /** Hub mode: the hub is copying an add (its `last_add` reads running) */
+  /** Hub mode: the hub is copying an add (its `last_add` reads running), or
+   * the lab's task for held adds has not read the last one settled */
   adding?: boolean;
   /** Hub mode: entries the hub left out of this share, create and adds */
   skipped?: number;
-  /** Hub mode: the reason slug of the last add, when the hub refused it */
+  /** Hub mode: the newest refusal's slug: the lab keeps it until a drop after
+   * a read has carried it, else the hub's for its last add */
   add_reason?: string;
   /** Hub mode: bytes copied and to copy, only while the hub carries bytes */
   progress?: { copied: number; total: number } | null;
+  /** Hub mode: what the row still waits for, in order: the add the hub
+   * copies, then the adds held in the lab, each with the fraction copied */
+  pending?: { name: string; size: number; held: boolean; fraction: number }[];
+  /** Hub mode, on the answer to an add or a create: the chosen names the hub
+   * takes no copy of */
+  left_out?: string[];
 }
 
 export interface IUploaderEntry {
@@ -134,4 +142,7 @@ export interface IRemoteRequest {
   uploaded?: number;
   upload_reason?: string;
   progress?: { copied: number; total: number } | null;
+  /** Hub mode: the files of the running upload around the one in flight,
+   * each with the fraction sent; empty when no upload runs */
+  files?: { name: string; size: number; fraction: number }[];
 }

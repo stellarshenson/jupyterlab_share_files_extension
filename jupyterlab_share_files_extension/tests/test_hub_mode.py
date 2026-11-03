@@ -99,7 +99,8 @@ def test_every_hub_route_method_is_authenticated(hub_env):
     checked = 0
     for spec in _table():
         handler = spec[1]
-        assert issubclass(handler, APIHandler), handler
+        # the panel's change stream is a websocket, which no APIHandler can be
+        assert issubclass(handler, APIHandler) or handler is hub_routes.HubStreamHandler, handler
         for cls in handler.__mro__:
             if not cls.__module__.startswith("jupyterlab_share_files_extension"):
                 break

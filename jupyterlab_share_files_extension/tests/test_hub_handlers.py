@@ -8,13 +8,18 @@ in-memory hub that records every call. Nothing here touches the network.
 from __future__ import annotations
 
 import asyncio
+import base64
 import errno
 import html
 import io
+import itertools
 import json
+import logging
+import os
 import re
 import socket
 import ssl
+import threading
 import zipfile
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -22,8 +27,8 @@ from urllib.parse import quote, unquote, urlparse
 import pytest
 import tornado.httpserver
 import tornado.web
-from tornado.httpclient import AsyncHTTPClient, HTTPClientError
-from tornado.simple_httpclient import HTTPTimeoutError
+from jupyter_server.utils import url_path_join
+from tornado.httpclient import HTTPClientError
 from tornado.testing import bind_unused_port
 
 from jupyterlab_share_files_extension import hub_routes, hub_stream, routes, tunnel
@@ -88,6 +93,11 @@ class FakeHub:
             return
         item["files"] += [{"name": n, "size": 3, "sha256": "0" * 64} for n in names]
         item["last_add"] = {"state": "done", "skipped": 0, "at": "2026-09-21T12:00:00Z"}
+
+    def land_creates(self) -> None:
+        """Settle the copy of every create, which the lab switches on only after that."""
+        for item in self.items:
+            item["state"] = "ready"
 
     def _content(self, id_, body):
         item = next((i for i in self.items if i["id"] == id_), None)
@@ -225,7 +235,10 @@ def fake_hub(monkeypatch, tmp_path, jp_root_dir):
     # a fetch writes into the workspace, as the hub does on its own mount
     hub.workspace_root = str(jp_root_dir)
     monkeypatch.setattr(hub_routes, "HubClient", lambda: hub)
+    monkeypatch.setattr(hub_routes, "HOLD_RETRY_SECONDS", 0.01)
     hub_routes._PASSWORDS.clear()
+    hub_routes._ADDS.clear()
+    hub_routes._ADD_TASKS.clear()
     return hub
 
 
@@ -247,11 +260,20 @@ async def _a_record_behind_the_switch(jp_fetch, fake_hub) -> dict:
     while the hub refuses that switch as busy: the record is behind the
     stored default, so the next list read reconciles it."""
     share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    fake_hub.land_creates()
     fake_hub.busy_switches = 1
     await _post(jp_fetch, "api", "tunnel", body={"active": True})
     assert hub_routes.tunnel_default() is True
     assert next(i for i in fake_hub.items if i["id"] == share["id"])["tunnel"] is False
     return share
+
+
+async def _until(check, seconds=5):
+    for _ in range(int(seconds / 0.01)):
+        if check():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the condition never held")
 
 
 def _tunnel_switches(fake_hub) -> list[tuple[str, str, dict | None]]:
@@ -361,12 +383,14 @@ async def test_an_add_is_sent_filtered_and_the_row_relays_the_hubs_last_add(jp_f
     assert "__pycache__" in body["exclude"] and not any("*" in n for n in body["exclude"])
     row = await _share_row(jp_fetch, id_)
     assert row["adding"] is True and row["progress"] == {"copied": 1, "total": 3}
-    with pytest.raises(HTTPClientError) as err:
-        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["b.txt"]})
-    assert err.value.code == 409 and json.loads(err.value.response.body)["reason"] == "busy"
+    # ACC-EDIT-219: a further add during the copy is held, not refused busy
+    assert _json(await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["b.txt"]})) == {"ok": True}
     fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["b.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
     row = await _share_row(jp_fetch, id_)
-    assert [e["name"] for e in row["entries"]] == ["q3.csv"]
+    assert [e["name"] for e in row["entries"]] == ["q3.csv", "b.txt"]
     assert row["adding"] is False and row["add_reason"] == "" and row["progress"] is None
 
 
@@ -407,6 +431,1212 @@ async def test_a_taken_or_repeated_name_is_refused_by_name_before_the_hub_is_ask
     assert not any(c[1].endswith("/content") for c in fake_hub.calls)
 
 
+async def _a_running_add(jp_fetch, fake_hub) -> str:
+    """A share whose add of first.txt the hub is copying."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["first.txt"]})
+    assert fake_hub.pending_add == (id_, ["first.txt"])
+    return id_
+
+
+def _adds_sent(fake_hub, id_) -> list[list[str]]:
+    return [
+        c[2]["paths"] for c in fake_hub.calls
+        if c[:2] == ("POST", f"shares/{id_}/content") and c[2]["action"] == "add"
+    ]
+
+
+async def test_an_add_leaves_out_a_chosen_name_the_hub_refuses_and_names_it(jp_fetch, fake_hub):
+    """ACC-EDIT-207: the hub refuses a whole add over one chosen name starting
+    with . or ~, so the lab sends the rest. A dot-named parent is not checked."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    answer = _json(await _post(
+        jp_fetch, "api", "shares", id_, "items",
+        body={"paths": [".images-mockup", "a.md", "sub/~lock.txt", ".parent/b.md"]},
+    ))
+    assert answer == {"ok": True, "left_out": [".images-mockup", "~lock.txt"]}
+    assert _adds_sent(fake_hub, id_) == [["a.md", ".parent/b.md"]]
+    fake_hub.land_add()
+
+
+async def test_a_create_leaves_out_a_chosen_name_the_hub_skips_and_names_it(jp_fetch, fake_hub):
+    """ACC-EDIT-209: a create behaves as an add does."""
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": [".images-mockup", "a.md"]}))
+    assert row["left_out"] == [".images-mockup"] and row["state"] == "staging"
+    assert next(c[2] for c in fake_hub.calls if c[:2] == ("POST", "shares"))["paths"] == ["a.md"]
+
+
+async def test_an_add_of_only_refused_names_sends_nothing_and_names_them(jp_fetch, fake_hub):
+    """ACC-EDIT-223: the names go last, because the panel cuts a long message
+    at its end."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [".images-mockup", "~a.txt"]})
+    assert err.value.code == 400
+    assert json.loads(err.value.response.body)["error"] == (
+        "A hub share takes no name starting with . or ~. Not added: .images-mockup, ~a.txt")
+    assert _adds_sent(fake_hub, id_) == []
+
+
+async def test_a_create_of_only_refused_names_makes_no_share(jp_fetch, fake_hub):
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": [".images-mockup"]})
+    assert err.value.code == 400
+    assert json.loads(err.value.response.body)["error"] == (
+        "A hub share takes no name starting with . or ~. Not added: .images-mockup")
+    assert fake_hub.items == [] and not any(c[:2] == ("POST", "shares") for c in fake_hub.calls)
+
+
+async def test_a_catalogue_name_is_dropped_without_being_named_in_left_out(jp_fetch, fake_hub):
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    answer = _json(await _post(
+        jp_fetch, "api", "shares", id_, "items", body={"paths": [".ipynb_checkpoints", ".hidden", "a.md"]}
+    ))
+    assert answer == {"ok": True, "left_out": [".hidden"]}
+    fake_hub.land_add()
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "y", "paths": [".ipynb_checkpoints", "a.md"]}))
+    assert "left_out" not in row
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", body={"name": "z", "paths": [".ipynb_checkpoints", ".hidden"]})
+    assert json.loads(err.value.response.body)["error"].endswith("Not added: .hidden")
+
+
+async def test_a_held_add_is_sent_when_the_hub_stops_answering_busy(jp_fetch, fake_hub):
+    """ACC-EDIT-219, ACC-EDIT-220: the row reads adding from the first drop
+    until the last held add lands, with the copy finished in between."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    answer = _json(await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["second.txt", ".hidden"]}))
+    assert answer == {"ok": True, "left_out": [".hidden"]}
+    await asyncio.sleep(0.05)
+    # the row reads running, so the lab holds the add, reads on and sends nothing more
+    assert _adds_sent(fake_hub, id_) == [["first.txt"]]
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["second.txt"]))
+    assert (await _share_row(jp_fetch, id_))["adding"] is True
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert [e["name"] for e in row["entries"]] == ["first.txt", "second.txt"]
+    assert row["adding"] is False and row["pending"] == []
+
+
+async def test_the_hold_ends_with_a_ring_when_the_last_held_add_settles(jp_fetch, fake_hub, monkeypatch):
+    """The row reads adding while the task lives, so the panels read it once more."""
+    rings = []
+    monkeypatch.setattr(hub_routes.RELAY, "ring", rings.append)
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    await asyncio.sleep(0.05)
+    assert hub_routes._ADD_TASKS and (await _share_row(jp_fetch, id_))["adding"] is True
+    rings.clear()
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert rings == ["changed"]
+    assert (await _share_row(jp_fetch, id_))["adding"] is False
+
+
+async def test_a_drop_during_the_copy_of_the_last_held_add_joins_the_same_task(jp_fetch, fake_hub):
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    task = hub_routes._ADDS[id_]["task"]
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["y.txt"]})
+    assert hub_routes._ADD_TASKS == {task}
+    assert [add["paths"] for add in hub_routes._ADDS[id_]["held"]] == [["y.txt"]]
+    assert ["y.txt"] not in _adds_sent(fake_hub, id_)
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["y.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert task.done()
+    assert [e["name"] for e in (await _share_row(jp_fetch, id_))["entries"]] == ["first.txt", "x.txt", "y.txt"]
+
+
+async def test_adding_holds_across_the_send_of_the_last_held_add(jp_fetch, fake_hub, monkeypatch):
+    """ACC-EDIT-220: a panel's read of the settled row returns after the send."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    items = hub_routes._HubBase._items
+
+    async def read_then_wait(self, kind):
+        fake_hub.land_add()
+        rows = await items(self, kind)
+        await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+        return rows
+
+    with monkeypatch.context() as patch:
+        patch.setattr(hub_routes._HubBase, "_items", read_then_wait)
+        assert (await _share_row(jp_fetch, id_))["adding"] is True
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+
+
+def _report_late(fake_hub, seconds):
+    """The row keeps its settled reading for a moment after the hub's 202."""
+    answer, late = fake_hub.request, 0
+
+    async def request(method, path, body=None, timeout=None):
+        nonlocal late
+        code, data = await answer(method, path, body, timeout)
+        now = asyncio.get_running_loop().time()
+        if path.endswith("/content") and code == 202:
+            late = now + seconds
+        if path == "items" and now < late:
+            data = {"items": [{**i, "last_add": {"state": "done"}} for i in data["items"]]}
+        return code, data
+
+    fake_hub.request = request
+
+
+async def test_the_task_gives_the_row_time_to_report_an_accepted_add(jp_fetch, fake_hub, monkeypatch):
+    """The DEV hub's row read running 0.01 to 0.02 s after the 202, and a read
+    before that would call the add settled."""
+    monkeypatch.setattr(hub_routes, "HOLD_RETRY_SECONDS", 0.05)
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    _report_late(fake_hub, 0.02)
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    await asyncio.sleep(0.1)
+    assert hub_routes._ADD_TASKS
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+
+
+async def test_held_adds_go_in_order_one_drop_at_a_time(jp_fetch, fake_hub):
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for paths in (["b.txt", "c.txt"], ["a.txt"]):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": paths})
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["b.txt", "c.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["a.txt"]))
+    # each add goes again while the hub answers busy; a repeat is not a new one
+    assert [paths for paths, _ in itertools.groupby(_adds_sent(fake_hub, id_))] == [
+        ["first.txt"], ["b.txt", "c.txt"], ["a.txt"]]
+    fake_hub.land_add()
+
+
+async def test_a_refused_held_add_keeps_its_reason_and_the_next_is_sent(jp_fetch, fake_hub, monkeypatch):
+    """ACC-EDIT-221: the hub rings nothing for a refused call, so the lab
+    does, and the reason stays on the row until an add sent at once clears it."""
+    rings = []
+    monkeypatch.setattr(hub_routes.RELAY, "ring", rings.append)
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("taken.txt", "last.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    fake_hub.items[0]["files"].append({"name": "taken.txt", "size": 1, "sha256": ""})
+    rings.clear()
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["last.txt"]))
+    assert rings == ["changed", "changed"]
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert [e["name"] for e in row["entries"]] == ["taken.txt", "first.txt", "last.txt"]
+    assert row["add_reason"] == "name_taken" and row["adding"] is False
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["after.txt"]})
+    fake_hub.land_add()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == ""
+
+
+async def test_a_refusal_the_hub_settles_after_its_202_stays_on_the_row(jp_fetch, fake_hub):
+    """ACC-EDIT-221: the next accepted add replaces the hub's last_add, so the
+    lab reads the refusal from the row first."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["second.txt"]})
+    fake_hub.land_add("over_cap")
+    await _until(lambda: fake_hub.pending_add == (id_, ["second.txt"]))
+    fake_hub.land_add()
+    row = await _share_row(jp_fetch, id_)
+    assert row["add_reason"] == "over_cap" and [e["name"] for e in row["entries"]] == ["second.txt"]
+
+
+async def test_a_held_add_the_hub_settles_refused_stays_on_the_row(jp_fetch, fake_hub):
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("second.txt", "third.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["second.txt"]))
+    fake_hub.land_add("over_cap")
+    await _until(lambda: fake_hub.pending_add == (id_, ["third.txt"]))
+    fake_hub.land_add()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "over_cap"
+
+
+async def test_a_refusal_answered_at_once_is_not_replaced_by_the_one_on_the_row(jp_fetch, fake_hub):
+    """The row keeps first.txt's refusal after the hub refuses second.txt at
+    once, and that old record is not read a second time."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("second.txt", "third.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    fake_hub.items[0]["files"].append({"name": "second.txt", "size": 1, "sha256": ""})
+    fake_hub.land_add("over_cap")
+    await _until(lambda: fake_hub.pending_add == (id_, ["third.txt"]))
+    fake_hub.land_add()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "name_taken"
+
+
+async def test_a_new_drop_ends_the_refusal_the_row_shows(jp_fetch, fake_hub):
+    """A held drop too: its add may land while the old refusal would stay."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["taken.txt"]})
+    fake_hub.items[0]["files"].append({"name": "taken.txt", "size": 1, "sha256": ""})
+    fake_hub.land_add()
+    await _until(lambda: hub_routes._ADDS[id_]["reason"] == "name_taken")
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "name_taken"
+    fake_hub.items[0]["files"] = [f for f in fake_hub.items[0]["files"] if f["name"] != "taken.txt"]
+    fake_hub.overrides[("POST", f"shares/{id_}/content")] = (409, {"reason": "busy", "message": "busy"})
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["taken.txt"]})
+    del fake_hub.overrides[("POST", f"shares/{id_}/content")]
+    await _until(lambda: fake_hub.pending_add == (id_, ["taken.txt"]))
+    fake_hub.land_add()
+    row = await _share_row(jp_fetch, id_)
+    assert row["add_reason"] == "" and "taken.txt" in [e["name"] for e in row["entries"]]
+
+
+async def test_a_drop_keeps_a_refusal_no_read_has_carried(jp_fetch, fake_hub):
+    """ACC-EDIT-221: a panel reads 300 ms after a ring, and a drop may come first."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("taken.txt", "slow.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    fake_hub.items[0]["files"].append({"name": "taken.txt", "size": 1, "sha256": ""})
+    fake_hub.land_add()
+    await _until(lambda: hub_routes._ADDS[id_]["reason"] == "name_taken")
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["next.txt"]})
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "name_taken"
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["last.txt"]})
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == ""
+    await _until(lambda: fake_hub.pending_add == (id_, ["slow.txt"]))
+    for name in ("next.txt", "last.txt"):
+        fake_hub.land_add()
+        await _until(lambda: fake_hub.pending_add == (id_, [name]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+
+
+async def test_a_drop_keeps_a_refusal_its_add_replaces_on_the_hub(jp_fetch, fake_hub):
+    """ACC-EDIT-221: an accepted add replaces the hub's record before a panel read it."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["big.bin"]})
+    fake_hub.land_add("over_cap")
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["small.txt"]})
+    fake_hub.land_add()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "over_cap"
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["third.txt"]})
+    fake_hub.land_add()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == ""
+
+
+async def test_a_drop_during_a_copy_lets_the_task_read_the_outcome_first(jp_fetch, fake_hub):
+    """ACC-EDIT-221: first.txt settles refused after the drop's read, and a send there would replace that record."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    answer = fake_hub.request
+
+    async def request(method, path, body=None, timeout=None):
+        if path.endswith("/content") and fake_hub.pending_add == (id_, ["first.txt"]):
+            fake_hub.land_add("over_cap")
+        return await answer(method, path, body, timeout)
+
+    fake_hub.request = request
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    if fake_hub.pending_add == (id_, ["first.txt"]):
+        fake_hub.land_add("over_cap")
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "over_cap"
+
+
+async def test_a_read_before_the_labs_first_drop_counts(jp_fetch, fake_hub):
+    """A lab restarted after the refusal holds no entry for the share until a read."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["big.bin"]})
+    fake_hub.land_add("over_cap")
+    hub_routes._ADDS.clear()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "over_cap"
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["small.txt"]})
+    fake_hub.land_add()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == ""
+
+
+async def test_a_name_still_copying_is_refused_and_no_second_add_is_sent(jp_fetch, fake_hub):
+    """ACC-EDIT-226: the hub does not list it until it lands."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["elsewhere/first.txt"]})
+    assert err.value.code == 400
+    assert json.loads(err.value.response.body)["error"].startswith("The share is still adding first.txt")
+    assert _adds_sent(fake_hub, id_) == [["first.txt"]]
+    # sent counts only while the row reports the copy: removed after landing,
+    # the name is free again
+    fake_hub.land_add()
+    fake_hub.items[0]["files"].clear()
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["first.txt"]})
+    assert _adds_sent(fake_hub, id_)[-1] == ["first.txt"]
+    fake_hub.land_add()
+
+
+async def test_a_name_copying_in_a_create_is_refused_at_once(jp_fetch, fake_hub):
+    """ACC-EDIT-226: the hub lists nothing while it stages."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))["id"]
+    fake_hub.overrides[("POST", f"shares/{id_}/content")] = (409, {"reason": "busy", "message": "busy"})
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["elsewhere/a.txt"]})
+    assert err.value.code == 400
+    assert json.loads(err.value.response.body)["error"].startswith("The share is still adding a.txt")
+    assert _adds_sent(fake_hub, id_) == [] and hub_routes._ADD_TASKS == set()
+    # staged and removed, the name is free again
+    fake_hub.items[0]["state"] = "ready"
+    del fake_hub.overrides[("POST", f"shares/{id_}/content")]
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["a.txt"]})
+    assert fake_hub.pending_add == (id_, ["a.txt"])
+    fake_hub.land_add()
+
+
+def _answer_late(fake_hub):
+    """A hub that takes time to answer, so that two posts overlap."""
+    answer = fake_hub.request
+
+    async def request(method, path, body=None, timeout=None):
+        await asyncio.sleep(0.02)
+        return await answer(method, path, body, timeout)
+
+    fake_hub.request = request
+
+
+async def test_the_same_name_from_two_tabs_is_refused_by_name(jp_fetch, fake_hub):
+    """ACC-EDIT-226: two posts overlap, and the second sees the first's name."""
+    _answer_late(fake_hub)
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    answers = await asyncio.gather(
+        *[_post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["same.txt"]}) for _ in range(2)],
+        return_exceptions=True,
+    )
+    refused = [a for a in answers if isinstance(a, HTTPClientError)]
+    assert len(refused) == 1 and refused[0].code == 400
+    assert json.loads(refused[0].response.body)["error"].startswith("The share is still adding same.txt")
+    assert _adds_sent(fake_hub, id_) == [["same.txt"]]
+    fake_hub.land_add()
+
+
+async def test_overlapping_drops_start_one_task(jp_fetch, fake_hub):
+    """Two tabs drop different names while a copy runs."""
+    _answer_late(fake_hub)
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await asyncio.gather(
+        *[_post(jp_fetch, "api", "shares", id_, "items", body={"paths": [n]}) for n in ("b.txt", "c.txt")]
+    )
+    assert len(hub_routes._ADD_TASKS) == 1
+    for _ in range(3):
+        await _until(lambda: fake_hub.pending_add)
+        fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    # two overlapping posts have no order of their own
+    assert sorted(e["name"] for e in (await _share_row(jp_fetch, id_))["entries"]) == ["b.txt", "c.txt", "first.txt"]
+
+
+async def test_a_name_already_held_is_refused(jp_fetch, fake_hub):
+    """ACC-EDIT-226"""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["second.txt"]})
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["other/second.txt"]})
+    assert err.value.code == 400
+    assert json.loads(err.value.response.body)["error"].startswith("The share is still adding second.txt")
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["second.txt"]))
+    fake_hub.land_add()
+    assert ["other/second.txt"] not in _adds_sent(fake_hub, id_)
+
+
+async def test_a_refusal_tells_a_listed_name_from_one_still_copying(jp_fetch, fake_hub):
+    """ACC-EDIT-226: the row lists no first.txt yet, so the share does not hold it."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    fake_hub.items[0]["files"].append({"name": "there.txt", "size": 1, "sha256": ""})
+    with pytest.raises(HTTPClientError) as err:
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["there.txt", "elsewhere/first.txt"]})
+    assert json.loads(err.value.response.body)["error"] == (
+        "The share already holds there.txt - remove or rename it there first. "
+        "The share is still adding first.txt - wait until that add ends"
+    )
+    fake_hub.land_add()
+
+
+async def test_a_name_the_task_is_sending_is_refused_at_once(jp_fetch, fake_hub, monkeypatch):
+    """ACC-EDIT-226: the row a drop reads shows the last add settled, and the
+    task sends the held name while that read is on its way back."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    items = hub_routes._HubBase._items
+
+    async def read_then_wait(self, kind):
+        fake_hub.land_add()
+        rows = await items(self, kind)
+        await asyncio.sleep(0.05)
+        return rows
+
+    with monkeypatch.context() as patch:
+        patch.setattr(hub_routes._HubBase, "_items", read_then_wait)
+        with pytest.raises(HTTPClientError) as err:
+            await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    assert err.value.code == 400
+    assert json.loads(err.value.response.body)["error"].startswith("The share is still adding x.txt")
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert [e["name"] for e in row["entries"]] == ["first.txt", "x.txt"] and row["add_reason"] == ""
+
+
+async def test_a_held_add_is_on_the_row_read_through_a_new_request(jp_fetch, fake_hub, jp_root_dir):
+    """ACC-EDIT-225: a reload, a second tab and the CLI read the same row. A
+    folder's size sums its files, without the catalogue's names."""
+    (jp_root_dir / "folder/__pycache__").mkdir(parents=True)
+    (jp_root_dir / "folder/a.txt").write_bytes(b"aaa")
+    (jp_root_dir / "folder/__pycache__/m.pyc").write_bytes(b"x" * 100)
+    (jp_root_dir / "folder/Thumbs.db").write_bytes(b"x" * 50)
+    (jp_root_dir / "first.txt").write_bytes(b"12345")
+    (jp_root_dir / "second.txt").write_bytes(b"123456789")
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("second.txt", "folder"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    row = await _share_row(jp_fetch, id_)
+    assert row["adding"] is True
+    assert row["pending"] == [
+        {"name": "first.txt", "size": 5, "held": False, "fraction": pytest.approx(1 / 3)},
+        {"name": "second.txt", "size": 9, "held": True, "fraction": 0},
+        {"name": "folder", "size": 3, "held": True, "fraction": 0},
+    ]
+    listed = _json(await jp_fetch(NS, "api", "shares"))["shares"]
+    assert listed[0]["pending"] == row["pending"]
+    for _ in range(2):
+        fake_hub.land_add()
+        await _until(lambda: fake_hub.pending_add is not None)
+    assert (await _share_row(jp_fetch, id_))["pending"] == [
+        {"name": "folder", "size": 3, "held": False, "fraction": pytest.approx(1 / 3)}]
+    fake_hub.land_add()
+
+
+@pytest.fixture
+def adds(monkeypatch):
+    monkeypatch.setattr(hub_routes, "_ADDS", {})
+
+
+def _read(id_, progress=None, copying=True):
+    """The fractions of one read of a hub row, with the progress it reports."""
+    item = {"id": id_, "title": "x", "state": "ready", "files": [],
+            "last_add": {"state": "running" if copying else "done"}}
+    if progress is not None:
+        item["progress"] = progress
+    return [round(p["fraction"], 4) for p in hub_routes.share_from_item(item, "")["pending"]]
+
+
+def test_two_items_share_the_hubs_one_ratio_in_sent_order(adds):
+    """ACC-PROG-217: the hub reports one copied and total for the whole add."""
+    hub_routes._add_state("s")["sent"] = [{"name": "a", "size": 100}, {"name": "b", "size": 300}]
+    assert _read("s", {"copied": 50, "total": 400}) == [0.5, 0]
+    assert _read("s", {"copied": 250, "total": 400}) == [1, 0.5]
+    assert _read("s", {"copied": 400, "total": 400}) == [1, 1]
+
+
+def test_a_fraction_stands_while_the_hub_reports_no_progress(adds):
+    """The hub reports nothing for the first 2.6 s of an add, and again just before it lands."""
+    hub_routes._add_state("s")["sent"] = [{"name": "a", "size": 100}, {"name": "b", "size": 300}]
+    assert _read("s") == [0, 0]
+    assert _read("s", {"copied": 0, "total": 0}) == [0, 0]
+    assert _read("s", {"copied": 200, "total": 400}) == [1, 0.3333]
+    assert _read("s") == [1, 0.3333]
+    assert _read("s", {"copied": 0, "total": 0}) == [1, 0.3333]
+
+
+def test_a_fraction_never_goes_back(adds):
+    hub_routes._add_state("s")["sent"] = [{"name": "a", "size": 100}, {"name": "b", "size": 100}]
+    assert _read("s", {"copied": 150, "total": 200}) == [1, 0.5]
+    assert _read("s", {"copied": 20, "total": 200}) == [1, 0.5]
+    # more than the total is the whole add, and no more
+    assert _read("s", {"copied": 900, "total": 200}) == [1, 1]
+
+
+def test_a_zero_size_item_is_whole_once_the_copy_reaches_it(adds):
+    hub_routes._add_state("s")["sent"] = [
+        {"name": "a", "size": 100}, {"name": "empty", "size": 0}, {"name": "b", "size": 100}]
+    assert _read("s", {"copied": 50, "total": 200}) == [0.5, 0, 0]
+    assert _read("s", {"copied": 100, "total": 200}) == [1, 1, 0]
+
+
+def test_a_held_item_waits_at_0(adds):
+    state = hub_routes._add_state("s")
+    state["sent"] = [{"name": "a", "size": 100}]
+    state["held"] = [{"paths": ["h"], "entries": [{"name": "h", "size": 5}]}]
+    assert _read("s", {"copied": 100, "total": 100}) == [1, 0]
+
+
+def test_the_hubs_total_may_differ_from_the_sizes_the_lab_read(adds):
+    """Inside a chosen folder the hub skips the names it takes no copy of,
+    which the lab counted, so the fraction is the hub's ratio of the lab's sizes."""
+    hub_routes._add_state("s")["sent"] = [{"name": "folder", "size": 100}, {"name": "b", "size": 100}]
+    assert _read("s", {"copied": 40, "total": 80}) == [1, 0]
+    assert _read("s", {"copied": 60, "total": 80}) == [1, 0.5]
+    assert _read("s", {"copied": 80, "total": 80}) == [1, 1]
+
+
+def test_a_row_that_does_not_copy_leaves_the_ratio_alone(adds):
+    """After a 202 the row reads running only 0.01 to 0.02 s later, and a
+    read before that may still carry the last add's numbers."""
+    hub_routes._add_state("s")["sent"] = [{"name": "a", "size": 100}]
+    assert _read("s", {"copied": 100, "total": 100}, copying=False) == []
+    assert _read("s") == [0]
+
+
+def test_an_add_the_hub_refuses_after_its_202_leaves_nothing_in_transit(adds):
+    hub_routes._add_state("s")["sent"] = [{"name": "a", "size": 100}]
+    assert _read("s", {"copied": 50, "total": 100}) == [0.5]
+    item = {"id": "s", "title": "x", "state": "ready", "files": [],
+            "last_add": {"state": "refused", "reason": "over_cap"}}
+    assert hub_routes.share_from_item(item, "")["pending"] == []
+
+
+async def test_a_folder_item_counts_the_bytes_of_its_files(jp_fetch, fake_hub, jp_root_dir):
+    (jp_root_dir / "folder/sub").mkdir(parents=True)
+    (jp_root_dir / "folder/a.txt").write_bytes(b"a" * 30)
+    (jp_root_dir / "folder/sub/b.txt").write_bytes(b"b" * 30)
+    (jp_root_dir / "last.txt").write_bytes(b"c" * 60)
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["folder", "last.txt"]})
+    fake_hub.items[0]["progress"] = {"copied": 90, "total": 120}
+    assert (await _share_row(jp_fetch, id_))["pending"] == [
+        {"name": "folder", "size": 60, "held": False, "fraction": 1},
+        {"name": "last.txt", "size": 60, "held": False, "fraction": 0.5},
+    ]
+    fake_hub.land_add()
+
+
+async def test_the_next_add_starts_from_no_progress(jp_fetch, fake_hub, jp_root_dir):
+    """A finished add's ratio does not carry into the next one, whether the
+    lab sends it at once or the task sends it after a hold."""
+    for name in ("first.txt", "second.txt", "third.txt"):
+        (jp_root_dir / name).write_bytes(b"abc")
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    item = fake_hub.items[0]
+
+    async def fractions():
+        return [(p["name"], p["fraction"]) for p in (await _share_row(jp_fetch, id_))["pending"]]
+
+    item["progress"] = {"copied": 3, "total": 3}
+    assert await fractions() == [("first.txt", 1)]
+    fake_hub.land_add()
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["second.txt"]})
+    # the hub reports no progress at the start of an add
+    item.pop("progress")
+    assert await fractions() == [("second.txt", 0)]
+    item["progress"] = {"copied": 3, "total": 3}
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["third.txt"]})
+    assert await fractions() == [("second.txt", 1), ("third.txt", 0)]
+    fake_hub.land_add()
+    await _until(lambda: hub_routes._ADDS[id_]["sent"][0]["name"] == "third.txt")
+    item.pop("progress")
+    assert await fractions() == [("third.txt", 0)]
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+
+
+async def test_the_walk_of_a_chosen_folder_stays_off_the_event_loop(jp_fetch, fake_hub, monkeypatch):
+    threads = []
+    size = hub_routes._chosen_size
+    monkeypatch.setattr(
+        hub_routes, "_chosen_size", lambda *args: (threads.append(threading.current_thread()), size(*args))[1]
+    )
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    assert threads and threading.main_thread() not in threads
+    fake_hub.land_add()
+    assert id_
+
+
+async def test_each_held_drop_rings_the_panels(jp_fetch, fake_hub, monkeypatch):
+    """The hub rings nothing for a refused call, so the row would not show the hold."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    rings = []
+    monkeypatch.setattr(hub_routes.RELAY, "ring", rings.append)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["second.txt"]})
+    assert rings == ["changed"]
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["third.txt"]})
+    assert rings == ["changed", "changed"]
+    hub_routes._ADDS.pop(id_)
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    fake_hub.land_add()
+
+
+async def test_a_drop_behind_a_held_add_names_what_it_left_out(jp_fetch, fake_hub):
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["second.txt"]})
+    answer = _json(await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["third.txt", ".hidden"]}))
+    assert answer == {"ok": True, "left_out": [".hidden"]}
+    hub_routes._ADDS.pop(id_)
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    fake_hub.land_add()
+
+
+async def test_a_held_add_goes_with_the_password_of_the_moment(jp_fetch, fake_hub):
+    """Each send reads the password, also the send after a busy answer."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["second.txt"]})
+    fake_hub.overrides[("POST", f"shares/{id_}/content")] = (409, {"reason": "busy", "message": "busy"})
+    fake_hub.land_add()
+    await _until(lambda: len(_adds_sent(fake_hub, id_)) > 2)
+    await _post(jp_fetch, "api", "shares", id_, "password", body={"password": "changed-meanwhile"})
+    del fake_hub.overrides[("POST", f"shares/{id_}/content")]
+    await _until(lambda: fake_hub.pending_add == (id_, ["second.txt"]))
+    assert [c[2] for c in fake_hub.calls if c[1].endswith("/content")][-1]["password"] == "changed-meanwhile"
+    fake_hub.land_add()
+
+
+async def test_a_conflict_that_is_not_busy_refuses_the_held_add(jp_fetch, fake_hub):
+    """Only busy is asked again: each held add goes once and the task ends."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("second.txt", "third.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    fake_hub.land_add()
+    fake_hub.overrides[("POST", f"shares/{id_}/content")] = (409, {"reason": "other", "message": "no"})
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert _adds_sent(fake_hub, id_) == [["first.txt"], ["second.txt"], ["third.txt"]]
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "other"
+
+
+async def test_a_held_add_goes_again_while_a_settled_hub_answers_busy(jp_fetch, fake_hub):
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["second.txt"]})
+    fake_hub.overrides[("POST", f"shares/{id_}/content")] = (409, {"reason": "busy", "message": "busy"})
+    fake_hub.land_add()
+    await _until(lambda: len(_adds_sent(fake_hub, id_)) > 3)
+    assert [p["paths"] for p in hub_routes._ADDS[id_]["held"]] == [["second.txt"]]
+    del fake_hub.overrides[("POST", f"shares/{id_}/content")]
+    await _until(lambda: fake_hub.pending_add == (id_, ["second.txt"]))
+    fake_hub.land_add()
+
+
+async def test_a_held_add_keeps_a_staging_row_adding(jp_fetch, fake_hub):
+    """The hub answers busy during a create's copy too, and the row reports
+    staging with no last_add."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))["id"]
+    fake_hub.overrides[("POST", f"shares/{id_}/content")] = (
+        409, {"reason": "busy", "message": "The add was refused: busy"})
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["b.txt"]})
+    row = await _share_row(jp_fetch, id_)
+    assert row["state"] == "staging" and row["adding"] is True
+    assert [(p["name"], p["held"]) for p in row["pending"]] == [("a.txt", False), ("b.txt", True)]
+    calls = len(fake_hub.calls)
+    await _until(lambda: len(fake_hub.calls) > calls + 3)
+    # the row reads staging, so the lab holds the add, reads on and sends nothing
+    assert _adds_sent(fake_hub, id_) == []
+    del fake_hub.overrides[("POST", f"shares/{id_}/content")]
+    fake_hub.items[0]["state"] = "ready"
+    await _until(lambda: fake_hub.pending_add == (id_, ["b.txt"]))
+    fake_hub.land_add()
+
+
+async def test_deleting_a_share_during_a_hold_ends_the_hold(jp_fetch, fake_hub):
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["second.txt"]})
+    assert id_ in hub_routes._ADDS
+    await jp_fetch(NS, "api", "shares", id_, method="DELETE")
+    assert id_ not in hub_routes._ADDS
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    fake_hub.pending_add = None
+    sent = len(fake_hub.calls)
+    await asyncio.sleep(0.05)
+    assert len(fake_hub.calls) == sent
+
+
+async def test_a_share_the_hub_no_longer_has_ends_the_hold(jp_fetch, fake_hub, monkeypatch):
+    """No row and a 404 from the share's own route: nothing more is sent."""
+    rings = []
+    monkeypatch.setattr(hub_routes.RELAY, "ring", rings.append)
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("second.txt", "third.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    rings.clear()
+    fake_hub.pending_add = None
+    fake_hub.items.clear()
+    await _until(lambda: id_ not in hub_routes._ADDS and not hub_routes._ADD_TASKS)
+    assert rings == ["changed"]
+    assert _adds_sent(fake_hub, id_) == [["first.txt"], ["second.txt"]]
+
+
+def _hide_the_share(fake_hub, reads) -> list:
+    """The next reads of items answer 200 with an empty list, though the share exists."""
+    answer, left = fake_hub.request, [None] * reads
+
+    async def request(method, path, body=None, timeout=None):
+        if path == "items" and left:
+            left.pop()
+            return 200, {"items": []}
+        return await answer(method, path, body, timeout)
+
+    fake_hub.request = request
+    return left
+
+
+@pytest.mark.parametrize("reads", [1, 20])
+async def test_a_read_with_no_row_keeps_the_held_adds(jp_fetch, fake_hub, reads):
+    """ACC-EDIT-219: such a read may be a hub fault, and the list cannot tell."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("x.txt", "y.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    left = _hide_the_share(fake_hub, reads)
+    await _until(lambda: not left)
+    for name in ("x.txt", "y.txt"):
+        fake_hub.land_add()
+        await _until(lambda: fake_hub.pending_add == (id_, [name]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert [e["name"] for e in row["entries"]] == ["first.txt", "x.txt", "y.txt"] and row["add_reason"] == ""
+
+
+async def test_a_refusal_settled_after_a_read_with_no_row_is_read(jp_fetch, fake_hub):
+    """ACC-EDIT-221: the read showed no outcome, so the task reads it next."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    left = _hide_the_share(fake_hub, 1)
+    await _until(lambda: not left)
+    fake_hub.land_add("over_cap")
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    fake_hub.land_add()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "over_cap"
+
+
+async def test_a_read_with_no_row_during_the_last_settle_keeps_the_refusal(jp_fetch, fake_hub, monkeypatch):
+    """Nothing is held, so the task ends with a ring, and the share may still be there."""
+    rings = []
+    monkeypatch.setattr(hub_routes.RELAY, "ring", rings.append)
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("taken.txt", "x.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    fake_hub.items[0]["files"].append({"name": "taken.txt", "size": 1, "sha256": ""})
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    _hide_the_share(fake_hub, 1)
+    rings.clear()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert rings == ["changed"]
+    fake_hub.land_add()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "name_taken"
+
+
+async def test_a_404_on_an_add_is_a_refusal_and_the_next_held_add_goes(jp_fetch, fake_hub):
+    """A 404 may name the add's source path, and the row still lists the share."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("vanished.txt", "next.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    answer = fake_hub.request
+
+    async def request(method, path, body=None, timeout=None):
+        if path.endswith("/content") and body["paths"] == ["vanished.txt"] and not fake_hub.pending_add:
+            return 404, {"status": 404, "message": "No such path"}
+        return await answer(method, path, body, timeout)
+
+    fake_hub.request = request
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["next.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert row["add_reason"] == "no_reason" and [e["name"] for e in row["entries"]] == ["first.txt", "next.txt"]
+
+
+@pytest.mark.parametrize("cut", ["no answer", "content only", "proxy 502", "proxy 503", "proxy 504"])
+async def test_a_hub_outage_keeps_every_held_add(jp_fetch, fake_hub, cut):
+    """ACC-EDIT-219: no second drop after a short outage."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("second.txt", "third.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    content = f"shares/{id_}/content"
+    fake_hub.land_add()
+    if cut == "no answer":
+        fake_hub.unavailable = True
+    elif cut == "content only":
+        fake_hub.raise_for.add(content)
+    else:
+        # a proxy answers for everything behind it, the reads too
+        for call in (("POST", content), ("GET", "items")):
+            fake_hub.overrides[call] = (int(cut[-3:]), {"message": "Bad Gateway"})
+    calls = len(fake_hub.calls)
+    await _until(lambda: len(fake_hub.calls) > calls + 6)
+    assert [p["paths"] for p in hub_routes._ADDS[id_]["held"]] == [["second.txt"], ["third.txt"]]
+    assert hub_routes._ADDS[id_]["reason"] == ""
+    fake_hub.unavailable = False
+    fake_hub.raise_for.clear()
+    fake_hub.overrides.clear()
+    await _until(lambda: fake_hub.pending_add == (id_, ["second.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["third.txt"]))
+    fake_hub.land_add()
+    row = await _share_row(jp_fetch, id_)
+    assert [e["name"] for e in row["entries"]] == ["first.txt", "second.txt", "third.txt"]
+    assert row["add_reason"] == ""
+
+
+def _answer_adds(fake_hub, name, answers) -> list:
+    """The hub gives the sends of ``name`` these answers in turn, then answers
+    as usual. The list returned grows by one for each answer given."""
+    answer, given = fake_hub.request, []
+
+    async def request(method, path, body=None, timeout=None):
+        if path.endswith("/content") and body["paths"] == [name] and len(given) < len(answers):
+            given.append(answers[len(given)])
+            return given[-1]
+        return await answer(method, path, body, timeout)
+
+    fake_hub.request = request
+    return given
+
+
+@pytest.mark.parametrize("answer, reason", [
+    ((502, {"reason": "failed", "message": "Bad Gateway"}), "failed"),
+    ((503, {"message": "Service Unavailable"}), "no_reason"),
+    ((504, "Gateway Timeout"), "no_reason"),
+])
+async def test_five_5xx_answers_refuse_that_add_and_the_next_held_add_goes(jp_fetch, fake_hub, answer, reason):
+    """ACC-EDIT-221: the reads answer, so this is no outage, and the hub answers 502 by itself for a failed fetch."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("x.txt", "next.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    given = _answer_adds(fake_hub, "x.txt", [answer] * 9)
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["next.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert len(given) == 5
+    assert row["add_reason"] == reason and [e["name"] for e in row["entries"]] == ["first.txt", "next.txt"]
+
+
+@pytest.mark.parametrize("lands_on, copying", [(1, False), (5, False), (5, True)])
+async def test_an_add_that_landed_behind_a_5xx_is_not_refused(jp_fetch, fake_hub, lands_on, copying):
+    """ACC-EDIT-221: a row that lists the name counts as the hub's acceptance, after the fifth answer too."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("x.txt", "next.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    answer, sent = fake_hub.request, []
+
+    async def request(method, path, body=None, timeout=None):
+        if path.endswith("/content") and body["paths"] == ["x.txt"]:
+            sent.append(path)
+            if len(sent) == lands_on:
+                await answer(method, path, body, timeout)
+                if not copying:
+                    fake_hub.land_add()
+            return 502, {"reason": "failed"}
+        return await answer(method, path, body, timeout)
+
+    fake_hub.request = request
+    fake_hub.land_add()
+    if copying:
+        await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+        await asyncio.sleep(0.05)
+        fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["next.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert len(sent) == lands_on
+    assert row["add_reason"] == "" and [e["name"] for e in row["entries"]] == ["first.txt", "x.txt", "next.txt"]
+
+
+@pytest.mark.parametrize("cut", ["a read fails", "no answer"])
+async def test_an_outage_starts_the_count_of_5xx_answers_again(jp_fetch, fake_hub, cut):
+    """ACC-EDIT-219: four 5xx, an outage, four more: the hub is coming and going, and the add waits."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    answer, sent, read_failed = fake_hub.request, [], []
+
+    async def request(method, path, body=None, timeout=None):
+        if path == "items" and cut == "a read fails" and len(sent) == 4 and not read_failed:
+            read_failed.append(path)
+            raise HubUnavailable("the hub did not answer: closed")
+        if path.endswith("/content") and body["paths"] == ["x.txt"]:
+            sent.append(path)
+            if cut == "no answer" and len(sent) == 5:
+                raise HubUnavailable("the hub did not answer: closed")
+            if len(sent) <= (8 if cut == "a read fails" else 9):
+                return 502, {"message": "Bad Gateway"}
+        return await answer(method, path, body, timeout)
+
+    fake_hub.request = request
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert row["add_reason"] == "" and [e["name"] for e in row["entries"]] == ["first.txt", "x.txt"]
+
+
+async def test_5xx_answers_are_counted_for_each_add_apart(jp_fetch, fake_hub):
+    """ACC-EDIT-221: four for one add and four for the next refuse neither."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("x.txt", "next.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    bad = (502, {"message": "Bad Gateway"})
+    _answer_adds(fake_hub, "x.txt", [bad] * 4)
+    given = _answer_adds(fake_hub, "next.txt", [bad] * 4)
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["next.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert len(given) == 4
+    assert row["add_reason"] == "" and [e["name"] for e in row["entries"]] == ["first.txt", "x.txt", "next.txt"]
+
+
+async def test_a_read_of_the_row_copying_starts_the_count_of_5xx_answers_again(jp_fetch, fake_hub):
+    """ACC-EDIT-221: four 5xx, a read that shows the row copying, one more: not five in a row."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    answer, sent, copying = fake_hub.request, [], []
+
+    async def request(method, path, body=None, timeout=None):
+        if path.endswith("/content") and body["paths"] == ["x.txt"]:
+            sent.append(path)
+            if len(sent) <= 5:
+                return 502, {"message": "Bad Gateway"}
+        code, data = await answer(method, path, body, timeout)
+        if path == "items" and len(sent) == 4 and not copying:
+            copying.append(path)
+            for row in data["items"]:
+                row["last_add"] = {"state": "running"}
+        return code, data
+
+    fake_hub.request = request
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert copying and len(sent) == 6
+    assert row["add_reason"] == "" and [e["name"] for e in row["entries"]] == ["first.txt", "x.txt"]
+
+
+@pytest.mark.parametrize("answer", [
+    (404, {"status": 404, "message": "not found"}),
+    (500, {"message": "database down"}),
+    (200, {}),
+    (200, {"items": None}),
+    (200, {"items": "text"}),
+    (200, {"items": 5}),
+    (200, {"items": {"id": "a"}}),
+    (200, "text"),
+])
+async def test_a_read_that_is_not_a_list_keeps_the_held_adds(jp_fetch, fake_hub, answer):
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    fake_hub.overrides[("GET", "items")] = answer
+    await asyncio.sleep(0.05)
+    assert hub_routes._ADD_TASKS
+    assert hub_routes._ADDS[id_]["held"]
+    fake_hub.overrides.clear()
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert [e["name"] for e in (await _share_row(jp_fetch, id_))["entries"]] == ["first.txt", "x.txt"]
+
+
+async def test_a_task_that_dies_leaves_a_refusal_and_a_further_drop_lands(jp_fetch, fake_hub, monkeypatch):
+    """ACC-EDIT-221: a list holding what is not a row raises inside the task."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    rings = []
+    monkeypatch.setattr(hub_routes.RELAY, "ring", rings.append)
+    fake_hub.overrides[("GET", "items")] = (200, {"items": ["not a row"]})
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    fake_hub.overrides.clear()
+    assert rings == ["changed"]
+    fake_hub.land_add()
+    row = await _share_row(jp_fetch, id_)
+    assert (row["add_reason"], row["adding"], row["pending"]) == ("lab_failed", False, [])
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    assert fake_hub.pending_add == (id_, ["x.txt"])
+    fake_hub.land_add()
+    assert [e["name"] for e in (await _share_row(jp_fetch, id_))["entries"]] == ["first.txt", "x.txt"]
+
+
+async def test_a_refusal_settled_during_an_outage_is_read_when_the_hub_returns(jp_fetch, fake_hub):
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["second.txt"]})
+    fake_hub.unavailable = True
+    calls = len(fake_hub.calls)
+    await _until(lambda: len(fake_hub.calls) > calls + 4)
+    fake_hub.land_add("over_cap")
+    fake_hub.unavailable = False
+    await _until(lambda: fake_hub.pending_add == (id_, ["second.txt"]))
+    fake_hub.land_add()
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "over_cap"
+
+
+def _lose_the_answer(fake_hub) -> list:
+    """The next add the hub takes raises as an answer that never arrived."""
+    answer, lost = fake_hub.request, []
+
+    async def request(method, path, body=None, timeout=None):
+        result = await answer(method, path, body, timeout)
+        if not lost and method == "POST" and path.endswith("/content") and result[0] == 202:
+            lost.append(path)
+            raise HubUnavailable("the hub did not answer: closed")
+        return result
+
+    fake_hub.request = request
+    return lost
+
+
+@pytest.mark.parametrize("then", ["reads on", "a read fails"])
+async def test_an_add_whose_answer_was_lost_is_not_sent_again_once_it_landed(jp_fetch, fake_hub, then):
+    """ACC-EDIT-221: a second send would read as a refusal of an add that landed."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    lost = _lose_the_answer(fake_hub)
+    fake_hub.land_add()
+    await _until(lambda: lost)
+    if then == "a read fails":
+        fake_hub.raise_for.add("items")
+    fake_hub.land_add()
+    await asyncio.sleep(0.05)
+    fake_hub.raise_for.clear()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    row = await _share_row(jp_fetch, id_)
+    assert [e["name"] for e in row["entries"]] == ["first.txt", "x.txt"] and row["add_reason"] == ""
+    # first.txt, and x.txt whose answer was lost
+    assert _adds_sent(fake_hub, id_) == [["first.txt"], ["x.txt"]]
+
+
+async def test_a_lost_answer_leaves_the_last_adds_name_free(jp_fetch, fake_hub):
+    """ACC-EDIT-226: first.txt landed and was removed, so nothing copies that name."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    lost = _lose_the_answer(fake_hub)
+    fake_hub.land_add()
+    fake_hub.items[0]["files"].clear()
+    await _until(lambda: lost)
+    assert _json(await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["first.txt"]})) == {"ok": True}
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["first.txt"]))
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert [e["name"] for e in (await _share_row(jp_fetch, id_))["entries"]] == ["x.txt", "first.txt"]
+
+
+async def test_an_add_whose_answer_was_lost_stays_in_doubt_through_a_busy_answer(jp_fetch, fake_hub):
+    """The hub may take a call its proxy gave up on after the lab's next read."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    content = f"shares/{id_}/content"
+    fake_hub.raise_for.add(content)
+    fake_hub.land_add()
+    await _until(lambda: len(_adds_sent(fake_hub, id_)) > 2)
+    fake_hub.overrides[("POST", content)] = (409, {"reason": "busy", "message": "busy"})
+    fake_hub.raise_for.clear()
+    sent = len(_adds_sent(fake_hub, id_))
+    await _until(lambda: len(_adds_sent(fake_hub, id_)) > sent + 1)
+    fake_hub.items[0]["files"].append({"name": "x.txt", "size": 1, "sha256": ""})
+    del fake_hub.overrides[("POST", content)]
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == ""
+
+
+async def test_the_doubt_ends_with_the_add_it_was_about(jp_fetch, fake_hub):
+    """The next held add is sent, so the hub refuses a name it lists as usual."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("x.txt", "taken.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    lost = _lose_the_answer(fake_hub)
+    fake_hub.items[0]["files"].append({"name": "taken.txt", "size": 1, "sha256": ""})
+    fake_hub.land_add()
+    await _until(lambda: lost)
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "name_taken"
+
+
+async def test_a_busy_hub_is_asked_once_each_retry_interval(jp_fetch, fake_hub, monkeypatch):
+    monkeypatch.setattr(hub_routes, "HOLD_RETRY_SECONDS", 0.05)
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    fake_hub.overrides[("POST", f"shares/{id_}/content")] = (409, {"reason": "busy", "message": "busy"})
+    fake_hub.land_add()
+    await asyncio.sleep(0.2)
+    sent = len(_adds_sent(fake_hub, id_))
+    del fake_hub.overrides[("POST", f"shares/{id_}/content")]
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    fake_hub.land_add()
+    assert sent < 10
+
+
+async def test_a_refusal_with_no_reason_still_shows_on_the_row(jp_fetch, fake_hub):
+    """ACC-EDIT-221: a 500 names no slug."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    fake_hub.overrides[("POST", f"shares/{id_}/content")] = (500, {"message": "the hub failed"})
+    fake_hub.land_add()
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "no_reason"
+
+
+async def test_a_settled_refusal_with_no_reason_still_shows_on_the_row(jp_fetch, fake_hub):
+    """ACC-EDIT-221: the hub's record of a direct add may name no slug."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["x.txt"]})
+    fake_hub.pending_add = None
+    fake_hub.items[0]["last_add"] = {"state": "refused"}
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "no_reason"
+
+
+async def test_a_refusal_with_no_reason_of_the_last_held_add_replaces_an_earlier_one(jp_fetch, fake_hub):
+    """ACC-EDIT-221: taken.txt is refused at once, then x.txt after its 202."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("taken.txt", "x.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    fake_hub.items[0]["files"].append({"name": "taken.txt", "size": 1, "sha256": ""})
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["x.txt"]))
+    assert hub_routes._ADDS[id_]["reason"] == "name_taken"
+    fake_hub.pending_add = None
+    fake_hub.items[0]["last_add"] = {"state": "refused"}
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "no_reason"
+
+
+async def test_the_row_shows_the_newest_refusal(jp_fetch, fake_hub):
+    """ACC-EDIT-221: the hub refuses first.txt after its 202 and taken.txt at
+    once, and its row still carries the first."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": ["taken.txt"]})
+    fake_hub.items[0]["files"].append({"name": "taken.txt", "size": 1, "sha256": ""})
+    fake_hub.land_add("over_cap")
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert hub_routes._ADDS[id_]["reason"] == "name_taken"
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "name_taken"
+
+
+async def test_the_refusal_of_the_last_held_add_replaces_an_earlier_one(jp_fetch, fake_hub):
+    """ACC-EDIT-221: taken.txt is refused at once, then last.txt after its 202."""
+    id_ = await _a_running_add(jp_fetch, fake_hub)
+    for name in ("taken.txt", "last.txt"):
+        await _post(jp_fetch, "api", "shares", id_, "items", body={"paths": [name]})
+    fake_hub.items[0]["files"].append({"name": "taken.txt", "size": 1, "sha256": ""})
+    fake_hub.land_add()
+    await _until(lambda: fake_hub.pending_add == (id_, ["last.txt"]))
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "name_taken"
+    fake_hub.land_add("over_cap")
+    await _until(lambda: not hub_routes._ADD_TASKS)
+    assert hub_routes._ADDS[id_]["reason"] == "over_cap"
+    assert (await _share_row(jp_fetch, id_))["add_reason"] == "over_cap"
+
+
 async def test_remove_and_rename_go_through_the_content_route(jp_fetch, fake_hub):
     """ACC-EDIT-165, 166, 168: a name may hold a slash, and a rename under
     another folder is the move."""
@@ -421,6 +1651,25 @@ async def test_remove_and_rename_go_through_the_content_route(jp_fetch, fake_hub
     assert err.value.code == 400 and json.loads(err.value.response.body)["reason"] == "name_taken"
     await jp_fetch(NS, "api", "shares", id_, "items", method="DELETE", params={"name": "sub"})
     assert (await _share_row(jp_fetch, id_))["entries"] == []
+
+
+async def test_a_remove_of_several_names_stops_at_the_first_refusal(jp_fetch, fake_hub):
+    """ACC-EDIT-212, ACC-EDIT-214: one content call per name, in order. The
+    first refusal is relayed; the names before it stay removed and the names
+    after it are not sent."""
+    id_ = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": []}))["id"]
+    fake_hub.items[0]["files"] = [
+        {"name": n, "size": 1, "sha256": ""} for n in ("a b&é.txt", "c.txt", "d.txt", "e.txt")
+    ]
+    await jp_fetch(NS, "api", "shares", id_, "items", method="DELETE",
+                   params=[("name", "a b&é.txt"), ("name", "c.txt")])
+    with pytest.raises(HTTPClientError) as err:
+        await jp_fetch(NS, "api", "shares", id_, "items", method="DELETE",
+                       params=[("name", "d.txt"), ("name", "gone.txt"), ("name", "e.txt")])
+    assert err.value.code == 400 and json.loads(err.value.response.body)["reason"] == "unknown_entry"
+    sent = [c[2]["name"] for c in fake_hub.calls if c[2] and c[2].get("action") == "remove"]
+    assert sent == ["a b&é.txt", "c.txt", "d.txt", "gone.txt"]
+    assert [e["name"] for e in (await _share_row(jp_fetch, id_))["entries"]] == ["e.txt"]
 
 
 async def test_an_excluded_name_is_not_sent_to_the_hub(jp_fetch, fake_hub):
@@ -757,6 +2006,7 @@ async def test_a_toggle_the_hub_answers_busy_keeps_the_intent(jp_fetch, fake_hub
     assert switches == [("PUT", f"shares/{share['id']}/tunnel", {"tunnel": True})]
     assert next(i for i in fake_hub.items if i["id"] == share["id"])["tunnel"] is False
     # the hub is free now: the next list read probes the record and switches it
+    fake_hub.land_creates()
     assert _json(await jp_fetch(NS, "api", "shares"))["shares"][0]["tunnel"] is True
 
 
@@ -771,6 +2021,7 @@ async def test_a_toggle_the_hub_rate_limits_keeps_the_intent(jp_fetch, fake_hub)
     assert state["tunnel_active"] is True and state["tunnel_default"] is True
     switches = [c for c in fake_hub.calls if c[0] == "PUT" and c[1].endswith("/tunnel")]
     assert switches == [("PUT", f"shares/{share['id']}/tunnel", {"tunnel": True})]
+    fake_hub.land_creates()
     assert _json(await jp_fetch(NS, "api", "shares"))["shares"][0]["tunnel"] is True
 
 
@@ -870,6 +2121,7 @@ async def test_a_pending_create_is_switched_on_by_the_next_list_read(jp_fetch, f
     assert row["tunnel_reason"] == "tunnel_pending"
     switches = [c for c in fake_hub.calls if c[0] == "PUT" and c[1].endswith("/tunnel")]
     assert len(switches) == 1
+    fake_hub.land_creates()
     listed = _json(await jp_fetch(NS, "api", "shares"))["shares"][0]
     assert listed["tunnel"] is True
     assert listed["link"] == f"https://share.example.com/s/{row['id']}"
@@ -923,6 +2175,7 @@ async def test_a_partial_success_keeps_the_pending_mark_on_the_straggler(jp_fetc
     the mark on the record the hub left behind."""
     first = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
     second = _json(await _post(jp_fetch, "api", "shares", body={"name": "y", "paths": ["b.txt"]}))
+    fake_hub.land_creates()
     # the toggle's first switch is refused and it stops there, leaving both
     fake_hub.busy_switches = 1
     await _post(jp_fetch, "api", "tunnel", body={"active": True})
@@ -939,6 +2192,23 @@ async def test_a_partial_success_keeps_the_pending_mark_on_the_straggler(jp_fetc
         ("PUT", f"shares/{first['id']}/tunnel", {"tunnel": True}),
         ("PUT", f"shares/{second['id']}/tunnel", {"tunnel": True}),
     ]
+
+
+@pytest.mark.parametrize("copying", [{"state": "staging"}, {"last_add": {"state": "running"}}])
+async def test_a_record_that_copies_is_switched_on_once_it_settles(jp_fetch, fake_hub, copying):
+    """The hub answers busy to a switch on while it copies, and the panel reads a copying row each second."""
+    share = await _a_record_behind_the_switch(jp_fetch, fake_hub)
+    item = next(i for i in fake_hub.items if i["id"] == share["id"])
+    item.update(copying)
+    switches = len(_tunnel_switches(fake_hub))
+    for _ in range(3):
+        row = _json(await jp_fetch(NS, "api", "shares"))["shares"][0]
+        assert row["tunnel"] is False and row["tunnel_reason"] == "tunnel_pending"
+    assert len(_tunnel_switches(fake_hub)) == switches
+    item.update(state="ready", last_add={"state": "done"})
+    row = _json(await jp_fetch(NS, "api", "shares"))["shares"][0]
+    assert row["tunnel"] is True and "tunnel_reason" not in row
+    assert len(_tunnel_switches(fake_hub)) == switches + 1
 
 
 async def test_a_switch_off_while_the_hub_is_busy_leaves_the_row_unmarked(jp_fetch, fake_hub):
@@ -988,16 +2258,6 @@ async def test_a_header_switch_on_that_fails_partway_keeps_the_records_it_switch
 # --------------------------------------------------------------------------- #
 
 
-async def _read_stream(url, seconds):
-    """Everything the lab wrote on its stream within ``seconds``; the stream
-    is held open, so the read ends on the client's own timeout."""
-    chunks = []
-    with pytest.raises(HTTPTimeoutError):
-        await AsyncHTTPClient().fetch(
-            url, streaming_callback=chunks.append, request_timeout=seconds, raise_error=False)
-    return b"".join(chunks).decode()
-
-
 @pytest.fixture
 def fake_hub_stream(monkeypatch):
     """`hub_stream.hold` replaced by a scripted hub stream: it answers
@@ -1021,31 +2281,183 @@ def fake_hub_stream(monkeypatch):
     return script
 
 
-def _stream_url(jp_http_port, jp_base_url, jp_auth_header=None):
-    """The stream needs a client that returns before the response ends, so
-    it is read with a raw AsyncHTTPClient; ``jp_fetch`` is still requested
-    by each test because its fixture chain is what serves the socket."""
-    url = f"http://127.0.0.1:{jp_http_port}{jp_base_url}{NS}/api/stream"
-    if jp_auth_header:
-        url += f"?token={jp_auth_header['Authorization'].split()[-1]}"
-    return url
+async def _stream(jp_ws_fetch, **kwargs):
+    """A connection to the panel's stream, bounded so a route that answers
+    no upgrade fails the test at once."""
+    return await asyncio.wait_for(jp_ws_fetch(NS, "api", "stream", **kwargs), 5)
 
 
-async def test_stream_relays_the_hub_rings(jp_fetch, jp_http_port, jp_base_url, jp_auth_header, fake_hub, fake_hub_stream):
+async def test_stream_sends_one_message_per_ring(jp_ws_fetch, fake_hub, fake_hub_stream):
     fake_hub_stream["rings"] = 2
-    url = _stream_url(jp_http_port, jp_base_url, jp_auth_header)
-    text = await _read_stream(url, 1)
-    assert text.startswith("retry: 5000\n\n")
+    ws = await _stream(jp_ws_fetch)
     # one ring for the hub stream opening, then the two the hub sent
-    assert text.count("event: changed\ndata:\n\n") == 3
-    await asyncio.sleep(0.1)  # the server notices the closed connection
-    assert hub_stream.RELAY.connected is False  # the last reader took the hub stream down
+    for _ in range(3):
+        assert await asyncio.wait_for(ws.read_message(), 5) == "changed"
+    ws.close()
 
 
-async def test_stream_answers_403_without_the_lab_credentials(jp_fetch, jp_http_port, jp_base_url, fake_hub, fake_hub_stream):
-    resp = await AsyncHTTPClient().fetch(_stream_url(jp_http_port, jp_base_url), raise_error=False, request_timeout=5)
-    assert resp.code == 403
-    assert fake_hub_stream["opens"] == 0
+async def test_a_closed_stream_unsubscribes(jp_ws_fetch, fake_hub, fake_hub_stream):
+    first, second = await _stream(jp_ws_fetch), await _stream(jp_ws_fetch)
+    await asyncio.wait_for(first.read_message(), 5)
+    assert fake_hub_stream["opens"] == 1  # one hub stream for both panels
+    first.close()
+    await _until(lambda: len(hub_stream.RELAY._queues) == 1)
+    assert hub_stream.RELAY.connected is True
+    second.close()
+    await _until(lambda: hub_stream.RELAY.connected is False)  # the last reader took the hub stream down
+    assert not [t for t in asyncio.all_tasks() if "_send_rings" in repr(t)]
+
+
+async def test_stream_refuses_a_connection_without_the_lab_credentials(jp_ws_fetch, fake_hub, fake_hub_stream):
+    (await _stream(jp_ws_fetch)).close()  # the same route opens with them
+    await _until(lambda: hub_stream.RELAY.connected is False)
+    opens = fake_hub_stream["opens"]
+    with pytest.raises(HTTPClientError) as refused:
+        await _stream(jp_ws_fetch, headers={"Authorization": ""})
+    assert refused.value.code == 403
+    assert fake_hub_stream["opens"] == opens
+
+
+async def test_stream_refuses_a_connection_from_another_origin(jp_ws_fetch, jp_serverapp, monkeypatch, fake_hub, fake_hub_stream):
+    (await _stream(jp_ws_fetch)).close()  # the same route opens from no origin
+    await _until(lambda: hub_stream.RELAY.connected is False)
+    opens = fake_hub_stream["opens"]
+    # jupyter_server skips the check for a token: treat this one as a browser's cookie
+    monkeypatch.setattr(jp_serverapp.identity_provider, "should_check_origin", lambda _handler: True)
+    with pytest.raises(HTTPClientError) as refused:
+        await _stream(jp_ws_fetch, headers={"Origin": "http://elsewhere.example"})
+    assert refused.value.code == 403
+    assert fake_hub_stream["opens"] == opens
+
+
+async def test_a_socket_that_carries_the_token_opens_from_another_origin(jp_ws_fetch, fake_hub, fake_hub_stream):
+    """jupyter_server checks no origin for a token, and the panel sends one when its socket host is not the page's."""
+    ws = await _stream(jp_ws_fetch, headers={"Origin": "http://elsewhere.example"})
+    assert await asyncio.wait_for(ws.read_message(), 5) == "changed"
+    ws.close()
+    await _until(lambda: not hub_stream.RELAY._queues)
+
+
+@pytest.fixture
+def stream_handlers(monkeypatch):
+    """Each server side of the stream that reached open."""
+    opened = []
+    real = hub_routes.HubStreamHandler.open
+
+    def open_(self):
+        opened.append(self)
+        return real(self)
+
+    monkeypatch.setattr(hub_routes.HubStreamHandler, "open", open_)
+    return opened
+
+
+@pytest.fixture
+def server_log(jp_serverapp):
+    """Every line the server and tornado log, at every level."""
+    lines = []
+    keep = logging.Handler(logging.DEBUG)
+    keep.emit = lambda record: lines.append(record.getMessage())
+    loggers = [logging.getLogger(n) for n in ("", "tornado.access", "tornado.application", "tornado.general")]
+    loggers.append(jp_serverapp.log)
+    levels = [(lg, lg.level) for lg in loggers]
+    for lg in loggers:
+        lg.setLevel(logging.DEBUG)
+        lg.addHandler(keep)
+    yield lines
+    for lg, level in levels:
+        lg.setLevel(level)
+        lg.removeHandler(keep)
+
+
+async def test_a_frame_from_the_client_keeps_the_socket_and_the_token_out_of_the_log(
+    jp_ws_fetch, jp_serverapp, fake_hub, fake_hub_stream, server_log
+):
+    """The panel sends nothing. A frame used to abort the socket, and tornado logged its URI with the token."""
+    token = jp_serverapp.identity_provider.token
+    ws = await _stream(jp_ws_fetch, headers={"Authorization": ""}, params={"token": token})
+    assert await asyncio.wait_for(ws.read_message(), 5) == "changed"
+    await ws.write_message("anything")
+    await asyncio.sleep(0.2)
+    assert any("api/stream" in line for line in server_log)
+    assert not any(token in line for line in server_log)
+    hub_stream.RELAY.ring(hub_stream.CHANGED)
+    assert await asyncio.wait_for(ws.read_message(), 5) == "changed"
+    ws.close()
+    await _until(lambda: not hub_stream.RELAY._queues)
+
+
+async def _ask_for_the_stream(port, path, auth):
+    """A raw client that sends the upgrade request and reads nothing yet."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    key = base64.b64encode(os.urandom(16)).decode()
+    writer.write((
+        f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nAuthorization: {auth}\r\n\r\n"
+    ).encode())
+    await writer.drain()
+    return reader, writer
+
+
+async def _upgraded_and_silent(port, path, auth):
+    """A client that completes the upgrade, then never reads, never answers a ping and never closes."""
+    reader, writer = await _ask_for_the_stream(port, path, auth)
+    head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+    assert b" 101 " in head.split(b"\r\n")[0], head
+    return writer
+
+
+async def test_a_peer_gone_with_no_close_is_unsubscribed_by_the_pings(
+    http_server_client, jp_serverapp, jp_http_port, jp_base_url, jp_auth_header, fake_hub, fake_hub_stream, monkeypatch
+):
+    """A closed laptop lid sends no FIN and no close frame, so only an unanswered ping ends that socket."""
+    monkeypatch.setitem(jp_serverapp.web_app.settings, "ws_ping_interval", 100)
+    monkeypatch.setitem(jp_serverapp.web_app.settings, "ws_ping_timeout", 300)
+    path = url_path_join(jp_base_url, NS, "api", "stream")
+    writer = await _upgraded_and_silent(jp_http_port, path, jp_auth_header["Authorization"])
+    try:
+        await _until(lambda: len(hub_stream.RELAY._queues) == 1)
+        # the close waits 5 s for an answer before tornado drops the connection
+        await _until(lambda: not hub_stream.RELAY._queues, 12)
+    finally:
+        writer.close()
+
+
+async def test_a_ring_on_a_closing_socket_ends_its_sender_quietly(
+    jp_ws_fetch, fake_hub, fake_hub_stream, stream_handlers
+):
+    ws = await _stream(jp_ws_fetch)
+    assert await asyncio.wait_for(ws.read_message(), 5) == "changed"
+    handler = stream_handlers[0]
+    # the server's close is sent and the client has not answered it yet
+    handler.close()
+    hub_stream.RELAY.ring(hub_stream.CHANGED)
+    await _until(handler._sender.done)
+    assert not handler._sender.cancelled() and handler._sender.exception() is None
+    ws.close()
+    await _until(lambda: not hub_stream.RELAY._queues)
+
+
+async def test_a_client_gone_before_the_upgrade_raises_nothing_in_on_close(
+    http_server_client, jp_http_port, jp_base_url, jp_auth_header, fake_hub, fake_hub_stream, monkeypatch, server_log
+):
+    """tornado calls on_close when the client leaves while its request is still checked, before open subscribed."""
+    checking = asyncio.Event()
+    prepare = hub_routes.HubStreamHandler.prepare
+
+    async def slow_prepare(self, *args, **kwargs):
+        checking.set()
+        await asyncio.sleep(0.3)
+        return await prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(hub_routes.HubStreamHandler, "prepare", slow_prepare)
+    path = url_path_join(jp_base_url, NS, "api", "stream")
+    _reader, writer = await _ask_for_the_stream(jp_http_port, path, jp_auth_header["Authorization"])
+    await checking.wait()
+    writer.close()
+    await asyncio.sleep(0.8)
+    assert any("api/stream" in line for line in server_log)
+    assert not [line for line in server_log if line.startswith("Exception in callback")]
 
 
 async def test_hub_address_links_are_rewritten_to_the_browser_origin(jp_fetch, fake_hub):
@@ -1062,6 +2474,7 @@ async def test_a_record_left_behind_the_switch_is_brought_onto_the_tunnel(jp_fet
     brings the straggler onto the tunnel rather than reporting the drift.
     """
     share = _json(await _post(jp_fetch, "api", "shares", body={"name": "x", "paths": ["a.txt"]}))
+    fake_hub.land_creates()
     assert _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))["tunnel_active"] is True
     # the hub lost the record's switch; `_with_url` then composes its url
     # from the hub's own address, which is the drift the panel showed
@@ -1181,6 +2594,7 @@ async def test_a_switch_off_under_a_reconciliation_leaves_no_record_published(jp
     tunnel for good - nothing switches a record off outside this handler."""
     for name in ("a", "b", "c"):
         _json(await _post(jp_fetch, "api", "shares", body={"name": name, "paths": ["a.txt"]}))
+    fake_hub.land_creates()
     assert _json(await _post(jp_fetch, "api", "tunnel", body={"active": True}))["tunnel_active"] is True
     for item in fake_hub.items:
         item["tunnel"] = False  # three records behind the switch
@@ -2209,17 +3623,61 @@ async def test_a_protected_request_takes_an_upload_with_the_stored_password(jp_f
     settled = await _until_settled(jp_fetch, key)
     assert settled["uploaded"] == 1
     assert fake_link.record(link)["uploads"] == [("a.txt", b"a")]
+    # sent twice, the first time refused: a retry starts the file's count again
+    assert [f["copied"] for f in hub_routes._UPLOADS[key]["files"]] == [1]
 
 
-async def test_a_second_upload_waits_for_the_first(jp_fetch, fake_hub, fake_link, jp_root_dir):
-    key = (await _connect(jp_fetch, fake_link.add(kind="request")))["key"]
+async def test_a_second_upload_joins_the_running_one(jp_fetch, fake_hub, fake_link, jp_root_dir):
+    """ACC-HUBM-222: _send walks a list that can grow while it runs, and each
+    file counts its own bytes for the rows the manifest does not expose yet."""
+    link = fake_link.add(kind="request")
+    key = (await _connect(jp_fetch, link))["key"]
     (jp_root_dir / "a.txt").write_bytes(b"a")
-    fake_link.delay_upload = 0.3
+    (jp_root_dir / "bb.txt").write_bytes(b"bb")
+    fake_link.delay_upload = 0.2
+    await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["a.txt"]})
+    state = hub_routes._UPLOADS[key]
+    answer = _json(await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["bb.txt"]}))
+    assert answer == {"ok": True, "uploaded": ["bb.txt"]}
+    assert hub_routes._UPLOADS[key] is state
+    assert (await _manifest(jp_fetch, key))["progress"]["total"] == 3
+    assert [(f["name"], f["size"]) for f in state["files"]] == [("a.txt", 1), ("bb.txt", 2)]
+    settled = await _until_settled(jp_fetch, key)
+    assert (settled["uploaded"], settled["upload_reason"]) == (2, "")
+    assert sorted(fake_link.record(link)["uploads"]) == [("a.txt", b"a"), ("bb.txt", b"bb")]
+    assert [f["copied"] for f in state["files"]] == [1, 2]
+
+
+async def test_an_upload_that_fails_on_a_name_ends_and_a_further_drop_lands(jp_fetch, fake_hub, fake_link, jp_root_dir):
+    """DEF-HUB-139: a name that is not UTF-8 cannot go in the request's header,
+    and the manifest still answers with it."""
+    link = fake_link.add(kind="request")
+    key = (await _connect(jp_fetch, link))["key"]
+    (jp_root_dir / "dir").mkdir()
+    with open(os.fsencode(jp_root_dir / "dir") + b"/bad\xff.txt", "wb") as f:
+        f.write(b"x")
+    (jp_root_dir / "ok.txt").write_bytes(b"ok")
+    await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["dir"]})
+    settled = await _until_settled(jp_fetch, key)
+    assert settled["upload_reason"].startswith("Could not send bad\udcff.txt: ")
+    await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["ok.txt"]})
+    settled = await _until_settled(jp_fetch, key)
+    assert settled["upload_reason"] == "" and fake_link.record(link)["uploads"] == [("ok.txt", b"ok")]
+
+
+async def test_a_second_upload_keeps_the_limit_check(jp_fetch, fake_hub, fake_link, jp_root_dir):
+    link = fake_link.add(kind="request", cap=2)
+    key = (await _connect(jp_fetch, link))["key"]
+    await _manifest(jp_fetch, key)
+    (jp_root_dir / "a.txt").write_bytes(b"a")
+    (jp_root_dir / "big.txt").write_bytes(b"too big")
+    fake_link.delay_upload = 0.2
     await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["a.txt"]})
     with pytest.raises(HTTPClientError) as err:
-        await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["a.txt"]})
-    assert err.value.code == 409
-    await _until_settled(jp_fetch, key)
+        await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["big.txt"]})
+    assert err.value.code == 413
+    settled = await _until_settled(jp_fetch, key)
+    assert settled["uploaded"] == 1 and fake_link.record(link)["uploads"] == [("a.txt", b"a")]
 
 
 async def test_an_upload_of_only_excluded_names_is_refused(jp_fetch, fake_hub, fake_link, jp_root_dir):
@@ -2241,3 +3699,71 @@ async def test_disconnect_leaves_the_record_and_a_closed_record_says_why(jp_fetc
     await jp_fetch(NS, "api", "connections", key, method="DELETE")
     assert _json(await jp_fetch(NS, "api", "connections"))["connections"] == []
     assert link.rsplit("/", 1)[-1] in fake_link.records
+
+
+PAGE = {"title": "Inbox", "kind": "request", "owner": "bob", "files": []}
+CONN = {"id": "r_1", "link": "https://hub.example.com/s/pol1/r_1"}
+
+
+def _upload(index, files, state="running"):
+    """This lab's upload as _send keeps it: (name, size, bytes sent) per file."""
+    return {
+        "state": state, "copied": 0, "total": 0, "count": index, "reason": "", "index": index,
+        "files": [{"path": Path(n), "name": n, "size": size, "copied": copied} for n, size, copied in files],
+    }
+
+
+def _rows(upload):
+    return [(f["name"], f["fraction"]) for f in hub_routes.manifest_from_page(PAGE, CONN, upload)["files"]]
+
+
+def test_an_upload_lists_each_file_with_the_fraction_sent():
+    """ACC-PROG-216, ACC-PROG-218: one finished, one in flight, one waiting."""
+    assert _rows(_upload(1, [("a", 10, 10), ("b", 10, 4), ("c", 10, 0)])) == [("a", 1), ("b", 0.4), ("c", 0)]
+
+
+def test_a_file_that_grew_after_the_drop_is_at_most_whole():
+    """The lab reads a file's size at the drop and sends the file to its end at its turn."""
+    assert _rows(_upload(0, [("grew", 10, 15)])) == [("grew", 1)]
+
+
+def test_an_upload_that_ended_lists_no_files():
+    for state in ("done", "refused"):
+        assert _rows(_upload(1, [("a", 10, 10)], state)) == []
+    assert hub_routes.manifest_from_page(PAGE, CONN, None)["files"] == []
+
+
+def test_a_zero_size_file_of_an_upload_waits_at_0():
+    assert _rows(_upload(0, [("a", 10, 5), ("empty", 0, 0)])) == [("a", 0.5), ("empty", 0)]
+    assert _rows(_upload(1, [("a", 10, 10), ("empty", 0, 0)])) == [("a", 1), ("empty", 0)]
+
+
+def test_a_long_upload_lists_the_rows_around_the_file_in_flight():
+    files = [(f"f{i:03d}", 2, 0) for i in range(250)]
+    rows = _rows(_upload(120, files))
+    assert len(rows) == hub_routes.UPLOAD_ROWS == 100
+    assert (rows[0][0], rows[-1][0]) == ("f070", "f169")
+    assert rows[49] == ("f119", 1) and rows[50] == ("f120", 0)
+    assert _rows(_upload(10, files))[0][0] == "f000"
+    assert _rows(_upload(249, files))[-1] == ("f249", 0)
+    # a short list shows whole
+    assert [name for name, _ in _rows(_upload(2, files[:3]))] == ["f000", "f001", "f002"]
+
+
+def test_the_manifest_of_a_running_upload_is_json():
+    manifest = hub_routes.manifest_from_page(PAGE, CONN, _upload(0, [("a", 10, 3)]))
+    assert json.loads(json.dumps(manifest))["files"] == [{"name": "a", "size": 10, "fraction": 0.3}]
+
+
+async def test_the_manifest_follows_each_file_of_an_upload(jp_fetch, fake_hub, fake_link, jp_root_dir):
+    link = fake_link.add(kind="request")
+    key = (await _connect(jp_fetch, link))["key"]
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (jp_root_dir / name).write_bytes(b"x")
+    fake_link.delay_upload = 0.3
+    await _post(jp_fetch, "api", "connections", key, "upload", body={"paths": ["a.txt", "b.txt", "c.txt"]})
+    await _until(lambda: hub_routes._UPLOADS[key]["index"] == 1)
+    files = (await _manifest(jp_fetch, key))["files"]
+    assert [f["name"] for f in files] == ["a.txt", "b.txt", "c.txt"]
+    assert (files[0]["fraction"], files[2]["fraction"]) == (1, 0)
+    assert (await _until_settled(jp_fetch, key))["files"] == []

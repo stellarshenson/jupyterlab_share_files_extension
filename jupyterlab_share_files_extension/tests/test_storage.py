@@ -220,6 +220,21 @@ class TestShareStore:
         fetched = store.get(share["id"])
         assert fetched["entries"] == []
 
+    def test_remove_items_takes_several_names_and_stops_at_a_bad_one(self, tmp_path):
+        """ACC-EDIT-215: the panel removes a selection in one call. A name
+        the share does not hold is skipped; a bad name stops the call there,
+        and the names before it stay removed."""
+        names = ["a b&é.txt", "c.txt", "d.txt", "e.txt"]
+        for n in names:
+            (tmp_path / n).write_text("x")
+        store = ShareStore(str(tmp_path))
+        share = store.create("many", names)
+        result = store.remove_items(share["id"], ["a b&é.txt", "gone.txt", "c.txt"])
+        assert [e["name"] for e in result["entries"]] == ["d.txt", "e.txt"]
+        with pytest.raises(StorageError):
+            store.remove_items(share["id"], ["d.txt", "../x", "e.txt"])
+        assert [e["name"] for e in store.get(share["id"])["entries"]] == ["e.txt"]
+
     def test_remove_items_rejects_path_components(self, tmp_path):
         (tmp_path / "x.txt").write_text("x")
         store = ShareStore(str(tmp_path))

@@ -727,7 +727,7 @@ def build_parser() -> argparse.ArgumentParser:
         "hub: prints the given names at once and uploads in the background; exit 0 does not\n"
         "say the files arrived, and no command reports how the upload ended - the panel does.\n"
         "--uploader is ignored, folders are flattened to their files, and a second send into\n"
-        "the same request while one runs is refused: wait, then send again.",
+        "the same request while one runs joins it and is sent after its files.",
         "  jupyterlab_share_files send-to-request 'request:hub:q7Xk2m' report.pdf\n"
         "  jupyterlab_share_files send-to-request 'request:https://host:RQ77ZZ12' out/ --uploader Alice",
     )

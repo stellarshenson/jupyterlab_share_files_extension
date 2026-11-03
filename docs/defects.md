@@ -520,6 +520,7 @@ The on-disk share, request and connection stores under shares_dir
   - root-cause: 2026-10-29T00:42:26Z @kj config.py EXCLUDED_NAMES held .ipynb_checkpoints, __pycache__, __MACOSX, .DS_Store, ._*, the trash folders and $RECYCLE.BIN; Windows Explorer thumbnails and folder settings and Office lock files were absent
   - log: 2026-10-29T00:42:26Z @kj added
   - log: 2026-10-29T00:56:23Z @kj closed
+  - log: 2026-11-02T20:52:33Z @kj correction 2026-11-02 run wf_94bb1ad9-758: the hub has no skip of its own for Thumbs.db; it lands unless the lab's exclude holds it
 
 ## Peer connections `PEER`
 
@@ -1001,6 +1002,38 @@ Labs spawned by galaxahub - the hub relay, share links, the cloud switch and the
   - root-cause: 2026-10-29T00:36:23Z @kj src/widget.ts:1571-1577 appends an empty row whenever the hub's share-wide skipped count is above zero; the count is true but the sentence is written for a developer
   - log: 2026-10-29T00:36:23Z @kj added
   - log: 2026-10-29T00:56:23Z @kj closed
+- [x] `DEF-HUB-138-ADD-BUSY` **A further add to a share is blocked while the first runs** - MAJOR; after one file is added from the panel a further add to that share is blocked; cause: the hub answers 409 busy to content calls during an add and the panel keeps no paths; fix: the lab holds them in _ADDS until the hub takes them; `jupyterlab_share_files_extension/hub_routes.py`
+  - evidence: 2-add-hold, 2b, 2e: the lab holds a further add in _ADDS and sends it when the hub takes it; Galata two drops during a running add both land; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - root-cause: 2026-11-02T17:41:49Z @kj DEV hub probe 2026-11-02: while an add runs or the row is staging, a further add, remove and rename on that share answer 409 busy; an add on another share is accepted; addToShareFlow shows the refusal and drops the paths
+  - repro: hub mode: drop a large file on a share, drop a second file before the row stops showing adding
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:48Z @kj added
+  - log: 2026-11-02T19:15:40Z @kj amended text "after one file is added from the panel a further add to that share is blocked; likely cause: the hub answers 409 busy to content calls during an add and the panel keeps no paths; fix: the panel holds them until the copy ends; `src/widget.ts`" -> "MAJOR; after one file is added from the panel a further add to that share is blocked; cause: the hub answers 409 busy to content calls during an add and the panel keeps no paths; fix: the lab holds them in _ADDS until the hub takes them; `jupyterlab_share_files_extension/hub_routes.py`"
+  - log: 2026-11-03T12:54:26Z @kj closed
+- [x] `DEF-HUB-139-UPLOAD-BUSY` **A further upload to a connected request is refused while the first runs** - MAJOR; a second drop on a connected request answers 'An upload into this request is still running - wait for it to finish' and its paths are lost; cause: HubConnectionUploadHandler.post answers 409 while _UPLOADS[key] runs; `jupyterlab_share_files_extension/hub_routes.py`
+  - evidence: 2-add-hold and 2b: a further upload joins the running one instead of a 409; test_a_second_upload_joins_the_running_one; Galata second drop on a connected request lands; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - root-cause: 2026-11-02T17:41:50Z @kj HubConnectionUploadHandler.post answers 409 while _UPLOADS[key] runs and the panel drops the paths; pinned by test_hub_handlers.py:2214
+  - repro: hub mode: drop a large file on a connected request, drop a second file while the row shows uploading
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:48Z @kj added
+  - log: 2026-11-03T12:54:22Z @kj closed
+- [x] `DEF-HUB-140-DOT-NAME` **A selection holding a dot-named folder is refused whole** - MAJOR; dropping .images-mockup, .images_next_best_site and two .md files on a share shows 'A file name was rejected by the hub.', adds nothing and names no item; cause: the hub refuses a chosen name starting with a dot as bad_filename; `hub_routes.py` _kept_paths
+  - evidence: 2-add-hold: the lab leaves out names the hub refuses (20 of 20, 6 body shapes) and adds the rest with a notice naming them; hub-mode.spec dot-named folder plus plain file; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - root-cause: 2026-11-02T20:52:28Z @kj DEV hub probe 2026-11-02 run wf_94bb1ad9-758: 20 of 20 adds of a chosen name starting with . or ~ answered 400 bad_filename under exclude catalogue, empty and absent and password empty, absent and set; the rule is the hub's; the lab sent nothing that causes it
+  - root-cause: 2026-11-02T17:41:50Z @kj DEV hub probe 2026-11-02: a chosen name starting with . or ~ alone answers 400 bad_filename on an add; [.dotfolder, plain.txt] landed nothing; a create skips those names and counts them in skipped; a dot-named parent is not checked
+  - repro: hub mode: select a dot-named folder and a plain file in the file browser, drop both on a share
+  - test-tags: E2E
+  - log: 2026-11-02T17:10:48Z @kj added
+  - log: 2026-11-02T20:04:24Z @kj amended text "dropping .images-mockup, .images_next_best_site and two .md files on a share shows 'A file name was rejected by the hub.', adds nothing and names no item; likely cause: the hub refuses a chosen name starting with a dot as bad_filename; not confirmed on the hub; `hub_routes.py` _kept_paths" -> "MAJOR; dropping .images-mockup, .images_next_best_site and two .md files on a share shows 'A file name was rejected by the hub.', adds nothing and names no item; cause: the hub refuses a chosen name starting with a dot as bad_filename; `hub_routes.py` _kept_paths"
+  - log: 2026-11-03T12:54:22Z @kj closed
+- [x] `DEF-HUB-141-ADD-SLOW` **An add to a share takes about a minute** - MAJOR; owner report 2026-11-02: adding a file to a hub share takes about 1 minute; the DEV hub probe recorded 2 to 3 s for a 6-byte add and 11.27 s for 5.25 GB, so the copy alone does not explain it; cause unknown
+  - evidence: 2h: panel stream moved to a WebSocket; 3 tabs full set over HTTP/1.1 add in 2.5 to 3.2 s, was 24 to 47 s; owner chose sandbox evidence; final suites wf_2d028040-f32: jest 55, pytest 655, lint 0 errors, Galata mock-hub 100/100, standalone 48/48, live-hub 3/3; review SHIP wf_5f83c63b-206
+  - root-cause: 2026-11-03T00:13:22Z @kj measured run wf_45b87dda-d9b, full labextension set, HTTP/1.1: with 3 tabs api/stream and commands api/pending take all 6 connections per origin; the POST waited up to 21.9 s; adds took 24 to 47 s against at most 5.9 s with 1 tab; the owner's protocol and tabs not measured
+  - root-cause: 2026-11-02T21:23:47Z @kj not found; DEV hub 2026-11-02: 1 KB settles in 2.1 to 2.4 s, 500 MB in 2.8 to 4.0 s; a share holding 500 MB or 300 files is no slower; 0 of 100 replayed adds lost the end of the add; lab to browser not measured
+  - repro: hub mode: add one small file to a share, time until the row lists it
+  - test-tags: E2E
+  - log: 2026-11-02T20:17:20Z @kj added
+  - log: 2026-11-03T12:54:26Z @kj closed
 
 ## Test suites `TESTS`
 
