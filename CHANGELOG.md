@@ -2,6 +2,24 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.78] - 2026-11-03
+
+### Added
+
+- Show each file of a hub add or upload in its own progress row
+- Select share entries with Ctrl, Shift, a plain click or Space, and remove the selection in one action with one confirmation
+- Land a standalone drop or paste in the folder of the share it targets, with a visible drop mark on the folder row
+- Request a target-folder field for hub adds from the hub author in `docs/hub-request-add-into-folder.md`
+
+### Changed
+
+- Hold an add or upload made while another runs on the same hub share, and send it when the hub takes it, instead of refusing it as busy
+- Carry the panel's change stream over a WebSocket, so several lab tabs no longer take all six browser connections and adds finish in about 3 s instead of up to a minute
+
+### Fixed
+
+- Leave out names starting with `.` or `~` from a hub add or create, which the hub refuses, and name what was left out
+
 ## [1.2.77] - 2026-10-31
 
 ### Fixed

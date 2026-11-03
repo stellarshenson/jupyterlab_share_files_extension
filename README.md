@@ -41,7 +41,7 @@ The recipient pages open in any browser and follow the system theme by default, 
 - **Recipient pages** - standalone HTML in any browser, no JupyterLab needed, Light / Dark / Auto
 - **Streaming transfers** - share downloads, zips, uploads and connected saves move through disk or the response, never the server's memory
 - **Cloudflare tunnel** - optional public links, HTTPS-only, restricted to the public endpoints ([setup guide](docs/cloudflare_setup.md))
-- **Hub mode** - on a galaxahub lab the hub holds the bytes and the lab mounts no public route ([design](docs/design-hub-public-zone.md))
+- **Hub mode** - on a galaxahub lab the hub holds the bytes and the lab mounts no public route; an add or upload made while another runs waits in the lab until the hub takes it, and each file shows its own progress row ([design](docs/design-hub-public-zone.md))
 - **Settings** - poll interval, download limit, hidden files, tunnel autostart
 
 A link is served by the JupyterLab server that created it, so it works only while that server runs.

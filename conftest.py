@@ -2,6 +2,9 @@ import pytest
 
 pytest_plugins = ("pytest_jupyter.jupyter_server", )
 
+# tmp/ holds workflow scratch copies of the tests; jest and eslint ignore it too
+collect_ignore_glob = ["tmp/*"]
+
 
 @pytest.fixture
 def jp_server_config(jp_server_config):
