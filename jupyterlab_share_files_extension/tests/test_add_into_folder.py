@@ -4,8 +4,10 @@ The folder is the workspace path the panel holds for a folder of the share."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import threading
 
 import pytest
 
@@ -138,7 +140,7 @@ def test_the_route_adds_into_the_folder(workspace):
         workspace,
         body={"paths": ["new.txt"], "folder": f"{path}/docs"},
     )
-    handler.post(id_)
+    asyncio.run(handler.post(id_))
     assert handler.status == 200
     assert (content / "docs" / "new.txt").exists()
     assert handler.payload["link"]
@@ -150,7 +152,7 @@ def test_the_route_with_no_folder_adds_at_the_top(workspace, body):
     handler = stub_handler(
         routes.ShareItemsHandler, workspace, body={"paths": ["new.txt"], **body}
     )
-    handler.post(id_)
+    asyncio.run(handler.post(id_))
     assert handler.status == 200
     assert (content / "new.txt").exists()
 
@@ -162,7 +164,7 @@ def test_the_route_refuses_a_folder_outside_the_share_in_words(workspace):
         workspace,
         body={"paths": ["new.txt"], "folder": "docs"},
     )
-    handler.post(id_)
+    asyncio.run(handler.post(id_))
     assert handler.status == 400
     assert handler.payload == {"error": "This share has no folder docs"}
     assert not (workspace / "docs" / "new.txt").exists()
@@ -177,7 +179,25 @@ def test_the_route_refuses_a_folder_that_is_not_a_string(workspace, folder):
         workspace,
         body={"paths": ["new.txt"], "folder": folder},
     )
-    handler.post(id_)
+    asyncio.run(handler.post(id_))
     assert handler.status == 400
     assert handler.payload == {"error": "'folder' must be a string"}
     assert not (content / "new.txt").exists()
+
+
+def test_the_route_copies_off_the_event_loop(workspace, monkeypatch):
+    """A copy on the event loop stops every kernel and terminal of the lab
+    for as long as it runs (DEF-STORE-142)."""
+    _store, id_, _content, _path = _share(workspace)
+    threads = []
+    add_items = ShareStore.add_items
+
+    def spy(self, *args):
+        threads.append(threading.current_thread())
+        return add_items(self, *args)
+
+    monkeypatch.setattr(ShareStore, "add_items", spy)
+    handler = stub_handler(routes.ShareItemsHandler, workspace, body={"paths": ["new.txt"]})
+    asyncio.run(handler.post(id_))
+    assert handler.status == 200
+    assert threads and threads[0] is not threading.main_thread()

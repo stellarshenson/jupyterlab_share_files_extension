@@ -1200,7 +1200,7 @@ class SharesListHandler(_Base):
         self.write_json({"shares": items})
 
     @tornado.web.authenticated
-    def post(self):
+    async def post(self):
         body = self.get_json_body() or {}
         name = (body.get("name") or "").strip()
         paths = body.get("paths") or []
@@ -1210,7 +1210,9 @@ class SharesListHandler(_Base):
         if not isinstance(paths, list):
             return self.write_error_json(400, "'paths' must be a list")
         try:
-            manifest = self.share_store.create(name, paths, password=password)
+            # off the event loop: a copy of a large folder would stop every
+            # kernel, terminal and panel of the lab until it ends
+            manifest = await asyncio.to_thread(self.share_store.create, name, paths, password=password)
         except (StorageError, NotFoundError) as exc:
             return self.write_error_json(400, str(exc))
         manifest["link"] = _public_share_url(self, manifest["id"])
@@ -1256,7 +1258,7 @@ class ShareNameHandler(_Base):
 
 class ShareItemsHandler(_Base):
     @tornado.web.authenticated
-    def post(self, id_):
+    async def post(self, id_):
         body = self.get_json_body() or {}
         paths = body.get("paths") or []
         if not isinstance(paths, list) or not paths:
@@ -1265,7 +1267,8 @@ class ShareItemsHandler(_Base):
         if not isinstance(folder, str):
             return self.write_error_json(400, "'folder' must be a string")
         try:
-            manifest = self.share_store.add_items(id_, paths, folder)
+            # off the event loop, as the create
+            manifest = await asyncio.to_thread(self.share_store.add_items, id_, paths, folder)
         except NotFoundError as exc:
             return self.write_error_json(404, str(exc))
         except StorageError as exc:
@@ -1347,7 +1350,7 @@ class RecordSaveHandler(_Base):
     """
 
     @tornado.web.authenticated
-    def post(self, kind, id_):
+    async def post(self, kind, id_):
         body = self.get_json_body() or {}
         archive = str(body.get("archive") or "")
         if archive not in ("", "zip"):
@@ -1362,7 +1365,8 @@ class RecordSaveHandler(_Base):
             return self.write_error_json(404, f"Not a folder: {body.get('target_dir') or '.'}")
         store = self.share_store if kind == "shares" else self.request_store
         try:
-            path = store.save_out(id_, target, archive)
+            # off the event loop, as the create
+            path = await asyncio.to_thread(store.save_out, id_, target, archive)
         except NotFoundError as exc:
             return self.write_error_json(404, str(exc))
         except (OSError, StorageError) as exc:
@@ -1726,7 +1730,8 @@ class ConnectionSaveHandler(_Base):
                     if wrap_dir.resolve().parent != dest_root.resolve():
                         return self._failed(saved, 502, f"The peer sent an unsafe folder name: {share_slug}")
                     saved.append(str(wrap_dir.relative_to(self.workspace_root)))
-                    _extract_zip_into(spool, wrap_dir, left)
+                    # off the event loop, as the create
+                    await asyncio.to_thread(_extract_zip_into, spool, wrap_dir, left)
             else:
                 if not isinstance(names, list) or not names:
                     return self._failed(saved, 400, "'names' must be a non-empty list")
@@ -1748,7 +1753,7 @@ class ConnectionSaveHandler(_Base):
                         if entry.get("type") == "directory":
                             wrap_dir = _resolve_unique_target(dest_root, name)
                             saved.append(str(wrap_dir.relative_to(self.workspace_root)))
-                            left -= _extract_zip_into(spool, wrap_dir, left)
+                            left -= await asyncio.to_thread(_extract_zip_into, spool, wrap_dir, left)
                         else:
                             # the fetch capped the file at `left` bytes
                             left -= spool.tell()

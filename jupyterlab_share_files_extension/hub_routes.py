@@ -1411,7 +1411,8 @@ class HubRecordSaveHandler(_HubBase):
             return self.write_json({"ok": True, "path": self._rel(dest)})
         dest = _resolve_unique_target(parent, f"{name}.zip")
         try:
-            _zip_tree(staging, dest)
+            # off the event loop: packing a large record would stop the lab
+            await asyncio.to_thread(_zip_tree, staging, dest)
         except OSError as exc:
             dest.unlink(missing_ok=True)
             return self.write_error_json(500, f"Could not pack the record: {exc}")
@@ -1958,7 +1959,8 @@ class HubConnectionSaveHandler(_HubConnectionBase):
             return []
         staging = _staging(parent, name)
         written.append(staging)
-        _extract_zip_into(part, staging, limit)
+        # off the event loop: unpacking a large share would stop the lab
+        await asyncio.to_thread(_extract_zip_into, part, staging, limit)
         part.unlink()
         return [_land(staging, parent, name)]
 

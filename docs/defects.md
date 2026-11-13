@@ -521,6 +521,13 @@ The on-disk share, request and connection stores under shares_dir
   - log: 2026-10-29T00:42:26Z @kj added
   - log: 2026-10-29T00:56:23Z @kj closed
   - log: 2026-11-02T20:52:33Z @kj correction 2026-11-02 run wf_94bb1ad9-758: the hub has no skip of its own for Thumbs.db; it lands unless the lab's exclude holds it
+- [x] `DEF-STORE-142-LOOP-COPY` **Copies run on the event loop** - MAJOR; create share, add to share, save record, unpack of a connected save and the hub-mode zip and unpack run file copies inside the tornado handler; a large folder stops every kernel, terminal and panel of the lab until the copy ends
+  - evidence: 7 call sites in routes.py and hub_routes.py await asyncio.to_thread; test_add_into_folder.py::test_the_route_copies_off_the_event_loop passes; build_test at 5a304da: Jest 55, pytest 656, Galata 48
+  - repro: share a folder of several GB from the file browser, then type in a terminal of the same lab
+  - test-tags: UNIT
+  - root-cause: 2026-11-13T10:32:49Z @kj ShareStore.create, add_items, save_out, _extract_zip_into and _zip_tree are blocking calls made from sync or async handlers without a thread
+  - log: 2026-11-13T10:32:49Z @kj added
+  - log: 2026-11-13T17:58:33Z @kj closed
 
 ## Peer connections `PEER`
 
