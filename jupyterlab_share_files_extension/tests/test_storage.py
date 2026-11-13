@@ -193,6 +193,18 @@ class TestShareStore:
         with pytest.raises(NotFoundError):
             store.create("ghost", ["does_not_exist.txt"])
 
+    def test_create_refuses_a_selection_that_holds_the_store(self, tmp_path):
+        """The store folder sits in the workspace root: a share of it would
+        be copied into itself."""
+        (tmp_path / "a.txt").write_text("a")
+        store = ShareStore(str(tmp_path))
+        store.create("first", ["a.txt"])
+        shares_dir = tmp_path / SHARES_DIR_NAME / "shares"
+        before = sorted(p.name for p in shares_dir.iterdir())
+        with pytest.raises(StorageError, match="Cannot add uploads into itself"):
+            store.create("all", [SHARES_DIR_NAME])
+        assert sorted(p.name for p in shares_dir.iterdir()) == before
+
     def test_add_items_extends_share(self, tmp_path):
         (tmp_path / "a.txt").write_text("a")
         (tmp_path / "b.txt").write_text("b")

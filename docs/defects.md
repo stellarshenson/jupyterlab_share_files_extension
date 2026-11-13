@@ -528,6 +528,20 @@ The on-disk share, request and connection stores under shares_dir
   - root-cause: 2026-11-13T10:32:49Z @kj ShareStore.create, add_items, save_out, _extract_zip_into and _zip_tree are blocking calls made from sync or async handlers without a thread
   - log: 2026-11-13T10:32:49Z @kj added
   - log: 2026-11-13T17:58:33Z @kj closed
+- [x] `DEF-STORE-144-SELF-COPY` **Create copies the store into itself** - MAJOR; a share created from a selection that holds the store folder (uploads, in the workspace root from the first share on) copies the store into the new share folder inside it, nested until the path length limit; measured 1766 MB written from a 17 MB store
+  - evidence: _resolve_sources refuses a source that holds the target directory, for create and add_items; test_storage.py::test_create_refuses_a_selection_that_holds_the_store fails with shutil.Error on the old code and passes; build_test at 1.2.80: Jest 55, pytest 659, Galata 48
+  - repro: create one share, then select uploads in the file browser and create a second share
+  - test-tags: UNIT
+  - root-cause: 2026-11-13T18:47:14Z @kj the self-containment check sat in add_items only; create called _resolve_sources without a target directory
+  - log: 2026-11-13T18:47:14Z @kj added
+  - log: 2026-11-13T18:51:52Z @kj closed
+- [x] `DEF-STORE-145-COPY-OSERROR` **Copy failure answers 500 Unhandled error** - MEDIUM; share create or add over a folder that holds a broken link or an unreadable file raises shutil.Error, an OSError; SharesListHandler.post and ShareItemsHandler.post catch StorageError and NotFoundError only, so the panel shows 'Unhandled error'
+  - evidence: both handlers answer 400 with the OSError text; test_add_into_folder.py::test_a_create_that_cannot_copy_a_file_says_which fails with shutil.Error on the old code and passes; build_test at 1.2.80: Jest 55, pytest 659, Galata 48
+  - repro: ln -s /nonexistent/target docs/broken, then share the folder docs
+  - test-tags: UNIT
+  - root-cause: 2026-11-13T18:47:15Z @kj the two handlers' except clauses did not name OSError
+  - log: 2026-11-13T18:47:15Z @kj added
+  - log: 2026-11-13T18:51:52Z @kj closed
 
 ## Peer connections `PEER`
 
@@ -628,6 +642,13 @@ Connecting to another user's link and keeping its state fresh
   - log: 2026-10-21T17:03:28Z @kj added
   - log: 2026-10-21T17:11:50Z @kj closed
   - log: 2026-10-21T17:58:25Z @kj amended: the server side fixed too; empty connected shares now answer saved: [] and write no folder; pytest 513 passed
+- [x] `DEF-PEER-143-SPACE-NAME` **Save of a name with a space answers 404** - MEDIUM; standalone mode; ConnectionSaveHandler builds the download url with tornado.escape.url_escape, which writes a space as '+'; the peer's router reads '+' in a path as a plus and finds no entry
+  - evidence: routes.py builds the url with quote(name, safe=''); test_connection_save.py::test_a_name_with_a_space_is_asked_for_percent_encoded fails with KeyError 'my+file.txt' on the old code and passes; build_test at 1.2.80: Jest 55, pytest 659, Galata 48
+  - repro: connect to a share holding 'my file.txt', tick it, Save
+  - test-tags: UNIT
+  - root-cause: 2026-11-13T18:47:14Z @kj url_escape is a query-string encoder (plus=True); a url path needs urllib.parse.quote, as hub_routes.py already uses
+  - log: 2026-11-13T18:47:14Z @kj added
+  - log: 2026-11-13T18:51:51Z @kj closed
 
 ## Logging `LOGS`
 

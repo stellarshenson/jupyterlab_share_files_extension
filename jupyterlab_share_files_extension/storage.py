@@ -619,7 +619,7 @@ class ShareStore(BaseStore):
             result.append(manifest)
         return result
 
-    def _resolve_sources(self, source_paths: list[str]) -> list[Path]:
+    def _resolve_sources(self, source_paths: list[str], target_dir: Path) -> list[Path]:
         """Validate every source and drop the ones the catalogue excludes.
 
         Validation runs before anything is copied so a share built from a
@@ -643,6 +643,12 @@ class ShareStore(BaseStore):
             sources.append(source)
         if excluded and not sources:
             raise StorageError(all_excluded_message(excluded))
+        for source in sources:
+            # copytree into its own tree walks its own copy without end
+            if target_dir.resolve().is_relative_to(source.resolve()):
+                raise StorageError(
+                    f"Cannot add {source.name} into itself or into a folder inside it"
+                )
         return sources
 
     def create(
@@ -657,10 +663,9 @@ class ShareStore(BaseStore):
         # built from a stale file-browser selection (file renamed or deleted
         # since the context menu opened) must not leave an empty storage tree
         # and a manifest-less ghost folder behind when it fails.
-        sources = self._resolve_sources(source_paths)
-
         id_ = generate_token()
         share_dir = self._new_path(name, id_)
+        sources = self._resolve_sources(source_paths, share_dir)
         share_dir.mkdir(parents=True, exist_ok=True)
         try:
             for source in sources:
@@ -702,13 +707,7 @@ class ShareStore(BaseStore):
                 target_dir.is_relative_to(content_dir.resolve()) and target_dir.is_dir()
             ):
                 raise StorageError(f"This share has no folder {folder}")
-        sources = self._resolve_sources(source_paths)
-        for source in sources:
-            # copytree into its own tree walks its own copy without end
-            if target_dir.resolve().is_relative_to(source.resolve()):
-                raise StorageError(
-                    f"Cannot add {source.name} into itself or into a folder inside it"
-                )
+        sources = self._resolve_sources(source_paths, target_dir)
         for source in sources:
             _copy_into(source, target_dir, self.excluded_names)
         return self.get(id_)

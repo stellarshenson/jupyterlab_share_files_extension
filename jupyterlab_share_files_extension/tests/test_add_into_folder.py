@@ -201,3 +201,13 @@ def test_the_route_copies_off_the_event_loop(workspace, monkeypatch):
     asyncio.run(handler.post(id_))
     assert handler.status == 200
     assert threads and threads[0] is not threading.main_thread()
+
+
+def test_a_create_that_cannot_copy_a_file_says_which(workspace):
+    """A broken link in the folder fails the copy: the answer names it
+    instead of 'Unhandled error'."""
+    os.symlink("/nonexistent/target", workspace / "docs" / "broken")
+    handler = stub_handler(routes.SharesListHandler, workspace, body={"name": "Folders", "paths": ["docs"]})
+    asyncio.run(handler.post())
+    assert handler.status == 400
+    assert str(workspace / "docs" / "broken") in handler.payload["error"]

@@ -406,6 +406,18 @@ def test_a_single_file_moves_from_the_spool_into_the_workspace(tmp_path):
     assert (tmp_path / "notes.txt").stat().st_mode == (tmp_path / "plain.txt").stat().st_mode
 
 
+def test_a_name_with_a_space_is_asked_for_percent_encoded(tmp_path):
+    """A '+' in a url path is a plus to the peer's router, so the space must
+    travel as %20."""
+    manifest = {"slug": "Report-2026", "entries": [{"name": "my file.txt", "type": "file"}]}
+    handler, key = _save_handler(
+        tmp_path, {"target_dir": "", "names": ["my file.txt"]}, manifest, peer={"my%20file.txt": _PeerResponse(200, b"12345678")}
+    )
+    asyncio.run(handler.post(key))
+    assert (handler.status, handler.payload) == (200, {"ok": True, "saved": ["my file.txt"]})
+    assert (tmp_path / "my file.txt").read_bytes() == b"12345678"
+
+
 def test_save_all_stops_past_the_unpacked_size_limit_and_leaves_nothing(tmp_path):
     """DEF-PEER-37: past the request's limit, unpacked, the save stops, says
     why and removes what it wrote - the spool too."""

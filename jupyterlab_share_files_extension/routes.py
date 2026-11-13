@@ -1213,7 +1213,7 @@ class SharesListHandler(_Base):
             # off the event loop: a copy of a large folder would stop every
             # kernel, terminal and panel of the lab until it ends
             manifest = await asyncio.to_thread(self.share_store.create, name, paths, password=password)
-        except (StorageError, NotFoundError) as exc:
+        except (StorageError, NotFoundError, OSError) as exc:
             return self.write_error_json(400, str(exc))
         manifest["link"] = _public_share_url(self, manifest["id"])
         self.write_json(manifest)
@@ -1271,7 +1271,7 @@ class ShareItemsHandler(_Base):
             manifest = await asyncio.to_thread(self.share_store.add_items, id_, paths, folder)
         except NotFoundError as exc:
             return self.write_error_json(404, str(exc))
-        except StorageError as exc:
+        except (StorageError, OSError) as exc:
             return self.write_error_json(400, str(exc))
         manifest["link"] = _public_share_url(self, id_)
         self.write_json(manifest)
@@ -1743,7 +1743,7 @@ class ConnectionSaveHandler(_Base):
                     entry = entry_map.get(name)
                     if entry is None:
                         return self._failed(saved, 404, f"Not in share: {name}")
-                    url = api_base + "/download/" + tornado.escape.url_escape(name)
+                    url = api_base + "/download/" + quote(name, safe="")
                     with self._spool() as spool:
                         resp = await self._peer_fetch(
                             url, spool=spool, max_bytes=left, headers=auth_headers, certificate=certificate
