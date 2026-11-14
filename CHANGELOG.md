@@ -2,6 +2,17 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.81] - 2026-11-14
+
+### Changed
+
+- Leave the PayPal donate link out of the link check
+
+### Fixed
+
+- Refuse a share of the store and answer a failed copy or a spaced name
+- Run share copies, saves and zip work off the event loop
+
 ## [1.2.78] - 2026-11-03
 
 ### Added
