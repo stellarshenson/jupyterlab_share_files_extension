@@ -14,6 +14,7 @@ import {
 } from '@jupyterlab/apputils';
 import { IDocumentManager } from '@jupyterlab/docmanager';
 import { Contents, ServerConnection } from '@jupyterlab/services';
+import { nullTranslator } from '@jupyterlab/translation';
 import {
   checkIcon,
   copyIcon,
@@ -96,9 +97,11 @@ import {
   IRemoteShare,
   IRequest,
   IShare,
-  IShareEntry
+  IShareEntry,
+  IUploaderEntry
 } from './types';
 
+const trans = nullTranslator.load('jupyterlab_share_files_extension');
 const DEFAULT_POLL_INTERVAL_SECONDS = 15;
 // one breath of the switching cloud: share-files-breathe in style/base.css
 const CLOUD_BREATH_MS = 1600;
@@ -128,8 +131,11 @@ const HUB_ENTRY_MIME = 'application/x-share-files-hub-entry';
 // at most this many names in one remove call, so its query string stays short
 const REMOVE_CHUNK = 50;
 // the row menu's two removal labels, one command behind both
-const REMOVE_LABEL = 'Remove';
-const REMOVE_FROM_SHARE_LABEL = 'Remove from Share';
+const REMOVE_LABEL = trans.__('Remove');
+const REMOVE_FROM_SHARE_LABEL = trans.__('Remove from Share');
+// design system, "Destructive menu entry": the label and icon of an entry
+// that deletes data that cannot be recovered take the error colour
+const DANGER_MENU_CLASS = 'jp-ShareFilesPanelContextMenu-danger';
 
 /** A click that selects entries runs none of the row's other actions. */
 function selects(evt: MouseEvent): boolean {
@@ -148,6 +154,9 @@ interface IPanelState {
   offlineReasons: Map<string, string>;
   expanded: { shares: boolean; requests: boolean; connected: boolean };
   expandedItems: Set<string>;
+  /** Uploader groups the user folded, keyed `request:<id>/<uploader>`; the
+   * panel state survives a refresh, so a folded group stays folded. */
+  foldedUploaders: Set<string>;
   lastSeenUploads: Map<string, number>;
   info: IExtensionInfo | null;
   /** Sub-path inside each owned share's data dir (workspace-relative). Missing key = at root. */
@@ -221,7 +230,7 @@ export class ShareFilesPanel extends Widget {
   constructor(options: IShareFilesPanelOptions) {
     super();
     this.id = 'jupyterlab-share-files-extension-panel';
-    this.title.caption = 'Share Files';
+    this.title.caption = trans.__('Share Files');
     this.title.icon = shareIcon;
     this.addClass('jp-ShareFilesPanel');
 
@@ -242,6 +251,7 @@ export class ShareFilesPanel extends Widget {
       offlineReasons: new Map(),
       expanded: { shares: true, requests: true, connected: true },
       expandedItems: new Set(),
+      foldedUploaders: new Set(),
       lastSeenUploads: new Map(),
       info: null,
       shareSubPath: new Map(),
@@ -312,7 +322,7 @@ export class ShareFilesPanel extends Widget {
     }
     return [
       {
-        label: 'Show all',
+        label: trans.__('Show all'),
         callback: () => {
           void showDialog({
             title: this.title.caption,
@@ -785,12 +795,12 @@ export class ShareFilesPanel extends Widget {
       ).href;
       if (link.startsWith(ownPrefix)) {
         await showDialog({
-          title: 'Cannot connect to your own link',
+          title: trans.__('Cannot connect to your own link'),
           body:
             'This share or request is hosted on your own server, so you ' +
             'already own it. Look for it in My Shares or My Requests, ' +
             'or paste a link from someone else.',
-          buttons: [Dialog.okButton({ label: 'OK' })]
+          buttons: [Dialog.okButton({ label: trans.__('OK') })]
         });
         return false;
       }
@@ -863,17 +873,17 @@ export class ShareFilesPanel extends Widget {
       "If the host later presents a different one, the row shows 'untrusted' " +
       'and Connect Again in its menu asks about the new one.';
     const label = document.createElement('p');
-    label.textContent = 'SHA-256 fingerprint:';
+    label.textContent = trans.__('SHA-256 fingerprint:');
     const print = document.createElement('code');
     print.className = 'jp-ShareFilesPanel-fingerprint';
     print.textContent = cert.fingerprint;
     body.append(lead, advice, label, print);
     const result = await showDialog({
-      title: 'Trust this certificate?',
+      title: trans.__('Trust this certificate?'),
       body: new Widget({ node: body }),
       buttons: [
-        Dialog.cancelButton({ label: 'Do Not Trust' }),
-        Dialog.warnButton({ label: 'Trust' })
+        Dialog.cancelButton({ label: trans.__('Do Not Trust') }),
+        Dialog.warnButton({ label: trans.__('Trust') })
       ],
       defaultButton: 0
     });
@@ -886,14 +896,17 @@ export class ShareFilesPanel extends Widget {
   ): Promise<string | null> {
     const input = document.createElement('input');
     input.type = 'password';
-    input.placeholder = 'Password';
+    input.placeholder = trans.__('Password');
     input.autocomplete = 'off';
     input.style.cssText = 'width: 100%; padding: 6px 8px; font-size: 14px;';
     const widget = new Widget({ node: input });
     const result = await showDialog({
       title,
       body: widget,
-      buttons: [Dialog.cancelButton(), Dialog.okButton({ label: 'Connect' })]
+      buttons: [
+        Dialog.cancelButton(),
+        Dialog.okButton({ label: trans.__('Connect') })
+      ]
     });
     if (!result.button.accept) {
       return null;
@@ -1128,7 +1141,7 @@ export class ShareFilesPanel extends Widget {
     header.className = 'jp-ShareFilesPanel-header';
     const title = document.createElement('span');
     title.className = 'jp-ShareFilesPanel-headerTitle';
-    title.textContent = 'Share Files';
+    title.textContent = trans.__('Share Files');
     header.appendChild(title);
 
     const addBtn = this._makeIconButton(
@@ -1158,7 +1171,10 @@ export class ShareFilesPanel extends Widget {
     // act like a click, aria-pressed follows the on/off state
     this._cloudIndicator.tabIndex = 0;
     this._cloudIndicator.setAttribute('role', 'button');
-    this._cloudIndicator.setAttribute('aria-label', 'Cloudflare sharing');
+    this._cloudIndicator.setAttribute(
+      'aria-label',
+      trans.__('Cloudflare sharing')
+    );
     this._cloudIndicator.setAttribute('aria-pressed', 'false');
     this._cloudIndicator.addEventListener('click', () => {
       void this._toggleTunnel();
@@ -1192,7 +1208,7 @@ export class ShareFilesPanel extends Widget {
     this._filterInput = document.createElement('input');
     this._filterInput.type = 'search';
     this._filterInput.className = 'jp-ShareFilesPanel-filterInput';
-    this._filterInput.placeholder = 'Filter shares and requests';
+    this._filterInput.placeholder = trans.__('Filter shares and requests');
     this._filterInput.addEventListener('input', () => {
       this._filterText = this._filterInput!.value.trim().toLowerCase();
       this._render();
@@ -1208,7 +1224,7 @@ export class ShareFilesPanel extends Widget {
     // bottom drop zone
     this._dropZone = document.createElement('div');
     this._dropZone.className = 'jp-ShareFilesPanel-dropZone';
-    this._dropZone.textContent = 'Drag files here to share';
+    this._dropZone.textContent = trans.__('Drag files here to share');
     root.appendChild(this._dropZone);
 
     // connect row
@@ -1216,11 +1232,11 @@ export class ShareFilesPanel extends Widget {
     connectRow.className = 'jp-ShareFilesPanel-connect';
     const connectInput = document.createElement('input');
     connectInput.type = 'text';
-    connectInput.placeholder = 'Paste a share or request link';
+    connectInput.placeholder = trans.__('Paste a share or request link');
     connectInput.className = 'jp-ShareFilesPanel-connectInput';
     const connectBtn = document.createElement('button');
     connectBtn.className = 'jp-ShareFilesPanel-connectButton';
-    connectBtn.textContent = 'Connect';
+    connectBtn.textContent = trans.__('Connect');
     // usable only while the input holds more than spaces and no connection
     // is being made; a value set from code fires no input event, so the end
     // of a connection sets the state again
@@ -1418,7 +1434,9 @@ export class ShareFilesPanel extends Widget {
 
     const header = document.createElement('div');
     header.className = 'jp-ShareFilesPanel-sectionHeader';
-    header.title = expanded ? 'Click to collapse' : 'Click to expand';
+    header.title = expanded
+      ? trans.__('Click to collapse')
+      : trans.__('Click to expand');
     // focusable by script only (see `_restoreFocus`) and named across a
     // re-render; Enter and Space toggle it like a click
     header.tabIndex = -1;
@@ -1494,7 +1512,10 @@ export class ShareFilesPanel extends Widget {
     const twisty = document.createElement('button');
     twisty.className = 'jp-ShareFilesPanel-itemTwisty';
     twisty.textContent = expanded ? '▾' : '▸';
-    twisty.setAttribute('aria-label', expanded ? 'Collapse' : 'Expand');
+    twisty.setAttribute(
+      'aria-label',
+      expanded ? trans.__('Collapse') : trans.__('Expand')
+    );
     twisty.setAttribute('aria-expanded', String(expanded));
     twisty.dataset.focusKey = `share:${share.id}/toggle`;
     header.appendChild(twisty);
@@ -1515,10 +1536,10 @@ export class ShareFilesPanel extends Widget {
       // what is happening, in one word; how far along is the row's own tint
       if (share.state === 'staging') {
         meta.appendChild(document.createTextNode(' staging'));
-        meta.title = 'The hub is copying the files';
+        meta.title = trans.__('The hub is copying the files');
       } else if (share.adding) {
         meta.appendChild(document.createTextNode(' adding'));
-        meta.title = 'The hub is copying the new files';
+        meta.title = trans.__('The hub is copying the new files');
       }
     } else if (share.state === 'refused') {
       // the reason sentence on one line, cut when the row is narrow (see
@@ -1654,8 +1675,8 @@ export class ShareFilesPanel extends Widget {
         empty.className = 'jp-ShareFilesPanel-empty';
         empty.textContent =
           share.entries.length === 0
-            ? 'Empty - drag files onto this share to add'
-            : 'No visible files (hidden ones filtered)';
+            ? trans.__('Empty - drag files onto this share to add')
+            : trans.__('No visible files (hidden ones filtered)');
         list.appendChild(empty);
         return list;
       }
@@ -1683,7 +1704,7 @@ export class ShareFilesPanel extends Widget {
       void this._fetchSubEntries(subPath);
       const loading = document.createElement('div');
       loading.className = 'jp-ShareFilesPanel-empty';
-      loading.textContent = 'Loading...';
+      loading.textContent = trans.__('Loading...');
       list.appendChild(loading);
       return list;
     }
@@ -1693,8 +1714,8 @@ export class ShareFilesPanel extends Widget {
       empty.className = 'jp-ShareFilesPanel-empty';
       empty.textContent =
         cached.length === 0
-          ? 'Folder is empty'
-          : 'No visible files (hidden ones filtered)';
+          ? trans.__('Folder is empty')
+          : trans.__('No visible files (hidden ones filtered)');
       list.appendChild(empty);
       return list;
     }
@@ -1870,6 +1891,7 @@ export class ShareFilesPanel extends Widget {
         command: 'share-files-panel:rename-hub-entry',
         args: { id: shareId, name: fullName }
       });
+      m.addItem({ type: 'separator' });
       m.addItem({
         command: 'share-files-panel:remove-entry',
         args: { id: shareId, name: fullName }
@@ -2039,7 +2061,10 @@ export class ShareFilesPanel extends Widget {
           names.length > 1
             ? `${where} deletes its copies. The files in your workspace stay.`
             : `${where} deletes its copy. The file in your workspace stays.`,
-        buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Remove' })]
+        buttons: [
+          Dialog.cancelButton(),
+          Dialog.warnButton({ label: REMOVE_LABEL })
+        ]
       });
       restore();
       if (!result.button.accept) {
@@ -2169,13 +2194,15 @@ export class ShareFilesPanel extends Widget {
         onUp();
         const mimeData = new MimeData();
         mimeData.setData(HUB_ENTRY_MIME, { shareId, name });
-        void new Drag({
+        // eslint-disable-next-line jupyter/require-disposable-ownership -- @lumino/dragdrop disposes a Drag when start() settles and the promise has no reject path
+        const drag = new Drag({
           mimeData,
           dragImage: this._createEntryDragImage(row),
           proposedAction: 'move',
           supportedActions: 'move',
           source: this
-        }).start(move.clientX, move.clientY);
+        });
+        void drag.start(move.clientX, move.clientY);
       };
       const onUp = () => {
         document.removeEventListener('mousemove', onMove, true);
@@ -2265,7 +2292,7 @@ export class ShareFilesPanel extends Widget {
   private _renderUpRow(shareId: string, currentSubPath: string): HTMLElement {
     const row = document.createElement('div');
     row.className = 'jp-ShareFilesPanel-entry jp-mod-clickable';
-    row.title = 'Double-click or Enter to go up one level';
+    row.title = trans.__('Double-click or Enter to go up one level');
     // the keyboard's double-click: the row takes focus and Enter goes up;
     // the key lets the re-render after _goUp give the focus back to the
     // row ('..' is not an entry name, so it collides with no entry key)
@@ -2384,7 +2411,10 @@ export class ShareFilesPanel extends Widget {
     const twisty = document.createElement('button');
     twisty.className = 'jp-ShareFilesPanel-itemTwisty';
     twisty.textContent = expanded ? '▾' : '▸';
-    twisty.setAttribute('aria-label', expanded ? 'Collapse' : 'Expand');
+    twisty.setAttribute(
+      'aria-label',
+      expanded ? trans.__('Collapse') : trans.__('Expand')
+    );
     twisty.setAttribute('aria-expanded', String(expanded));
     twisty.dataset.focusKey = `request:${req.id}/toggle`;
     header.appendChild(twisty);
@@ -2460,13 +2490,33 @@ export class ShareFilesPanel extends Widget {
     if (!req.uploaders || req.uploaders.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'jp-ShareFilesPanel-empty';
-      empty.textContent = 'No uploads yet. Share the link to invite people.';
+      empty.textContent = trans.__(
+        'No uploads yet. Share the link to invite people.'
+      );
       list.appendChild(empty);
       return list;
     }
     for (const uploader of req.uploaders) {
+      const uploaderKey = uploader.hash;
+      const groupKey = `request:${req.id}/${uploaderKey}`;
+      const label = this._uploaderLabel(uploader);
+      const folded = this._state.foldedUploaders.has(groupKey);
+
+      // the group's header is a row like a record header: its twisty folds
+      // the group, a click anywhere on the row does the same, and its menu
+      // removes every upload the person made
       const groupRow = document.createElement('div');
       groupRow.className = 'jp-ShareFilesPanel-uploaderHeader';
+      const twisty = document.createElement('button');
+      twisty.className = 'jp-ShareFilesPanel-itemTwisty';
+      twisty.textContent = folded ? '▸' : '▾';
+      twisty.setAttribute(
+        'aria-label',
+        folded ? trans.__('Expand') : trans.__('Collapse')
+      );
+      twisty.setAttribute('aria-expanded', String(!folded));
+      twisty.dataset.focusKey = `${groupKey}/group-toggle`;
+      groupRow.appendChild(twisty);
       const iconNode = this._svgNode(
         folderIcon.svgstr,
         'jp-ShareFilesPanel-entryIcon'
@@ -2474,17 +2524,27 @@ export class ShareFilesPanel extends Widget {
       groupRow.appendChild(iconNode);
       const nameNode = document.createElement('span');
       nameNode.className = 'jp-ShareFilesPanel-uploaderName';
-      // identity is the hash; show a short suffix so several uploaders with
-      // the same display name (multiple "anonymous") stay distinguishable
-      nameNode.textContent =
-        uploader.hash && uploader.hash !== uploader.name
-          ? `${uploader.name} (${uploader.hash.slice(0, 4).toLowerCase()})`
-          : uploader.name;
+      nameNode.textContent = label;
       groupRow.appendChild(nameNode);
+      groupRow.addEventListener('click', () =>
+        this._toggleUploaderFold(groupKey)
+      );
+      if (uploader.entries.length > 0) {
+        groupRow.addEventListener('contextmenu', evt => {
+          evt.preventDefault();
+          this._openUploaderContextMenu(evt, req, uploader, label);
+        });
+        this._attachKeyboardMenu(groupRow, groupKey, evt =>
+          this._openUploaderContextMenu(evt, req, uploader, label)
+        );
+      }
       list.appendChild(groupRow);
 
+      if (folded) {
+        continue;
+      }
       for (const entry of uploader.entries) {
-        const key = `request:${req.id}/${uploader.hash || uploader.name}/${entry.name}`;
+        const key = `request:${req.id}/${uploaderKey}/${entry.name}`;
         const row = this._hubMode
           ? // the bytes sit on the hub's volume: the row fetches them in, and
             // Remove asks the hub to delete that upload
@@ -2492,11 +2552,7 @@ export class ShareFilesPanel extends Widget {
           : this._renderEntryRow(
               entry,
               () => {
-                void this._removeUpload(
-                  req.id,
-                  uploader.hash || uploader.name,
-                  entry.name
-                );
+                void this._removeUpload(req.id, uploaderKey, entry.name);
               },
               0,
               undefined,
@@ -2504,7 +2560,7 @@ export class ShareFilesPanel extends Widget {
               {
                 kind: 'request',
                 id: req.id,
-                uploader: uploader.hash || uploader.name,
+                uploader: uploaderKey,
                 remove: true
               }
             );
@@ -2512,6 +2568,125 @@ export class ShareFilesPanel extends Widget {
       }
     }
     return list;
+  }
+
+  /** The uploader's name as its group header shows it: a short hash suffix
+   * keeps several uploaders with the same display name apart. */
+  private _uploaderLabel(uploader: IUploaderEntry): string {
+    return uploader.hash && uploader.hash !== uploader.name
+      ? `${uploader.name} (${uploader.hash.slice(0, 4).toLowerCase()})`
+      : uploader.name;
+  }
+
+  private _toggleUploaderFold(key: string): void {
+    if (this._state.foldedUploaders.has(key)) {
+      this._state.foldedUploaders.delete(key);
+    } else {
+      this._state.foldedUploaders.add(key);
+    }
+    this._render();
+  }
+
+  private _openUploaderContextMenu(
+    evt: MouseEvent,
+    req: IRequest,
+    uploader: IUploaderEntry,
+    label: string
+  ): Menu {
+    const menu = new MenuSvg({ commands: this._commands });
+    // design system, "Destructive menu entry": its own group at the end,
+    // under a separator
+    menu.addItem({ type: 'separator' });
+    menu.addItem({
+      command: 'share-files-panel:remove-uploads',
+      args: {
+        id: req.id,
+        uploader: uploader.hash,
+        uploaderName: label
+      }
+    });
+    menu.open(evt.clientX, evt.clientY);
+    return menu;
+  }
+
+  /** Remove every upload one person made to a request, one at a time. An
+   * upload already gone from the store is skipped; the first refusal stops
+   * the loop and the notice says how many uploads stayed and their names. */
+  private async _removeUploaderUploads(
+    reqId: string,
+    uploaderKey: string
+  ): Promise<void> {
+    const req = this._state.requests.find(r => r.id === reqId);
+    const uploader = req?.uploaders.find(u => u.hash === uploaderKey);
+    if (!req || !uploader || uploader.entries.length === 0) {
+      return;
+    }
+    const entries = uploader.entries;
+    const total = entries.length;
+    const label = this._uploaderLabel(uploader);
+    const restore = this._keepFocus();
+    const result = await showDialog({
+      title: trans.__('Remove all uploads from %1?', label),
+      body: trans.__(
+        'This removes %1 from the request. The uploader still has the original files.',
+        trans._n('%1 upload', '%1 uploads', total)
+      ),
+      buttons: [
+        Dialog.cancelButton(),
+        Dialog.warnButton({ label: REMOVE_LABEL })
+      ]
+    });
+    restore();
+    if (!result.button.accept) {
+      return;
+    }
+    this._state.busyKeys.add(reqId);
+    this._render();
+    let removed = 0;
+    let refusal = '';
+    let stayed: string[] = [];
+    try {
+      for (let i = 0; i < entries.length; i += 1) {
+        const entry = entries[i];
+        try {
+          if (this._hubMode) {
+            if (!entry.upload_id) {
+              continue;
+            }
+            await removeHubUpload(this._serverSettings, reqId, entry.upload_id);
+          } else {
+            await removeRequestUpload(
+              this._serverSettings,
+              reqId,
+              uploaderKey,
+              entry.name
+            );
+          }
+          removed += 1;
+        } catch (err: any) {
+          if (err?.response?.status === 404) {
+            // gone between the listing and this call - nothing stayed
+            continue;
+          }
+          refusal =
+            err?.reason === 'fetch_running'
+              ? hubReasonText('fetch_running')
+              : `Could not remove: ${err.message || err}`;
+          stayed = entries.slice(i).map(e => e.name);
+          break;
+        }
+      }
+    } finally {
+      this._state.busyKeys.delete(reqId);
+      await this.refresh();
+    }
+    if (refusal) {
+      const text = `Removed ${removed} of ${trans._n('%1 upload', '%1 uploads', total)} from ${label}. ${stayed.length} stayed (${stayed.join(', ')}): ${refusal}`;
+      Notification.warning(text, {
+        autoClose: 8000,
+        actions: this._showAll(text)
+      });
+    }
   }
 
   private _renderConnections(connections: IConnection[]): HTMLElement {
@@ -2548,7 +2723,10 @@ export class ShareFilesPanel extends Widget {
     const twisty = document.createElement('button');
     twisty.className = 'jp-ShareFilesPanel-itemTwisty';
     twisty.textContent = expanded ? '▾' : '▸';
-    twisty.setAttribute('aria-label', expanded ? 'Collapse' : 'Expand');
+    twisty.setAttribute(
+      'aria-label',
+      expanded ? trans.__('Collapse') : trans.__('Expand')
+    );
     twisty.setAttribute('aria-expanded', String(expanded));
     twisty.dataset.focusKey = `conn:${conn.key}/toggle`;
     header.appendChild(twisty);
@@ -2567,20 +2745,20 @@ export class ShareFilesPanel extends Widget {
       // closed record is gone - none of them an outage to wait out
       offline.textContent =
         this._hubMode && reason === hubReasonText('password_changed')
-          ? 'password changed'
+          ? trans.__('password changed')
           : this._hubMode && reason === hubReasonText('closed')
-            ? 'closed'
+            ? trans.__('closed')
             : reason === hubReasonText('certificate_untrusted')
-              ? 'untrusted'
-              : 'offline';
+              ? trans.__('untrusted')
+              : trans.__('offline');
       // "unavailable", not "could not reach" - a 401 or 404 means the peer
       // answered fine and the fault is the password or a deleted resource.
       // A hub record has an owner, not a peer, and its reason says it all.
       offline.title = this._hubMode
-        ? reason || 'Unavailable'
+        ? reason || trans.__('Unavailable')
         : reason
           ? `Peer unavailable: ${reason}`
-          : 'Peer unavailable';
+          : trans.__('Peer unavailable');
       header.appendChild(offline);
     }
 
@@ -2595,20 +2773,20 @@ export class ShareFilesPanel extends Widget {
       const requestData = data as IRemoteRequest | undefined;
       const reason = requestData?.upload_reason;
       if (requestData?.uploading && !this._state.offlineKeys.has(conn.key)) {
-        meta.textContent = 'uploading';
+        meta.textContent = trans.__('uploading');
       } else if (reason) {
         // a collapsed row must still say the last upload did not happen
         meta.classList.add('jp-mod-refused');
         meta.textContent = this._hubRefused(reason)
-          ? 'request - upload refused'
-          : 'request - upload stopped';
+          ? trans.__('request - upload refused')
+          : trans.__('request - upload stopped');
         // a hub slug stays readable on hover; the lab's own sentence is
         // already the whole text
         meta.title = this._hubRefused(reason)
           ? `${this._uploadRefusedText(reason, requestData.uploaded)}\nrefused: ${reason}`
           : this._uploadRefusedText(reason, requestData.uploaded);
       } else {
-        meta.textContent = 'request';
+        meta.textContent = trans.__('request');
       }
     }
     header.appendChild(meta);
@@ -2691,12 +2869,14 @@ export class ShareFilesPanel extends Widget {
         }
         const hint = document.createElement('div');
         hint.className = 'jp-ShareFilesPanel-empty';
-        hint.textContent = 'Drag files here to upload to this request';
+        hint.textContent = trans.__(
+          'Drag files here to upload to this request'
+        );
         item.appendChild(hint);
       } else if (!data) {
         const hint = document.createElement('div');
         hint.className = 'jp-ShareFilesPanel-empty';
-        hint.textContent = 'Loading...';
+        hint.textContent = trans.__('Loading...');
         item.appendChild(hint);
       }
     }
@@ -2712,7 +2892,7 @@ export class ShareFilesPanel extends Widget {
     if (share.entries.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'jp-ShareFilesPanel-empty';
-      empty.textContent = 'Share is empty.';
+      empty.textContent = trans.__('Share is empty.');
       list.appendChild(empty);
       return list;
     }
@@ -2833,6 +3013,7 @@ export class ShareFilesPanel extends Widget {
       { key: conn.key, name: entry.name, type: entry.type }
     ]);
     const dragImage = this._createEntryDragImage(row);
+    // eslint-disable-next-line jupyter/require-disposable-ownership -- @lumino/dragdrop disposes a Drag when start() settles and the promise has no reject path
     const drag = new Drag({
       mimeData,
       dragImage,
@@ -3077,7 +3258,7 @@ export class ShareFilesPanel extends Widget {
     if (onRemove) {
       const btn = document.createElement('button');
       btn.className = 'jp-ShareFilesPanel-entryRemove';
-      btn.title = 'Remove';
+      btn.title = REMOVE_LABEL;
       btn.dataset.focusKey = `${focusKey}/remove`;
       btn.appendChild(this._svgNode(closeIcon.svgstr));
       btn.addEventListener('click', ev => {
@@ -3215,6 +3396,7 @@ export class ShareFilesPanel extends Widget {
     // is identical (move glyph, no copy badge). The action is cosmetic for our
     // case: the file-browser drop is intercepted in capture phase and always
     // performs a Contents copy, so the shared source is never moved/deleted.
+    // eslint-disable-next-line jupyter/require-disposable-ownership -- @lumino/dragdrop disposes a Drag when start() settles and the promise has no reject path
     const drag = new Drag({
       mimeData,
       dragImage,
@@ -3323,7 +3505,17 @@ export class ShareFilesPanel extends Widget {
     if (!c.hasCommand('share-files-panel:copy-link')) {
       c.addCommand('share-files-panel:copy-link', {
         icon: linkIcon,
-        label: 'Copy Link',
+        label: trans.__('Copy Link'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              link: { type: 'string' },
+              kind: { type: 'string' },
+              id: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const link = String(args.link || '');
           if (!link) {
@@ -3345,7 +3537,19 @@ export class ShareFilesPanel extends Widget {
       c.addCommand('share-files-panel:set-password', {
         icon: passwordIcon,
         label: args =>
-          args.hasPassword ? 'Change Password...' : 'Set Password...',
+          args.hasPassword
+            ? trans.__('Change Password...')
+            : trans.__('Set Password...'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              kind: { type: 'string' },
+              id: { type: 'string' },
+              hasPassword: { type: 'boolean' }
+            }
+          }
+        },
         execute: args => {
           const kind = String(args.kind || 'share') as 'share' | 'request';
           const id = String(args.id || '');
@@ -3356,12 +3560,29 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:rename-share', {
         icon: editIcon,
-        label: 'Rename Share...',
+        label: trans.__('Rename Share...'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' }
+            }
+          }
+        },
         execute: args => this._renameShare(String(args.id || ''))
       });
       c.addCommand('share-files-panel:delete-share', {
+        className: DANGER_MENU_CLASS,
         icon: trashIcon,
-        label: 'Delete Share',
+        label: trans.__('Delete Share'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const id = String(args.id || '');
           void this._deleteShare(id);
@@ -3369,16 +3590,38 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:rename-hub-entry', {
         icon: editIcon,
-        label: 'Rename',
+        label: trans.__('Rename'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              name: { type: 'string' }
+            }
+          }
+        },
         execute: args =>
           this._renameHubEntry(String(args.id || ''), String(args.name || ''))
       });
       c.addCommand('share-files-panel:remove-entry', {
+        className: DANGER_MENU_CLASS,
         icon: closeIcon,
         label: args =>
           args.hub || args.uploader !== undefined
             ? REMOVE_LABEL
             : REMOVE_FROM_SHARE_LABEL,
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              name: { type: 'string' },
+              uploader: { type: 'string' },
+              hub: { type: 'boolean' },
+              uploadId: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const id = String(args.id || '');
           if (args.hub) {
@@ -3405,16 +3648,59 @@ export class ShareFilesPanel extends Widget {
         }
       });
       c.addCommand('share-files-panel:delete-request', {
+        className: DANGER_MENU_CLASS,
         icon: trashIcon,
-        label: 'Delete Request',
+        label: trans.__('Delete Request'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const id = String(args.id || '');
           void this._deleteRequest(id);
         }
       });
+      c.addCommand('share-files-panel:remove-uploads', {
+        className: DANGER_MENU_CLASS,
+        icon: closeIcon,
+        label: args =>
+          trans.__(
+            'Remove All Uploads from %1',
+            String(args.uploaderName || '')
+          ),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              uploader: { type: 'string' },
+              uploaderName: { type: 'string' }
+            }
+          }
+        },
+        execute: args => {
+          const id = String(args.id || '');
+          const uploader = String(args.uploader || '');
+          if (id && args.uploader !== undefined) {
+            void this._removeUploaderUploads(id, uploader);
+          }
+        }
+      });
       c.addCommand('share-files-panel:disconnect', {
         icon: disconnectIcon,
-        label: 'Disconnect',
+        label: trans.__('Disconnect'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              key: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const key = String(args.key || '');
           void removeConnection(this._serverSettings, key).then(() =>
@@ -3424,7 +3710,15 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:open-link', {
         icon: launchIcon,
-        label: 'Open in Browser',
+        label: trans.__('Open in Browser'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              link: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const link = String(args.link || '');
           if (link) {
@@ -3434,7 +3728,16 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:download-remote-entry', {
         icon: downloadIcon,
-        label: 'Download',
+        label: trans.__('Download'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              url: { type: 'string' },
+              filename: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const url = String(args.url || '');
           const filename = String(args.filename || 'download');
@@ -3445,7 +3748,16 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:save-remote-entry', {
         icon: downloadIcon,
-        label: 'Download to Current Folder',
+        label: trans.__('Download to Current Folder'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              key: { type: 'string' },
+              name: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const key = String(args.key || '');
           const name = String(args.name || '');
@@ -3456,13 +3768,31 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:save-hub-entry', {
         icon: downloadIcon,
-        label: 'Download to Current Folder',
+        label: trans.__('Download to Current Folder'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              name: { type: 'string' }
+            }
+          }
+        },
         execute: args =>
           this.saveHubEntryFlow(String(args.id || ''), String(args.name || ''))
       });
       c.addCommand('share-files-panel:save-hub-upload', {
         icon: downloadIcon,
-        label: 'Download to Current Folder',
+        label: trans.__('Download to Current Folder'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              uploadId: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const req = this._state.requests.find(r => r.id === args.id);
           for (const uploader of req?.uploaders || []) {
@@ -3473,7 +3803,7 @@ export class ShareFilesPanel extends Widget {
               return this._fetchUploadFlow(
                 req,
                 entry,
-                `request:${req.id}/${uploader.hash || uploader.name}/${entry.name}`
+                `request:${req.id}/${uploader.hash}/${entry.name}`
               );
             }
           }
@@ -3481,14 +3811,16 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:new-share', {
         icon: shareIcon,
-        label: 'New Share',
+        label: trans.__('New Share'),
+        describedBy: { args: null },
         execute: () => {
           void this.createShareFlow([]);
         }
       });
       c.addCommand('share-files-panel:new-request', {
         icon: inboxIcon,
-        label: 'New Request',
+        label: trans.__('New Request'),
+        describedBy: { args: null },
         // offered whatever the grant: a refused request answers with the
         // hub's own sentence from createRequestFlow, which the owner can
         // read, where a greyed entry carried its reason in a caption nothing
@@ -3499,7 +3831,16 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:copy-entry-to-cwd', {
         icon: downloadIcon,
-        label: 'Download to Current Folder',
+        label: trans.__('Download to Current Folder'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              path: { type: 'string' },
+              name: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const path = String(args.path || '');
           const name = String(args.name || '');
@@ -3511,7 +3852,16 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:save-connection', {
         icon: downloadIcon,
-        label: 'Download to Current Folder',
+        label: trans.__('Download to Current Folder'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              key: { type: 'string' },
+              name: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           void this.saveConnectionFlow(
             String(args.key || ''),
@@ -3521,14 +3871,31 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:connect-again', {
         icon: refreshIcon,
-        label: 'Connect Again...',
+        label: trans.__('Connect Again...'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              link: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           void this.connectToLink(String(args.link || ''));
         }
       });
       c.addCommand('share-files-panel:save-connection-zip', {
         icon: zipIcon,
-        label: 'Save as Zip',
+        label: trans.__('Save as Zip'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              key: { type: 'string' },
+              name: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           void this.saveConnectionFlow(
             String(args.key || ''),
@@ -3539,7 +3906,17 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:save-record', {
         icon: downloadIcon,
-        label: 'Download to Current Folder',
+        label: trans.__('Download to Current Folder'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              kind: { type: 'string' },
+              id: { type: 'string' },
+              name: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           void this.saveRecordFlow(
             args.kind === 'requests' ? 'requests' : 'shares',
@@ -3551,7 +3928,17 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:save-record-zip', {
         icon: zipIcon,
-        label: 'Save as Zip',
+        label: trans.__('Save as Zip'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              kind: { type: 'string' },
+              id: { type: 'string' },
+              name: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           void this.saveRecordFlow(
             args.kind === 'requests' ? 'requests' : 'shares',
@@ -3563,7 +3950,16 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:show-entry-in-browser', {
         icon: folderIcon,
-        label: 'Show in File Browser',
+        label: trans.__('Show in File Browser'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              path: { type: 'string' },
+              type: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const path = String(args.path || '');
           if (!path) {
@@ -3579,7 +3975,17 @@ export class ShareFilesPanel extends Widget {
       // their bytes live on a peer, so there is no cut.
       c.addCommand('share-files-panel:copy-remote-entry', {
         icon: copyIcon,
-        label: 'Copy',
+        label: trans.__('Copy'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              key: { type: 'string' },
+              name: { type: 'string' },
+              type: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const key = String(args.key || '');
           const name = String(args.name || '');
@@ -3597,7 +4003,15 @@ export class ShareFilesPanel extends Widget {
       // clipboard so it can be pasted into the file browser's current folder.
       c.addCommand('share-files-panel:copy-local-entry', {
         icon: copyIcon,
-        label: 'Copy',
+        label: trans.__('Copy'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              path: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const path = String(args.path || '');
           if (path) {
@@ -3612,7 +4026,15 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:paste-into-share', {
         icon: pasteIcon,
-        label: 'Paste',
+        label: trans.__('Paste'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const id = String(args.id || '');
           const clip = getClip();
@@ -3630,7 +4052,15 @@ export class ShareFilesPanel extends Widget {
       });
       c.addCommand('share-files-panel:paste-into-request', {
         icon: pasteIcon,
-        label: 'Paste',
+        label: trans.__('Paste'),
+        describedBy: {
+          args: {
+            type: 'object',
+            properties: {
+              key: { type: 'string' }
+            }
+          }
+        },
         execute: args => {
           const key = String(args.key || '');
           const clip = getClip();
@@ -4024,7 +4454,7 @@ export class ShareFilesPanel extends Widget {
     return menu;
   }
 
-  private _openNewMenu(evt: MouseEvent): void {
+  private _openNewMenu(evt: MouseEvent): Menu {
     const menu = new MenuSvg({ commands: this._commands });
     if (this._settings.enableShares) {
       menu.addItem({ command: 'share-files-panel:new-share' });
@@ -4040,10 +4470,11 @@ export class ShareFilesPanel extends Widget {
       noop.style.color = 'var(--jp-ui-font-color3)';
       noop.style.fontStyle = 'italic';
       noop.style.fontSize = 'var(--jp-ui-font-size0)';
-      noop.textContent = 'Enable shares or requests in Settings';
+      noop.textContent = trans.__('Enable shares or requests in Settings');
       menu.node.appendChild(noop);
     }
     menu.open(evt.clientX, evt.clientY);
+    return menu;
   }
 
   // ------------------------------------------------------------------ //
@@ -4084,7 +4515,9 @@ export class ShareFilesPanel extends Widget {
       const restore = this._keepFocus();
       const result = await showDialog({
         title: `Remove "${name}" from the request?`,
-        body: `The request deletes its copy. The uploader still has the original file.`,
+        body: trans.__(
+          'The request deletes its copy. The uploader still has the original file.'
+        ),
         buttons: [
           Dialog.cancelButton(),
           Dialog.warnButton({ label: REMOVE_LABEL })
@@ -4128,7 +4561,9 @@ export class ShareFilesPanel extends Widget {
     const restore = this._keepFocus();
     const result = await showDialog({
       title: `Remove "${entry.name}" from the request?`,
-      body: `The request deletes its copy. The uploader still has the original file.`,
+      body: trans.__(
+        'The request deletes its copy. The uploader still has the original file.'
+      ),
       buttons: [
         Dialog.cancelButton(),
         Dialog.warnButton({ label: REMOVE_LABEL })
@@ -4206,9 +4641,14 @@ export class ShareFilesPanel extends Widget {
     // confirming blind
     const name = this._state.shares.find(s => s.id === id)?.name;
     const result = await showDialog({
-      title: name ? `Delete share "${name}"?` : 'Delete share?',
-      body: 'This will remove the share permanently. The link will stop working.',
-      buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Delete' })]
+      title: name ? `Delete share "${name}"?` : trans.__('Delete share?'),
+      body: trans.__(
+        'This will remove the share permanently. The link will stop working.'
+      ),
+      buttons: [
+        Dialog.cancelButton(),
+        Dialog.warnButton({ label: trans.__('Delete') })
+      ]
     });
     restore();
     if (!result.button.accept) {
@@ -4228,10 +4668,10 @@ export class ShareFilesPanel extends Widget {
     const name = this._state.shares.find(s => s.id === id)?.name ?? '';
     const restore = this._keepFocus();
     const result = await InputDialog.getText({
-      title: 'Rename Share',
-      label: 'New name',
+      title: trans.__('Rename Share'),
+      label: trans.__('New name'),
       text: name,
-      okLabel: 'Rename'
+      okLabel: trans.__('Rename')
     });
     restore();
     if (!result.button.accept || result.value === name) {
@@ -4257,9 +4697,14 @@ export class ShareFilesPanel extends Widget {
     const restore = this._keepFocus();
     const name = this._state.requests.find(r => r.id === id)?.name;
     const result = await showDialog({
-      title: name ? `Delete request "${name}"?` : 'Delete request?',
-      body: 'This will remove the request and any uploads permanently.',
-      buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Delete' })]
+      title: name ? `Delete request "${name}"?` : trans.__('Delete request?'),
+      body: trans.__(
+        'This will remove the request and any uploads permanently.'
+      ),
+      buttons: [
+        Dialog.cancelButton(),
+        Dialog.warnButton({ label: trans.__('Delete') })
+      ]
     });
     restore();
     if (!result.button.accept) {
@@ -4557,7 +5002,7 @@ export class ShareFilesPanel extends Widget {
     const input = document.createElement('input');
     input.type = 'text';
     input.value = initial;
-    input.placeholder = 'Password (optional)';
+    input.placeholder = trans.__('Password (optional)');
     input.autocomplete = 'off';
     input.spellcheck = false;
     // Height matches the standard dialog button (32px) so the input and the
@@ -4567,8 +5012,8 @@ export class ShareFilesPanel extends Widget {
       ' font-size: 14px; font-family: var(--jp-code-font-family, monospace);';
     const gen = document.createElement('button');
     gen.type = 'button';
-    gen.textContent = 'Generate';
-    gen.title = 'Generate a memorable passphrase';
+    gen.textContent = trans.__('Generate');
+    gen.title = trans.__('Generate a memorable passphrase');
     // Small inline button, same height as the input (see .jp-ShareFiles-miniBtn
     // in base.css - resets the inherited button line-height and keeps the focus
     // ring inside so it is not clipped at the dialog edge).
@@ -4609,7 +5054,7 @@ export class ShareFilesPanel extends Widget {
     const input = document.createElement('input');
     input.type = 'text';
     input.value = suggested;
-    input.placeholder = 'Name';
+    input.placeholder = trans.__('Name');
     input.style.cssText =
       'width: 100%; box-sizing: border-box; height: 32px; padding: 0 8px;' +
       ' font-size: 14px;';
@@ -4627,7 +5072,7 @@ export class ShareFilesPanel extends Widget {
       ' color: var(--jp-ui-font-color2);';
     wrap.appendChild(hint);
     if (required) {
-      pwInput.placeholder = 'Password (required)';
+      pwInput.placeholder = trans.__('Password (required)');
       pwInput.required = true;
       try {
         pwInput.value =
@@ -4645,7 +5090,10 @@ export class ShareFilesPanel extends Widget {
     const result = await showDialog({
       title,
       body: widget,
-      buttons: [Dialog.cancelButton(), Dialog.okButton({ label: 'Create' })]
+      buttons: [
+        Dialog.cancelButton(),
+        Dialog.okButton({ label: trans.__('Create') })
+      ]
     });
     if (!result.button.accept) {
       return null;
@@ -4685,7 +5133,7 @@ export class ShareFilesPanel extends Widget {
     // field is required, so the dialog keeps Save disabled while it is empty
     const required = this._passwordRequired;
     if (required) {
-      pwInput.placeholder = 'Password (required)';
+      pwInput.placeholder = trans.__('Password (required)');
       pwInput.required = true;
     }
     const hint = document.createElement('div');
@@ -4711,9 +5159,12 @@ export class ShareFilesPanel extends Widget {
       ? new ValidatedBody(wrap, pwInput)
       : new Widget({ node: wrap });
     const result = await showDialog({
-      title: current ? 'Change password' : 'Set password',
+      title: current ? trans.__('Change password') : trans.__('Set password'),
       body: widget,
-      buttons: [Dialog.cancelButton(), Dialog.okButton({ label: 'Save' })]
+      buttons: [
+        Dialog.cancelButton(),
+        Dialog.okButton({ label: trans.__('Save') })
+      ]
     });
     restore();
     if (!result.button.accept) {
@@ -4826,7 +5277,7 @@ export class ShareFilesPanel extends Widget {
     linkRow.appendChild(input);
     const linkCopyBtn = document.createElement('button');
     linkCopyBtn.type = 'button';
-    linkCopyBtn.title = 'Copy link';
+    linkCopyBtn.title = trans.__('Copy link');
     // CSS class, not inline styles - the dialog auto-applies jp-mod-styled
     // (32px line-height, min-width) to buttons present at build time; see
     // .jp-ShareFiles-copyEmbed in style/base.css
@@ -4872,7 +5323,7 @@ export class ShareFilesPanel extends Widget {
 
     if (alreadyCopied) {
       const status = statusLine('--jp-success-color1');
-      status.textContent = '✓  Link copied to clipboard';
+      status.textContent = trans.__('✓  Link copied to clipboard');
       wrap.appendChild(status);
     }
 
@@ -4893,7 +5344,7 @@ export class ShareFilesPanel extends Widget {
           const pwLine = statusLine('--jp-warn-color1');
           pwLine.style.fontStyle = 'normal';
           const label = document.createElement('span');
-          label.textContent = 'Password:';
+          label.textContent = trans.__('Password:');
           pwLine.appendChild(label);
           const value = document.createElement('code');
           value.textContent = res.password;
@@ -4904,7 +5355,7 @@ export class ShareFilesPanel extends Widget {
           pwLine.appendChild(value);
           const copyBtn = document.createElement('button');
           copyBtn.type = 'button';
-          copyBtn.textContent = 'Copy';
+          copyBtn.textContent = trans.__('Copy');
           // Plain small button - jp-Dialog-button is dialog-action sized and
           // dwarfs an inline status row.
           copyBtn.style.cssText =
@@ -4917,9 +5368,11 @@ export class ShareFilesPanel extends Widget {
           copyBtn.addEventListener('click', evt => {
             evt.preventDefault();
             void this._copyLinkToClipboard(res.password).then(ok => {
-              copyBtn.textContent = ok ? 'Copied' : 'Copy failed';
+              copyBtn.textContent = ok
+                ? trans.__('Copied')
+                : trans.__('Copy failed');
               window.setTimeout(() => {
-                copyBtn.textContent = 'Copy';
+                copyBtn.textContent = trans.__('Copy');
               }, 1200);
             });
           });
@@ -4956,10 +5409,14 @@ export class ShareFilesPanel extends Widget {
         );
       const offLine = statusLine('--jp-warn-color1');
       offLine.textContent = moving
-        ? "Works on the hub's network only - moves to the Cloudflare hostname once the hub confirms"
+        ? trans.__(
+            "Works on the hub's network only - moves to the Cloudflare hostname once the hub confirms"
+          )
         : hub
-          ? "Link works on the hub's network only"
-          : 'Cloudflare sharing is not running - link works on this network only';
+          ? trans.__("Link works on the hub's network only")
+          : trans.__(
+              'Cloudflare sharing is not running - link works on this network only'
+            );
       wrap.appendChild(offLine);
     }
 
@@ -4985,7 +5442,7 @@ export class ShareFilesPanel extends Widget {
         },
         () => {
           reach.style.borderLeftColor = 'var(--jp-error-color1)';
-          reach.textContent = '✗  Link reachability check failed';
+          reach.textContent = trans.__('✗  Link reachability check failed');
         }
       );
     }
@@ -5016,7 +5473,7 @@ export class ShareFilesPanel extends Widget {
     }
     const qrImg = document.createElement('img');
     qrImg.src = canvas.toDataURL('image/png');
-    qrImg.alt = 'QR code for the link';
+    qrImg.alt = trans.__('QR code for the link');
     qrImg.style.cssText =
       'align-self: center;' +
       ' width: 180px;' +
@@ -5046,10 +5503,11 @@ export class ShareFilesPanel extends Widget {
       input.select();
     }, 50);
 
+    // eslint-disable-next-line jupyter/require-disposable-ownership -- Dialog disposes itself when it closes
     const dialog = new Dialog({
-      title: 'Share link',
+      title: trans.__('Share link'),
       body: widget,
-      buttons: [Dialog.okButton({ label: 'Close' })]
+      buttons: [Dialog.okButton({ label: trans.__('Close') })]
     });
 
     // Bottom escape hatch: reset Cloudflare sharing (same as `cloudflare
@@ -5058,7 +5516,7 @@ export class ShareFilesPanel extends Widget {
     // "click to set up" state.
     if (!hub && this._state.info?.tunnel_configured) {
       const reset = document.createElement('a');
-      reset.textContent = 'Reset Cloudflare sharing settings';
+      reset.textContent = trans.__('Reset Cloudflare sharing settings');
       reset.href = '#';
       reset.style.cssText =
         'align-self: center;' +
@@ -5229,8 +5687,9 @@ export class ShareFilesPanel extends Widget {
       this._cloudIndicator.setAttribute('aria-pressed', 'false');
       this._cloudIndicator.innerHTML = '';
       this._cloudIndicator.appendChild(this._svgNode(cloudOffIcon.svgstr));
-      this._cloudIndicator.title =
-        'Cloudflare sharing not set up\nClick to set up public links';
+      this._cloudIndicator.title = trans.__(
+        'Cloudflare sharing not set up\nClick to set up public links'
+      );
       return;
     }
     const active = !!info?.tunnel_active;
@@ -5242,8 +5701,10 @@ export class ShareFilesPanel extends Widget {
       this._svgNode(active ? cloudIcon.svgstr : cloudOffIcon.svgstr)
     );
     this._cloudIndicator.title = active
-      ? 'Cloudflare sharing on - public links\nClick to switch it off'
-      : 'Cloudflare sharing off - private links\nClick to switch it on';
+      ? trans.__('Cloudflare sharing on - public links\nClick to switch it off')
+      : trans.__(
+          'Cloudflare sharing off - private links\nClick to switch it on'
+        );
   }
 
   /** Hub mode: draw one look of the header cloud icon. A hub that does not
@@ -5332,8 +5793,8 @@ export class ShareFilesPanel extends Widget {
       this._cloudIndicator!.innerHTML = '';
       this._cloudIndicator!.appendChild(this._svgNode(cloudIcon.svgstr));
       this._cloudIndicator!.title = active
-        ? 'Switching Cloudflare sharing off'
-        : 'Switching Cloudflare sharing on';
+        ? trans.__('Switching Cloudflare sharing off')
+        : trans.__('Switching Cloudflare sharing on');
     }
     const breath = new Promise<void>(resolve =>
       window.setTimeout(resolve, CLOUD_BREATH_MS)
@@ -5471,9 +5932,12 @@ export class ShareFilesPanel extends Widget {
 
     const widget = new Widget({ node: wrap });
     const result = await showDialog({
-      title: 'Set up Cloudflare sharing',
+      title: trans.__('Set up Cloudflare sharing'),
       body: widget,
-      buttons: [Dialog.cancelButton(), Dialog.okButton({ label: 'Set up' })]
+      buttons: [
+        Dialog.cancelButton(),
+        Dialog.okButton({ label: trans.__('Set up') })
+      ]
     });
     if (!result.button.accept) {
       return;

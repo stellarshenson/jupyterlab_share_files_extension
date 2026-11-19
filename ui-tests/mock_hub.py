@@ -139,6 +139,8 @@ class Store:
         # with `fetch_running` the hub refuses every upload removal as
         # `fetch_running`, as it does while a whole-inbox fetch runs
         self.fetch_running = False
+        # one upload's removal answers this (status, reason); /_control/refuse
+        self.refusals: dict[tuple[str, str], tuple[int, str]] = {}
         # records other users own: never in this user's `items`
         self.foreign: list[dict] = []
         # a record's password by id, and what each fs_unlock cookie unlocked:
@@ -541,6 +543,10 @@ class UploadDelete(_Hub):
         if STORE.fetch_running:
             return self.answer(409, {"reason": "fetch_running",
                                      "message": "A fetch of this inbox is running"})
+        status, reason = STORE.refusals.get((id_, upload_id), (0, ""))
+        if reason:
+            return self.answer(status, {"reason": reason,
+                                        "message": "The hub refused the removal"})
         rows = STORE.uploads.get(id_, [])
         kept = [u for u in rows if u["upload_id"] != upload_id]
         if len(kept) == len(rows):
@@ -778,6 +784,19 @@ class Control(_Base):
             # a whole-inbox fetch is running: every removal answers 409
             STORE.fetch_running = bool(body.get("running"))
             return self.answer(200, {"running": STORE.fetch_running})
+        if action == "refuse":
+            # one upload's removal answers `status` with `reason`; no id
+            # clears the refusal
+            rid = str(body.get("request_id") or "")
+            uid = str(body.get("upload_id") or "")
+            if not uid:
+                STORE.refusals.clear()
+                return self.answer(200, {"ok": True})
+            STORE.refusals[(rid, uid)] = (
+                int(body.get("status") or 409),
+                str(body.get("reason") or "fetch_running"),
+            )
+            return self.answer(200, {"ok": True})
         if action == "add":
             STORE.add_seconds = float(body.get("seconds") or ADD_SECONDS)
             STORE.hold_adds = bool(body.get("hold"))

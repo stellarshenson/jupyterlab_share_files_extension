@@ -2,6 +2,18 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.83] - 2026-11-19
+
+### Added
+
+- Fold an uploader group of a request with its twisty, the fold kept across the panel's Refresh
+- Remove all uploads of one person from the uploader group's right-click menu, with one confirmation and a notice naming what stayed when the hub refuses part-way
+
+### Changed
+
+- Draw every destructive menu entry's label and icon in the error colour, last under a separator
+- Wrap the panel, API and plugin strings for translation and clear the eslint warnings to zero, every rendered label unchanged
+
 ## [1.2.82] - 2026-11-19
 
 ### Added

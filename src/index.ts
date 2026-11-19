@@ -13,8 +13,10 @@ import { IDocumentManager } from '@jupyterlab/docmanager';
 import { IFileBrowserFactory } from '@jupyterlab/filebrowser';
 import { Contents } from '@jupyterlab/services';
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
+import { nullTranslator } from '@jupyterlab/translation';
 
 import { clearClip, getClip, setClip } from './clipboard';
+// eslint-disable-next-line jupyter/prefer-lazy-imports -- activation builds the panel at once
 import { ShareFilesPanel } from './widget';
 
 const PLUGIN_ID = '@stellarshenson/jupyterlab-share-files-extension:plugin';
@@ -33,6 +35,8 @@ interface IPluginSettings {
   pollIntervalSeconds: number;
   peerDownloadMaxGb: number;
 }
+
+const trans = nullTranslator.load('jupyterlab_share_files_extension');
 
 const DEFAULT_SETTINGS: IPluginSettings = {
   enableShares: true,
@@ -291,8 +295,11 @@ const plugin: JupyterFrontEndPlugin<void> = {
     // Register the file browser context menu command. Visibility honours
     // the user's "enable shares" setting via panel.settings.enableShares.
     commands.addCommand(COMMAND_CREATE_SHARE, {
-      label: 'Share Files...',
-      caption: 'Create a shareable link for the selected files or folders',
+      label: trans.__('Share Files...'),
+      caption: trans.__(
+        'Create a shareable link for the selected files or folders'
+      ),
+      describedBy: { args: null },
       execute: () => {
         const paths = getSelectedPaths();
         if (paths.length === 0) {

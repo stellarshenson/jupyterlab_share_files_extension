@@ -599,18 +599,33 @@
   height: 11px;
 }
 
-/* Uploader sub-header (inside a request) - small uppercase row */
+/* Uploader sub-header (inside a request) - small uppercase row. Its 20 px
+   twisty stands in the row's indent column, so the folder icon keeps the
+   22 px inset the entry rows use. */
 .jp-ShareFilesPanel-uploaderHeader {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px 0 22px;
+  gap: 0;
+  padding: 2px 8px 0 2px;
   font-size: var(--jp-ui-font-size0);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--jp-ui-font-color2);
   font-weight: 600;
   line-height: 1.6;
+  cursor: pointer;
+  user-select: none;
+}
+
+.jp-ShareFilesPanel-uploaderHeader:hover {
+  background: var(--jp-layout-color2);
+}
+
+/* keyboard focus on the group row (Shift+F10 opens its menu); inset so the
+   list edge does not clip it */
+.jp-ShareFilesPanel-uploaderHeader:focus-visible {
+  outline: 1px solid var(--jp-brand-color1);
+  outline-offset: -1px;
 }
 
 .jp-ShareFilesPanel-uploaderHeader .jp-ShareFilesPanel-entryIcon {
@@ -620,6 +635,7 @@
 
 .jp-ShareFilesPanel-uploaderName {
   flex: 1 1 auto;
+  margin-left: 4px;
 }
 
 /* Buttons inside an expanded item */
@@ -905,4 +921,16 @@
   background: var(--jp-layout-color0);
   border: 1px solid var(--jp-brand-color1);
   padding: 0 2px;
+}
+
+/* Destructive menu entries: the label and icon take the error colour, while
+   the selection background stays the menu's own --jp-layout-color2. The menu
+   is a body-level Lumino popup, so its scope is the item class, which carries
+   the panel prefix, inside the menu rather than the panel's own node. */
+.lm-Menu .jp-ShareFilesPanelContextMenu-danger {
+  color: var(--jp-error-color1);
+}
+
+.lm-Menu .jp-ShareFilesPanelContextMenu-danger .jp-icon3[fill] {
+  fill: var(--jp-error-color1);
 }

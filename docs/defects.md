@@ -357,6 +357,12 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - log: 2026-11-18T13:01:22Z @kj added
   - log: 2026-11-18T14:11:53Z @kj fixed except Remove on a hub request upload: standalone and hub share rows now offer Download and Remove; hub upload Remove waits for the hub endpoint, owner checks in 2h
   - log: 2026-11-18T22:16:55Z @kj closed: fixed by the row menus
+- [x] `DEF-PANEL-149-DANGER` **Remove is drawn like a harmless action** - MINOR; the row menu draws Remove in the same text colour as Download to Current Folder; the design system draws a destructive menu entry's label and icon in --jp-error-color1
+  - evidence: Destructive context-menu entries, Remove from Share included, draw label and icon in --jp-error-color1 at rest and selected, last under a separator (DANGER_MENU_CLASS, style/base.css). Galata standalone row-menu.spec.ts:608, hub hub-mode.spec.ts:534, :553; full suites 111 hub, 58 standalone.
+  - repro: right-click a file row of an own share and look at the Remove entry
+  - test-tags: E2E
+  - log: 2026-11-19T05:38:56Z @kj added
+  - log: 2026-11-19T10:07:14Z @kj closed: fixed and verified in the full suites
 
 ## Public sharing `PUBLIC`
 

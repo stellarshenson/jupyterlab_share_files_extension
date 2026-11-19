@@ -1635,4 +1635,22 @@ Indent depth, collapse triangle size, and the per-row Download and Remove menu
   - log: 2026-11-18T18:05:44Z @kj added
   - log: 2026-11-18T18:06:57Z @kj owner picked option A from the row-progress mockup on 2026-11-18: downloads reuse the add look, rgb(33 150 243 / 20%) wash with an inset -2px 0 0 edge at the fraction
   - log: 2026-11-18T22:16:54Z @kj closed: download progress shipped
+- [x] `ACC-ROWS-243-DESTRUCTIVE` **Destructive menu entries use the error colour** - MEDIUM; every context-menu entry that deletes data that cannot be recovered, Remove from Share, Remove upload, Delete Share and Delete Request, draws its label and icon in --jp-error-color1 at rest and while selected, stands last under a separator, and keeps the menu's own selection background
+  - evidence: DANGER_MENU_CLASS on remove-entry, remove-upload, remove-uploads, delete-share, delete-request; style/base.css draws label and icon in --jp-error-color1 at rest and selected, last under a separator. Galata standalone row-menu.spec.ts:608, hub hub-mode.spec.ts:534 and :553; full suites 111 hub, 58 standalone, lint 0.
+  - test: Galata: open each row and record menu in both modes, read the computed colour of the destructive item and its icon, assert the error colour and the separate last group
+  - test-tags: E2E
+  - log: 2026-11-19T05:38:56Z @kj added
+  - log: 2026-11-19T10:07:13Z @kj closed: verified in the full suites, review SHIP accepted
+- [x] `ACC-ROWS-244-UPLOADER-FOLD` **Fold an uploader group of a request** - MEDIUM; each uploader group under a request carries the panel's collapse triangle; a click, or Enter and Space while it has focus, hides or shows that group's upload rows, sets aria-expanded, and leaves the other groups as they were; the folded state survives a refresh
+  - evidence: Group header carries the record twisty (20x20 button, aria-expanded, focus key); click folds; Enter and Space on the twisty toggle; foldedUploaders on the panel state, keyed request:<id>/<uploader hash>, survives the panel Refresh; other groups unchanged. Standalone row-menu.spec.ts:260, hub hub-mode.spec.ts:3648; full suites 111 hub, 58 standalone.
+  - test: Galata: open a request with two uploaders, fold one group, assert only its rows hide and aria-expanded false; refresh the panel and assert it stays folded; toggle with the keyboard
+  - test-tags: E2E
+  - log: 2026-11-19T08:28:57Z @kj added
+  - log: 2026-11-19T10:07:13Z @kj closed: verified in the full suites, review SHIP accepted
+- [x] `ACC-ROWS-245-REMOVE-UPLOADER` **Remove all uploads of one uploader** - MEDIUM; the menu of an uploader group offers Remove All Uploads from the person, in the destructive colour last under a separator; one confirmation names the person and the count; uploads go one by one, the group leaves with its rows, and a refusal part-way says what stayed
+  - evidence: Destructive Remove All Uploads from <name> last under a separator; confirmation names person and count; per-upload removal keyed by uploader hash, so unnamed and named anonymous stay apart; a refusal stops and names who stayed; Refresh in finally. Standalone row-menu.spec.ts:312; hub :3711, 409 :3779, anonymous :3908; suites 111/58.
+  - test: Galata in both modes: right-click an uploader group holding two uploads, accept the confirmation, assert only that group's rows go; make the second removal refuse and assert the notice names what stayed
+  - test-tags: E2E
+  - log: 2026-11-19T08:29:23Z @kj added
+  - log: 2026-11-19T10:07:13Z @kj closed: verified in the full suites, review SHIP accepted
 

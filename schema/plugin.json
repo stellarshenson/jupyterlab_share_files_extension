@@ -38,7 +38,15 @@
     },
     "peerDownloadMaxGb": {
       "type": "number",
-      "enum": [1, 2, 5, 10, 20, 50, 100],
+      "oneOf": [
+        { "const": 1, "title": "1" },
+        { "const": 2, "title": "2" },
+        { "const": 5, "title": "5" },
+        { "const": 10, "title": "10" },
+        { "const": 20, "title": "20" },
+        { "const": 50, "title": "50" },
+        { "const": 100, "title": "100" }
+      ],
       "default": 10,
       "title": "Largest download from a connected share (GB)",
       "description": "A save from a connected share into the workspace, or a download of one of its items, stops past this size and leaves nothing behind. The download lands on the workspace disk as it arrives, never in memory; the server allows it 5 minutes for every GB of this limit before it gives up on the peer."

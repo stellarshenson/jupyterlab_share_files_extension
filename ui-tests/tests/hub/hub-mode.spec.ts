@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { readTrough, watchTrough } from '../helpers/breath';
+import { expectDangerItem } from '../helpers/danger';
 import { dragOnto, dragOver } from '../helpers/drag';
 
 /**
@@ -527,6 +528,42 @@ test('every entry of the share, request and New menus carries an icon', async ({
   const items = page.locator('.lm-Menu .lm-Menu-item[data-type="command"]');
   await expect(items).toHaveCount(2);
   await expect(items.locator('.lm-Menu-itemIcon svg')).toHaveCount(2);
+  await page.keyboard.press('Escape');
+});
+
+test('Delete Share draws its label and icon in the error colour, last under a separator', async ({
+  page
+}) => {
+  // ACC-ROWS-243-DESTRUCTIVE, DEF-PANEL-149-DANGER
+  await api(page, 'POST', `${API}/shares`, { name: 'Dangerous', paths: [] });
+  await openPanel(page);
+  await refreshPanel(page);
+  await page
+    .locator(`${PANEL} .jp-ShareFilesPanel-item`, { hasText: 'Dangerous' })
+    .locator('.jp-ShareFilesPanel-itemHeader')
+    .click({ button: 'right' });
+  const item = page.locator(
+    '.lm-Menu .lm-Menu-item.jp-ShareFilesPanelContextMenu-danger'
+  );
+  await expect(item).toHaveCount(1);
+  await expectDangerItem(item);
+  await page.keyboard.press('Escape');
+});
+
+test('Remove from Share on a hub entry draws its label and icon in the error colour, last under a separator', async ({
+  page,
+  request
+}) => {
+  // ACC-ROWS-243-DESTRUCTIVE, DEF-PANEL-149-DANGER
+  const { entry } = await selectionShare(page, request, 'Dangerous Entry', [
+    'red.txt'
+  ]);
+  await entry('red.txt').click({ button: 'right' });
+  const item = page.locator(
+    '.lm-Menu .lm-Menu-item.jp-ShareFilesPanelContextMenu-danger'
+  );
+  await expect(item).toHaveCount(1);
+  await expectDangerItem(item);
   await page.keyboard.press('Escape');
 });
 
@@ -3608,6 +3645,222 @@ test('a hub upload removal during a whole-inbox fetch warns and leaves the row',
   await request.post(`${HUB}/_control/fetch`, { data: { running: false } });
 });
 
+test('a hub uploader group folds with its twisty, the keyboard, and survives a panel refresh', async ({
+  page,
+  request
+}) => {
+  // ACC-ROWS-244
+  await openPanel(page);
+  const created = await api(page, 'POST', `${API}/requests`, {
+    name: 'Fold Inbox'
+  });
+  for (const [upload_id, filename, uploader] of [
+    ['u1', 'ada.csv', 'Ada'],
+    ['u2', 'bob.csv', 'Bob']
+  ]) {
+    await request.post(`${HUB}/_control/upload`, {
+      data: {
+        request_id: created.data.id,
+        upload_id,
+        filename,
+        uploader
+      }
+    });
+  }
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Fold Inbox'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const ada = row.locator('.jp-ShareFilesPanel-uploaderHeader', {
+    hasText: 'Ada'
+  });
+  const bob = row.locator('.jp-ShareFilesPanel-uploaderHeader', {
+    hasText: 'Bob'
+  });
+  const adaToggle = ada.locator('.jp-ShareFilesPanel-itemTwisty');
+  const bobToggle = bob.locator('.jp-ShareFilesPanel-itemTwisty');
+  const adaRow = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'ada.csv'
+  });
+  const bobRow = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'bob.csv'
+  });
+  await expect(adaToggle).toHaveAttribute('aria-expanded', 'true');
+  // one click folds Ada's group alone; Bob's group keeps its row
+  await adaToggle.click();
+  await expect(adaToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(adaRow).toHaveCount(0);
+  await expect(bobRow).toHaveCount(1);
+  await expect(bobToggle).toHaveAttribute('aria-expanded', 'true');
+  // Enter expands, Space folds again
+  await adaToggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(adaToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(adaRow).toHaveCount(1);
+  await page.keyboard.press('Space');
+  await expect(adaToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(adaRow).toHaveCount(0);
+  // a panel refresh keeps the folded group folded
+  await refreshPanel(page);
+  await expect(adaToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(adaRow).toHaveCount(0);
+  await expect(bobRow).toHaveCount(1);
+});
+
+test('Remove All Uploads from one hub uploader leaves the other group', async ({
+  page,
+  request
+}) => {
+  // ACC-ROWS-245
+  await openPanel(page);
+  const created = await api(page, 'POST', `${API}/requests`, {
+    name: 'Group Remove Inbox'
+  });
+  for (const [upload_id, filename, uploader] of [
+    ['u1', 'ada-1.csv', 'Ada'],
+    ['u2', 'ada-2.csv', 'Ada'],
+    ['u3', 'bob.csv', 'Bob']
+  ]) {
+    await request.post(`${HUB}/_control/upload`, {
+      data: {
+        request_id: created.data.id,
+        upload_id,
+        filename,
+        uploader
+      }
+    });
+  }
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Group Remove Inbox'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const ada = row.locator('.jp-ShareFilesPanel-uploaderHeader', {
+    hasText: 'Ada'
+  });
+  const bob = row.locator('.jp-ShareFilesPanel-uploaderHeader', {
+    hasText: 'Bob'
+  });
+  // the menu entry is destructive, last under a separator
+  await ada.click({ button: 'right' });
+  const item = page.locator(
+    '.lm-Menu .lm-Menu-item.jp-ShareFilesPanelContextMenu-danger'
+  );
+  await expect(item).toHaveCount(1);
+  await expect(item.locator('.lm-Menu-itemLabel')).toHaveText(
+    'Remove All Uploads from Ada'
+  );
+  await expectDangerItem(item);
+  await item.click();
+  // one confirmation names the person and the two uploads
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText('Remove all uploads from Ada');
+  await expect(dialog).toContainText('2 upload');
+  await dialog.locator('button.jp-mod-accept').click();
+  // Ada's header and both rows go; Bob's group and row stay
+  await expect(ada).toHaveCount(0);
+  await expect(bob).toHaveCount(1);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'bob.csv' })
+  ).toHaveCount(1);
+  const listed = async () =>
+    (
+      await request.get(
+        `${HUB}/hub/api/fileshare/requests/${created.data.id}/uploads`,
+        { headers: { Authorization: 'token test-token' } }
+      )
+    ).json();
+  await expect
+    .poll(async () => (await listed()).uploads.map((u: any) => u.filename))
+    .toEqual(['bob.csv']);
+});
+
+test('a hub remove-all stops at a refusal and says what stayed', async ({
+  page,
+  request
+}) => {
+  // ACC-ROWS-245: the second removal is refused; the first one's removal
+  // stands and the notice names the uploads that stayed
+  await openPanel(page);
+  const created = await api(page, 'POST', `${API}/requests`, {
+    name: 'Refused Remove Inbox'
+  });
+  for (const [upload_id, filename] of [
+    ['u1', 'a.csv'],
+    ['u2', 'b.csv'],
+    ['u3', 'c.csv']
+  ]) {
+    await request.post(`${HUB}/_control/upload`, {
+      data: {
+        request_id: created.data.id,
+        upload_id,
+        filename,
+        uploader: 'Ada'
+      }
+    });
+  }
+  await request.post(`${HUB}/_control/refuse`, {
+    data: {
+      request_id: created.data.id,
+      upload_id: 'u2',
+      status: 409,
+      reason: 'fetch_running'
+    }
+  });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Refused Remove Inbox'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await row
+    .locator('.jp-ShareFilesPanel-uploaderHeader', { hasText: 'Ada' })
+    .click({ button: 'right' });
+  await page
+    .locator('.lm-Menu .lm-Menu-item.jp-ShareFilesPanelContextMenu-danger')
+    .click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText('3 upload');
+  await dialog.locator('button.jp-mod-accept').click();
+  // the refusal names the two uploads that stayed
+  await expect
+    .poll(() => notes(page, 'warning', '2 stayed (b.csv, c.csv)'))
+    .toBe(1);
+  const listed = async () =>
+    (
+      await request.get(
+        `${HUB}/hub/api/fileshare/requests/${created.data.id}/uploads`,
+        { headers: { Authorization: 'token test-token' } }
+      )
+    ).json();
+  await expect
+    .poll(async () => (await listed()).uploads.map((u: any) => u.filename))
+    .toEqual(['b.csv', 'c.csv']);
+  // the loop stopped at the refusal: u3 was never sent to the hub
+  const deletes = (
+    (await (await request.get(`${HUB}/_control/calls`)).json()).calls as any[]
+  )
+    .filter(
+      (c: any) =>
+        c.method === 'DELETE' &&
+        c.path.startsWith(
+          `/hub/api/fileshare/requests/${created.data.id}/uploads/`
+        )
+    )
+    .map((c: any) => c.path.split('/').pop());
+  expect(deletes).toEqual(['u1', 'u2']);
+  // the panel's own refresh shows the two uploads that stayed
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'b.csv' })
+  ).toHaveCount(1);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'c.csv' })
+  ).toHaveCount(1);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'a.csv' })
+  ).toHaveCount(0);
+});
+
 test('a hub request groups and names its uploaders, an empty name reads anonymous', async ({
   page,
   request
@@ -3650,6 +3903,75 @@ test('a hub request groups and names its uploaders, an empty name reads anonymou
   await expect(
     row.locator('.jp-ShareFilesPanel-entry', { hasText: 'old.csv' })
   ).toHaveCount(1);
+});
+
+test('a hub request keeps its two anonymous spellings apart for fold and remove', async ({
+  page,
+  request
+}) => {
+  // the hub names an unnamed upload "" and a recipient who typed that word
+  // "anonymous"; the panel shows both as anonymous and keeps each group's
+  // removal to its own uploads
+  await openPanel(page);
+  const created = await api(page, 'POST', `${API}/requests`, {
+    name: 'Anonymous Inbox'
+  });
+  for (const [upload_id, filename, uploader] of [
+    ['u1', 'no-name.csv', ''],
+    ['u2', 'by-name.csv', 'anonymous']
+  ]) {
+    await request.post(`${HUB}/_control/upload`, {
+      data: {
+        request_id: created.data.id,
+        upload_id,
+        filename,
+        uploader
+      }
+    });
+  }
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Anonymous Inbox'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const headers = row.locator('.jp-ShareFilesPanel-uploaderHeader');
+  await expect(headers).toHaveCount(2);
+  await expect(headers.locator('.jp-ShareFilesPanel-uploaderName')).toHaveText([
+    'anonymous',
+    'anonymous'
+  ]);
+  // the second group's menu reads the same label as the first's, and removes
+  // only the second group's upload
+  await headers.nth(1).click({ button: 'right' });
+  const item = page.locator(
+    '.lm-Menu .lm-Menu-item.jp-ShareFilesPanelContextMenu-danger'
+  );
+  await expect(item.locator('.lm-Menu-itemLabel')).toHaveText(
+    'Remove All Uploads from anonymous'
+  );
+  await expectDangerItem(item);
+  await item.click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText('Remove all uploads from anonymous');
+  await dialog.locator('button.jp-mod-accept').click();
+  const listed = async () =>
+    (
+      await request.get(
+        `${HUB}/hub/api/fileshare/requests/${created.data.id}/uploads`,
+        { headers: { Authorization: 'token test-token' } }
+      )
+    ).json();
+  await expect
+    .poll(async () => (await listed()).uploads.map((u: any) => u.filename))
+    .toEqual(['no-name.csv']);
+  // the first group stays; the second goes
+  await expect(headers).toHaveCount(1);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'no-name.csv' })
+  ).toHaveCount(1);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'by-name.csv' })
+  ).toHaveCount(0);
 });
 
 // --------------------------------------------------------------------------- //

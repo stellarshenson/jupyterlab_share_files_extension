@@ -1,5 +1,7 @@
 import { expect, test } from '@jupyterlab/galata';
 
+import { expectDangerItem } from './helpers/danger';
+
 /**
  * Panel rows: the indent of a request upload, the size of the collapse
  * triangles, Remove in the right-click menu of an own share, folder and
@@ -37,18 +39,50 @@ async function createShare(
   );
 }
 
+async function createRequest(page: any, name: string): Promise<string> {
+  return page.evaluate(
+    async ([api, n]: [string, string]) => {
+      const r = await fetch(`${api}/requests`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: n })
+      });
+      return (await r.json()).id as string;
+    },
+    [API, name]
+  );
+}
+
+/** Another uploader's identity for one request: the server keys an uploader
+ * by its `sf_uploader_<id>` cookie, so replacing the cookie before the next
+ * upload makes the page a different person. */
+async function becomeUploader(
+  page: any,
+  id: string,
+  hash: string
+): Promise<void> {
+  await page.context().addCookies([
+    {
+      name: `sf_uploader_${id}`,
+      value: hash,
+      url: new URL(page.url()).origin
+    }
+  ]);
+}
+
 /** One recipient upload: the first response mints the uploader cookie, the
  * next same-origin fetch reuses it. */
 async function uploadToRequest(
   page: any,
   id: string,
   name: string,
-  body: string
+  body: string,
+  uploader = 'probe'
 ): Promise<void> {
   await page.evaluate(
-    async ([id, name, body]: [string, string, string]) => {
+    async ([id, name, body, uploader]: [string, string, string, string]) => {
       const r = await fetch(
-        `/jupyterlab-share-files-extension/public/request/${id}/upload?uploader=probe`,
+        `/jupyterlab-share-files-extension/public/request/${id}/upload?uploader=${encodeURIComponent(uploader)}`,
         {
           method: 'POST',
           headers: { 'X-Filename': encodeURIComponent(name) },
@@ -59,7 +93,7 @@ async function uploadToRequest(
         throw new Error(await r.text());
       }
     },
-    [id, name, body]
+    [id, name, body, uploader]
   );
 }
 
@@ -221,6 +255,117 @@ test('Remove on a request upload leaves the other upload', async ({ page }) => {
     [API, id]
   );
   expect(held).toEqual(['keep.txt']);
+});
+
+test('an uploader group folds with its twisty, the keyboard, and survives a panel refresh', async ({
+  page
+}) => {
+  // ACC-ROWS-244
+  const title = `Fold ${Date.now().toString(36)}`;
+  const id = await createRequest(page, title);
+  await uploadToRequest(page, id, 'ada.txt', 'ada\n', 'Ada');
+  await becomeUploader(page, id, 'MZXW');
+  await uploadToRequest(page, id, 'bob.txt', 'bob\n', 'Bob');
+  await openPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: title
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const ada = row.locator('.jp-ShareFilesPanel-uploaderHeader', {
+    hasText: 'Ada'
+  });
+  const bob = row.locator('.jp-ShareFilesPanel-uploaderHeader', {
+    hasText: 'Bob'
+  });
+  const adaToggle = ada.locator('.jp-ShareFilesPanel-itemTwisty');
+  const bobToggle = bob.locator('.jp-ShareFilesPanel-itemTwisty');
+  const adaRow = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'ada.txt'
+  });
+  const bobRow = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'bob.txt'
+  });
+  await expect(adaToggle).toHaveAttribute('aria-expanded', 'true');
+  // one click folds Ada's group alone; Bob's group keeps its row
+  await adaToggle.click();
+  await expect(adaToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(adaRow).toHaveCount(0);
+  await expect(bobRow).toHaveCount(1);
+  await expect(bobToggle).toHaveAttribute('aria-expanded', 'true');
+  // Enter expands, Space folds again
+  await adaToggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(adaToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(adaRow).toHaveCount(1);
+  await page.keyboard.press('Space');
+  await expect(adaToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(adaRow).toHaveCount(0);
+  // a panel refresh keeps the folded group folded
+  const refresh = page.locator(`${PANEL} button[title="Refresh"]`);
+  await refresh.click();
+  await expect(refresh).not.toHaveClass(/jp-mod-spinning/, { timeout: 30000 });
+  await expect(adaToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(adaRow).toHaveCount(0);
+  await expect(bobRow).toHaveCount(1);
+});
+
+test('Remove All Uploads from one uploader leaves the other group', async ({
+  page
+}) => {
+  // ACC-ROWS-245
+  const title = `Remove All ${Date.now().toString(36)}`;
+  const id = await createRequest(page, title);
+  await uploadToRequest(page, id, 'ada-1.txt', 'one\n', 'Ada');
+  await uploadToRequest(page, id, 'ada-2.txt', 'two\n', 'Ada');
+  await becomeUploader(page, id, 'MZXW');
+  await uploadToRequest(page, id, 'bob.txt', 'bob\n', 'Bob');
+  await openPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: title
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const ada = row.locator('.jp-ShareFilesPanel-uploaderHeader', {
+    hasText: 'Ada'
+  });
+  const bob = row.locator('.jp-ShareFilesPanel-uploaderHeader', {
+    hasText: 'Bob'
+  });
+  // the menu entry is destructive, last under a separator
+  await ada.click({ button: 'right' });
+  const item = page.locator(
+    '.lm-Menu .lm-Menu-item.jp-ShareFilesPanelContextMenu-danger'
+  );
+  await expect(item).toHaveCount(1);
+  await expect(item.locator('.lm-Menu-itemLabel')).toHaveText(
+    /^Remove All Uploads from Ada/
+  );
+  await expectDangerItem(item);
+  await item.click();
+  // one confirmation names the person and the two uploads
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText('Remove all uploads from Ada');
+  await expect(dialog).toContainText('2 upload');
+  await dialog.locator('button.jp-mod-accept').click();
+  // Ada's header and both rows go; Bob's group stays
+  await expect(ada).toHaveCount(0);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'ada-' })
+  ).toHaveCount(0);
+  await expect(bob).toHaveCount(1);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'bob.txt' })
+  ).toHaveCount(1);
+  const held = await page.evaluate(
+    async ([api, id]: [string, string]) => {
+      const r = await fetch(`${api}/requests/${id}`);
+      const data = await r.json();
+      return data.uploaders.flatMap((u: any) =>
+        u.entries.map((e: any) => e.name)
+      );
+    },
+    [API, id]
+  );
+  expect(held).toEqual(['bob.txt']);
 });
 
 test('a share file and folder download into the folder the file browser shows', async ({
@@ -458,6 +603,29 @@ test('Remove from Share on one file asks once and leaves the other row', async (
     [API, id]
   );
   expect(names).toEqual(['keep.txt']);
+});
+
+test('Remove from Share draws its label and icon in the error colour, last under a separator', async ({
+  page,
+  tmpPath
+}) => {
+  // ACC-ROWS-243-DESTRUCTIVE, DEF-PANEL-149-DANGER
+  await page.contents.uploadContent('red\n', 'text', `${tmpPath}/red.txt`);
+  await createShare(page, 'Dangerous', [`${tmpPath}/red.txt`]);
+  await openPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Dangerous'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await row
+    .locator('.jp-ShareFilesPanel-entry', { hasText: 'red.txt' })
+    .click({ button: 'right' });
+  const item = page.locator(
+    '.lm-Menu .lm-Menu-item.jp-ShareFilesPanelContextMenu-danger'
+  );
+  await expect(item).toHaveCount(1);
+  await expectDangerItem(item);
+  await page.keyboard.press('Escape');
 });
 
 test('a row menu opens from the keyboard with Remove, and Escape returns the focus', async ({

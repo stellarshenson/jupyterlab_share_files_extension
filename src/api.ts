@@ -4,6 +4,7 @@
 
 import { URLExt } from '@jupyterlab/coreutils';
 import { ServerConnection } from '@jupyterlab/services';
+import { nullTranslator } from '@jupyterlab/translation';
 
 import {
   ICertificate,
@@ -15,6 +16,7 @@ import {
 } from './types';
 
 const NAMESPACE = 'jupyterlab-share-files-extension';
+const trans = nullTranslator.load('jupyterlab_share_files_extension');
 
 /** Low-level request to the server extension's API namespace. A refusal
  * the server names with a slug carries it on the thrown error as `reason`. */
@@ -494,7 +496,9 @@ export function hubTunnelLook(
     return {
       look: 'armed',
       pressed: true,
-      title: 'Cloudflare sharing on - no tunnel up yet\nClick to switch it off'
+      title: trans.__(
+        'Cloudflare sharing on - no tunnel up yet\nClick to switch it off'
+      )
     };
   }
   if (info.tunnel_default) {
@@ -502,7 +506,7 @@ export function hubTunnelLook(
       ? {
           look: 'on',
           pressed: true,
-          title: 'Cloudflare sharing on\nClick to switch it off'
+          title: trans.__('Cloudflare sharing on\nClick to switch it off')
         }
       : {
           // mixed: a record is switched on but the hub's tunnel is not up
@@ -510,14 +514,17 @@ export function hubTunnelLook(
           // up - the hub brings the tunnel up because the record asked for it
           look: 'pending',
           pressed: 'mixed',
-          title:
+          title: trans.__(
             'Cloudflare sharing on - waiting for the hub\nClick to switch it off'
+          )
         };
   }
   return {
     look: 'off',
     pressed: false,
-    title: 'Cloudflare sharing off - hub network only\nClick to switch it on'
+    title: trans.__(
+      'Cloudflare sharing off - hub network only\nClick to switch it on'
+    )
   };
 }
 
