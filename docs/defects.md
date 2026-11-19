@@ -338,6 +338,25 @@ The Share Files side panel - refresh loop, row rendering and hover detail
   - log: 2026-10-21T10:08:28Z @kj closed: fixed
   - log: 2026-10-21T15:14:15Z @kj amended: the owner ruled the surface a little darker than the panel; the theme input colour was lighter in Galaxa Light, so the fix is 4% black over --jp-layout-color1 (ACC-PANEL-203-SURFACE)
   - log: 2026-10-21T16:53:30Z @kj evidence corrected: final surface is rgb(182,187,194); rgb(199,203,209) was the intermediate value before the 4% black rule
+- [x] `DEF-PANEL-146-INDENT` **Panel rows are indented too deep** - MINOR; a request upload row is indented one step deeper than its uploader group, so the name truncates - the owner sees INTERNAL_Hackathon_Data...; cause: a request upload passes indentLevel 1 to a row builder that already emits one indent step, each step 12 px
+  - evidence: row-menu.spec.ts:120 passes: the upload row sits at its group indent, at most one step on any row
+  - repro: open a request holding one upload in the panel, look at the file row under UPLOADS
+  - test-tags: E2E
+  - log: 2026-11-18T13:01:11Z @kj added
+  - log: 2026-11-18T22:16:54Z @kj closed: fixed by the indent change
+- [x] `DEF-PANEL-147-TWISTY` **The collapse triangle is too small** - MINOR; the collapse triangle of a section and of a share or request row is small and hard to aim at; cause: both twisties are a 14 px box holding the glyph at the inherited font size, with no size set for the glyph
+  - evidence: row-menu.spec.ts:76 passes: 20x20 boxes, 14 px glyph, 24 px headers
+  - repro: open the panel and look at the triangle left of a share or request name
+  - test-tags: E2E
+  - log: 2026-11-18T13:01:11Z @kj added
+  - log: 2026-11-18T22:16:54Z @kj closed: fixed by the twisty rules
+- [x] `DEF-PANEL-148-UPLOAD-MENU` **Individual files cannot be removed or downloaded from a right-click menu** - MEDIUM; the owner asked for per-row right-click Remove and Download and cannot get either in the places they use: a hub request upload row offers only Download to Current Folder, and an own-share file row offers no Download and its Remove only after hover
+  - evidence: row-menu.spec.ts:163, 226, 303 and hub-mode.spec.ts:3299, 3349, 3502 pass in the full suites: every own file and folder row offers Download to Current Folder and Remove
+  - repro: right-click the upload row of a request in hub mode; the menu holds Download to Current Folder only
+  - test-tags: E2E
+  - log: 2026-11-18T13:01:22Z @kj added
+  - log: 2026-11-18T14:11:53Z @kj fixed except Remove on a hub request upload: standalone and hub share rows now offer Download and Remove; hub upload Remove waits for the hub endpoint, owner checks in 2h
+  - log: 2026-11-18T22:16:55Z @kj closed: fixed by the row menus
 
 ## Public sharing `PUBLIC`
 

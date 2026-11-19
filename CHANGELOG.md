@@ -2,6 +2,27 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## [1.2.82] - 2026-11-19
+
+### Added
+
+- Show each hub upload's recipient name on its row, anonymous when the hub sends none
+- Remove one upload of a hub request from its right-click menu, through the hub's own delete
+- Offer Download to Current Folder on every own file and folder row, a hub folder included
+- Show a progress background on a row while Download to Current Folder copies it
+
+### Changed
+
+- Draw panel rows at one indent step at most, so a long name fits the narrow panel
+- Enlarge both collapse triangles to a 20x20 target
+- Ask once before a row menu removes a file, folder or upload, and take only that row
+
+### Fixed
+
+- Name the running fetch when the hub refuses a removal with 409, and say when an upload is gone or not yet committed
+- Keep row text above WCAG AA while the row wears the transfer wash, including on a selected row
+- Correct the CLI help and the hub design doc for per-recipient upload groups and the mounted upload delete
+
 ## [1.2.81] - 2026-11-14
 
 ### Changed

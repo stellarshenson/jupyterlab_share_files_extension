@@ -320,6 +320,21 @@ export function removeRequestUpload(
   });
 }
 
+/** Hub mode: remove one recipient upload from the hub. The hub answers 404
+ * for an upload it does not hold or has not committed, and 409
+ * `fetch_running` while it fetches the whole inbox. */
+export function removeHubUpload(
+  s: ServerConnection.ISettings,
+  id: string,
+  uploadId: string
+): Promise<{ ok: boolean }> {
+  return requestAPI(
+    `api/requests/${id}/uploads/${encodeURIComponent(uploadId)}`,
+    s,
+    { method: 'DELETE' }
+  );
+}
+
 /** Hub mode: copy one recipient upload into the workspace through the
  * hub's transfer job. `targetDir` is the folder the panel names (the file
  * browser's current directory); the server picks a fresh directory under it
@@ -365,6 +380,8 @@ export function hubReasonText(slug: string): string {
     sidecar_not_serving: 'The hub file sharing service is not serving yet.',
     tunnel_not_ready: "The hub's Cloudflare tunnel is not connected yet.",
     busy: 'The hub is busy copying other files - try again shortly.',
+    fetch_running:
+      "The hub is fetching this request's uploads right now - remove this upload again when that fetch finishes.",
     rate_limited:
       'The hub is switching tunnels too quickly - wait a few seconds and try again.',
     source_unreadable: 'The hub could not read the files from your workspace.',

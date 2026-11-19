@@ -35,13 +35,13 @@ The recipient pages open in any browser and follow the system theme by default, 
 ## Features
 
 - **Shares and requests** - read-only drops of files and folders, and upload inboxes with a per-uploader identity on the recipient page
-- **Side panel** - create, browse, rename, download, save as zip and delete to trash; drag files from the file browser onto a share, or in a standalone lab onto a folder of it; select entries of a share with Ctrl, Shift or Space and remove them in one action; Tab and Enter reach every row and menu
+- **Side panel** - create, browse, rename, download, save as zip and delete to trash; every own file and folder row offers Download to Current Folder and Remove in its right-click menu, with a progress background while the copy runs; drag files from the file browser onto a share, or in a standalone lab onto a folder of it; select entries of a share with Ctrl, Shift or Space and remove them in one action; Tab and Enter reach every row and menu
 - **Connections** - paste a peer's link to save from its share or upload to its request; a self-signed certificate is offered with its SHA-256 fingerprint and pinned once you trust it
 - **Passwords** - optional per record, generated as an xkcdpass passphrase, rate limited on the server
 - **Recipient pages** - standalone HTML in any browser, no JupyterLab needed, Light / Dark / Auto
 - **Streaming transfers** - share downloads, zips, uploads and connected saves move through disk or the response, never the server's memory
 - **Cloudflare tunnel** - optional public links, HTTPS-only, restricted to the public endpoints ([setup guide](docs/cloudflare_setup.md))
-- **Hub mode** - on a galaxahub lab the hub holds the bytes and the lab mounts no public route; an add or upload made while another runs waits in the lab until the hub takes it, and each file shows its own progress row ([design](docs/design-hub-public-zone.md))
+- **Hub mode** - on a galaxahub lab the hub holds the bytes and the lab mounts no public route; an add or upload made while another runs waits in the lab until the hub takes it, each file shows its own progress row, and a request's uploads carry their recipient's name and remove from their row menu ([design](docs/design-hub-public-zone.md))
 - **Settings** - poll interval, download limit, hidden files, tunnel autostart
 
 A link is served by the JupyterLab server that created it, so it works only while that server runs.

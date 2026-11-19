@@ -37,7 +37,9 @@ capabilities, the policy, the tunnel (its base, its delay and its ready
 verdict), how long a share copies and whether a switch on is refused
 ``busy`` meanwhile, the progress an add reports, where an upload's body
 stops until it is let go, the recipient page and the status a Cloudflare
-switch off answers, add an upload, add or close another user's record, swap
+switch off answers, add an upload (with the uploader name the listing
+returns), hold a whole-inbox fetch so every upload removal answers
+``fetch_running``, add or close another user's record, swap
 the https certificate, ring the change stream, read the recorded calls.
 """
 
@@ -134,6 +136,9 @@ class Store:
         self.pending_paths: dict[str, list[str]] = {}
         self.adding: set[str] = set()
         self.uploads: dict[str, list[dict]] = {}
+        # with `fetch_running` the hub refuses every upload removal as
+        # `fetch_running`, as it does while a whole-inbox fetch runs
+        self.fetch_running = False
         # records other users own: never in this user's `items`
         self.foreign: list[dict] = []
         # a record's password by id, and what each fs_unlock cookie unlocked:
@@ -527,6 +532,24 @@ class Uploads(_Hub):
         self.answer(200, {"uploads": STORE.uploads.get(id_, [])})
 
 
+class UploadDelete(_Hub):
+    """DELETE requests/<id>/uploads/<upload_id> - the hub's removal (hub
+    author, 2026-11-18). 409 `fetch_running` while a whole-inbox fetch runs,
+    404 for an id the hub holds no upload for."""
+
+    def delete(self, id_, upload_id):
+        if STORE.fetch_running:
+            return self.answer(409, {"reason": "fetch_running",
+                                     "message": "A fetch of this inbox is running"})
+        rows = STORE.uploads.get(id_, [])
+        kept = [u for u in rows if u["upload_id"] != upload_id]
+        if len(kept) == len(rows):
+            return self.answer(404, {"status": 404, "message": "No such upload"})
+        STORE.uploads[id_] = kept
+        STORE.nudge()
+        self.answer(204)
+
+
 class Fetch(_Hub):
     def post(self, id_, upload_id):
         dest = str(self.body().get("dest") or "")
@@ -744,10 +767,17 @@ class Control(_Base):
                 "upload_id": str(body.get("upload_id") or "u1"),
                 "filename": str(body.get("filename") or "report.csv"),
                 "size": int(body.get("size") or 7), "sha256": "0" * 64,
+                # the name the recipient gave; "" for uploads made before the
+                # hub returned one
+                "uploader": str(body.get("uploader") or ""),
                 "uploaded_at": "2026-09-03T21:00:00Z",
             })
             STORE.nudge()
             return self.answer(200, {"ok": True})
+        if action == "fetch":
+            # a whole-inbox fetch is running: every removal answers 409
+            STORE.fetch_running = bool(body.get("running"))
+            return self.answer(200, {"running": STORE.fetch_running})
         if action == "add":
             STORE.add_seconds = float(body.get("seconds") or ADD_SECONDS)
             STORE.hold_adds = bool(body.get("hold"))
@@ -879,6 +909,7 @@ def make_app():
         (rf"{prefix}/(shares|requests)/{ID}/tunnel", Tunnel),
         (rf"{prefix}/stream", Stream),
         (rf"{prefix}/requests/{ID}/uploads", Uploads),
+        (rf"{prefix}/requests/{ID}/uploads/{ID}", UploadDelete),
         (rf"{prefix}/requests/{ID}/uploads/{ID}/fetch", Fetch),
         (rf"/s/{POLICY_ID}/{ID}", RecipientPage),
         (rf"/s/{POLICY_ID}/{ID}/unlock", LinkUnlock),

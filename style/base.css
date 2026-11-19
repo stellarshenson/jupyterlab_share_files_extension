@@ -220,7 +220,7 @@
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 4px 8px;
+  padding: 2px 8px;
   background: var(--jp-layout-color2);
   border: none;
   cursor: pointer;
@@ -238,11 +238,18 @@
   background: var(--jp-layout-color3);
 }
 
+/* 20 px box around a 14 px glyph: the header is the click target and stays
+   24 px tall with its 2 px vertical padding */
 .jp-ShareFilesPanel-sectionTwisty {
-  width: 14px;
-  display: inline-block;
-  color: var(--jp-ui-font-color2);
   flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--jp-ui-font-color2);
 }
 
 .jp-ShareFilesPanel-sectionTitle {
@@ -326,6 +333,15 @@
   transition: width 0.2s ease-out;
 }
 
+/* the selected row behind it is the brand accent, so the blue wash above cannot
+   be seen there; the wash sits under the row's text so the name and size keep
+   their contrast */
+.jp-ShareFilesPanel-entry.jp-mod-selected .jp-ShareFilesPanel-itemProgress {
+  background: rgb(0 0 0 / 10%);
+  box-shadow: inset -2px 0 0 #fff;
+  z-index: -1;
+}
+
 .jp-ShareFilesPanel-itemHeader:hover {
   background: var(--jp-layout-color2);
 }
@@ -344,18 +360,24 @@
   outline-offset: -1px;
 }
 
-/* the row's expand/collapse button, drawn as the bare glyph */
+/* the row's expand/collapse button, drawn as the bare glyph: a 20 px box
+   with a 14 px glyph, inside the 24 px header */
 .jp-ShareFilesPanel-itemTwisty {
   flex: 0 0 auto;
-  width: 14px;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   border: none;
   background: transparent;
   cursor: pointer;
-  text-align: center;
   color: var(--jp-ui-font-color2);
   font-family: inherit;
-  font-size: var(--jp-ui-font-size0);
+  font-size: 14px;
+  line-height: 1;
 }
 
 .jp-ShareFilesPanel-itemTwisty:focus-visible {
@@ -480,9 +502,16 @@
   cursor: pointer;
 }
 
+/* a row wearing the transfer wash lifts its secondary text to the primary colour */
+.jp-ShareFilesPanel-entry:has(.jp-ShareFilesPanel-itemProgress)
+  .jp-ShareFilesPanel-entrySize {
+  color: var(--jp-ui-font-color1);
+}
+
 /* the file browser's mark for a selected row, after :hover so a hover keeps it */
 .jp-ShareFilesPanel-entry.jp-mod-selected {
   background: var(--jp-brand-color1);
+  isolation: isolate;
 }
 
 /* the file browser's drop mark on a selected row: the accent outline would not show on the accent background */

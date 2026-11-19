@@ -56,6 +56,7 @@ import {
   listShares,
   offlineReason,
   removeConnection,
+  removeHubUpload,
   removeRequestUpload,
   removeShareItems,
   renameShare,
@@ -126,6 +127,9 @@ const FACTORY_MIME = 'application/vnd.lumino.widget-factory';
 const HUB_ENTRY_MIME = 'application/x-share-files-hub-entry';
 // at most this many names in one remove call, so its query string stays short
 const REMOVE_CHUNK = 50;
+// the row menu's two removal labels, one command behind both
+const REMOVE_LABEL = 'Remove';
+const REMOVE_FROM_SHARE_LABEL = 'Remove from Share';
 
 /** A click that selects entries runs none of the row's other actions. */
 function selects(evt: MouseEvent): boolean {
@@ -150,6 +154,17 @@ interface IPanelState {
   shareSubPath: Map<string, string>;
   /** Cached entries by workspace-relative folder path (Contents API result). */
   subEntries: Map<string, IShareEntry[]>;
+}
+
+/** The record an entry row belongs to; its menu offers Remove where the store
+ * can address the row on its own. */
+interface IEntryOwner {
+  kind: 'share' | 'request';
+  id: string;
+  /** Standalone request uploads: the pool the upload sits in */
+  uploader?: string;
+  /** Offer Remove; false inside a folder, whose names the store refuses */
+  remove?: boolean;
 }
 
 export interface IShareFilesSettings {
@@ -1650,9 +1665,10 @@ export class ShareFilesPanel extends Widget {
           () => {
             void this._removeEntry(share.id, entry.name);
           },
-          0,
+          1,
           drillIn,
-          `share:${share.id}/${entry.name}`
+          `share:${share.id}/${entry.name}`,
+          { kind: 'share', id: share.id, remove: true }
         );
         this._attachSelect(row, share.id, '', entry.name);
         list.appendChild(takeDrop(row, entry));
@@ -1684,7 +1700,7 @@ export class ShareFilesPanel extends Widget {
     }
     for (const entry of visibleCached) {
       list.appendChild(
-        takeDrop(this._renderEntryRow(entry, undefined, 0, drillIn), entry)
+        takeDrop(this._renderEntryRow(entry, undefined, 1, drillIn), entry)
       );
     }
     return list;
@@ -1838,25 +1854,24 @@ export class ShareFilesPanel extends Widget {
   ): HTMLElement {
     const key = `share:${shareId}/${fullName}`;
     const remove = () => void this._removeEntry(shareId, fullName);
-    const row = this._renderEntryRow(entry, remove, 0, undefined, key);
+    const row = this._renderEntryRow(entry, remove, 1, undefined, key);
     row.classList.add('jp-mod-clickable');
     const menu = (evt: MouseEvent): Menu => {
       const m = new MenuSvg({ commands: this._commands });
-      // a hub entry carries no workspace path: the save reads the file from
-      // the hub (ACC-SAVE-170)
-      if (entry.type !== 'directory') {
-        m.addItem({
-          command: 'share-files-panel:save-hub-entry',
-          args: { id: shareId, name: fullName }
-        });
-        m.addItem({ type: 'separator' });
-      }
+      // a hub entry carries no workspace path: the save reads it from the
+      // hub, and a folder is fetched with the whole record and moved out
+      // (ACC-SAVE-170, ACC-ROWS-237)
+      m.addItem({
+        command: 'share-files-panel:save-hub-entry',
+        args: { id: shareId, name: fullName }
+      });
+      m.addItem({ type: 'separator' });
       m.addItem({
         command: 'share-files-panel:rename-hub-entry',
         args: { id: shareId, name: fullName }
       });
       m.addItem({
-        command: 'share-files-panel:remove-hub-entry',
+        command: 'share-files-panel:remove-entry',
         args: { id: shareId, name: fullName }
       });
       m.open(evt.clientX, evt.clientY);
@@ -1898,6 +1913,9 @@ export class ShareFilesPanel extends Widget {
     this._attachHubEntryDrag(row, shareId, fullName);
     if (entry.type === 'directory') {
       this._attachHubFolderDrop(row, shareId, fullName);
+    }
+    if (this._state.busyKeys.has(key)) {
+      row.appendChild(this._progressOverlay(null, `Downloading ${entry.name}`));
     }
     return row;
   }
@@ -2000,12 +2018,16 @@ export class ShareFilesPanel extends Widget {
 
   /** Remove `name`, or every selected entry when the selection holds it
    * (ACC-EDIT-212). Two or more ask once and give their count; one asks in
-   * hub mode only, as before (ACC-EDIT-228). */
-  private async _removeEntry(shareId: string, name: string): Promise<void> {
+   * hub mode and when the row menu asks (ACC-EDIT-228, ACC-ROWS-238). */
+  private async _removeEntry(
+    shareId: string,
+    name: string,
+    confirm = false
+  ): Promise<void> {
     const sel = this._selection;
     const ofSelection = sel?.shareId === shareId && sel.names.has(name);
     const names = ofSelection ? [...sel.names] : [name];
-    if (names.length > 1 || this._hubMode) {
+    if (names.length > 1 || this._hubMode || confirm) {
       const restore = this._keepFocus();
       const where = this._hubMode ? 'The hub' : 'The share';
       const result = await showDialog({
@@ -2016,7 +2038,7 @@ export class ShareFilesPanel extends Widget {
         body:
           names.length > 1
             ? `${where} deletes its copies. The files in your workspace stay.`
-            : 'The hub deletes its copy. The file in your workspace stays.',
+            : `${where} deletes its copy. The file in your workspace stays.`,
         buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Remove' })]
       });
       restore();
@@ -2464,7 +2486,8 @@ export class ShareFilesPanel extends Widget {
       for (const entry of uploader.entries) {
         const key = `request:${req.id}/${uploader.hash || uploader.name}/${entry.name}`;
         const row = this._hubMode
-          ? // the bytes sit on the hub's volume: fetch them in, never remove
+          ? // the bytes sit on the hub's volume: the row fetches them in, and
+            // Remove asks the hub to delete that upload
             this._renderHubUploadRow(req, entry, key)
           : this._renderEntryRow(
               entry,
@@ -2475,9 +2498,15 @@ export class ShareFilesPanel extends Widget {
                   entry.name
                 );
               },
-              1,
+              0,
               undefined,
-              key
+              key,
+              {
+                kind: 'request',
+                id: req.id,
+                uploader: uploader.hash || uploader.name,
+                remove: true
+              }
             );
         list.appendChild(row);
       }
@@ -2728,6 +2757,11 @@ export class ShareFilesPanel extends Widget {
         this._openConnectedEntryContextMenu(evt, conn, entry, url)
       );
       this._attachRemoteEntryDragSource(row, conn, entry);
+      if (this._state.busyKeys.has(`conn:${conn.key}/${entry.name}`)) {
+        row.appendChild(
+          this._progressOverlay(null, `Downloading ${entry.name}`)
+        );
+      }
       list.appendChild(row);
     }
     return list;
@@ -2860,7 +2894,12 @@ export class ShareFilesPanel extends Widget {
     name: string,
     destDir: string
   ): Promise<void> {
+    const key = `conn:${connKey}/${name}`;
+    if (this._state.busyKeys.has(key)) {
+      return;
+    }
     this._state.busyKeys.add(connKey);
+    this._state.busyKeys.add(key);
     this._render();
     try {
       await saveFromConnection(
@@ -2878,6 +2917,7 @@ export class ShareFilesPanel extends Widget {
       });
     } finally {
       this._state.busyKeys.delete(connKey);
+      this._state.busyKeys.delete(key);
       this._render();
     }
   }
@@ -2968,18 +3008,23 @@ export class ShareFilesPanel extends Widget {
   }
 
   /** One upload under a hub request: the menu saves it into the current
-   * folder; the bytes sit on the hub's volume, so nothing removes it here. */
+   * folder, or removes it from the hub (hub author, 2026-11-18). */
   private _renderHubUploadRow(
     req: IRequest,
     entry: IShareEntry,
     key: string
   ): HTMLElement {
-    const row = this._renderEntryRow(entry, undefined, 1, undefined, key);
+    const row = this._renderEntryRow(entry, undefined, 0, undefined, key);
     const menu = (evt: MouseEvent): Menu => {
       const m = new MenuSvg({ commands: this._commands });
       m.addItem({
         command: 'share-files-panel:save-hub-upload',
         args: { id: req.id, uploadId: entry.upload_id || '' }
+      });
+      m.addItem({ type: 'separator' });
+      m.addItem({
+        command: 'share-files-panel:remove-entry',
+        args: { hub: true, id: req.id, uploadId: entry.upload_id || '' }
       });
       m.open(evt.clientX, evt.clientY);
       return m;
@@ -2990,28 +3035,31 @@ export class ShareFilesPanel extends Widget {
       menu(evt);
     });
     this._attachKeyboardMenu(row, key, menu);
+    if (this._state.busyKeys.has(key)) {
+      row.appendChild(this._progressOverlay(null, `Downloading ${entry.name}`));
+    }
     return row;
   }
 
   private _renderEntryRow(
     entry: IShareEntry,
     onRemove?: () => void,
-    indentLevel = 0,
+    // indent steps before the icon; the row's own left padding is not one
+    indentSteps = 1,
     onOpenFolder?: (entry: IShareEntry) => void,
     // names the row's button across a re-render (see `_byFocusKey`); rows
     // without a button need none
-    focusKey?: string
+    focusKey?: string,
+    // the record whose row menu offers Remove
+    owner?: IEntryOwner
   ): HTMLElement {
     const row = document.createElement('div');
     row.className = 'jp-ShareFilesPanel-entry';
-    for (let i = 0; i < indentLevel; i++) {
+    for (let i = 0; i < indentSteps; i++) {
       const ind = document.createElement('span');
       ind.className = 'jp-ShareFilesPanel-entryIndent';
       row.appendChild(ind);
     }
-    const indent = document.createElement('span');
-    indent.className = 'jp-ShareFilesPanel-entryIndent';
-    row.appendChild(indent);
     const iconNode = this._svgNode(
       entry.type === 'directory' ? folderIcon.svgstr : fileIcon.svgstr,
       'jp-ShareFilesPanel-entryIcon'
@@ -3043,14 +3091,14 @@ export class ShareFilesPanel extends Widget {
       row.addEventListener('contextmenu', evt => {
         evt.preventDefault();
         evt.stopPropagation();
-        this._openEntryContextMenu(evt, entry);
+        this._openEntryContextMenu(evt, entry, owner);
       });
       this._attachKeyboardMenu(
         row,
         focusKey ?? `entry:${entry.path}`,
         // the attach sits inside `if (entry.path)`, so the opener never
         // fires without one
-        evt => this._openEntryContextMenu(evt, entry) as Menu
+        evt => this._openEntryContextMenu(evt, entry, owner) as Menu
       );
       const open = (evt: Event) => {
         evt.preventDefault();
@@ -3075,6 +3123,11 @@ export class ShareFilesPanel extends Widget {
         }
       });
       this._attachEntryDragSource(row, entry);
+    }
+    // the copy into the current folder reports no fraction, so the running
+    // row wears the fixed wash (ACC-ROWS-242)
+    if (entry.path && this._state.busyKeys.has(`download:${entry.path}`)) {
+      row.appendChild(this._progressOverlay(null, `Downloading ${entry.name}`));
     }
     return row;
   }
@@ -3220,7 +3273,8 @@ export class ShareFilesPanel extends Widget {
 
   private _openEntryContextMenu(
     evt: MouseEvent,
-    entry: IShareEntry
+    entry: IShareEntry,
+    owner?: IEntryOwner
   ): Menu | undefined {
     if (!entry.path) {
       return undefined;
@@ -3239,6 +3293,16 @@ export class ShareFilesPanel extends Widget {
       command: 'share-files-panel:copy-local-entry',
       args: { path: entry.path }
     });
+    if (owner?.remove) {
+      menu.addItem({ type: 'separator' });
+      menu.addItem({
+        command: 'share-files-panel:remove-entry',
+        args:
+          owner.kind === 'share'
+            ? { id: owner.id, name: entry.name }
+            : { id: owner.id, uploader: owner.uploader || '', name: entry.name }
+      });
+    }
     menu.open(evt.clientX, evt.clientY);
     return menu;
   }
@@ -3309,14 +3373,35 @@ export class ShareFilesPanel extends Widget {
         execute: args =>
           this._renameHubEntry(String(args.id || ''), String(args.name || ''))
       });
-      c.addCommand('share-files-panel:remove-hub-entry', {
+      c.addCommand('share-files-panel:remove-entry', {
         icon: closeIcon,
-        label: 'Remove from Share',
+        label: args =>
+          args.hub || args.uploader !== undefined
+            ? REMOVE_LABEL
+            : REMOVE_FROM_SHARE_LABEL,
         execute: args => {
-          void this._removeEntry(
-            String(args.id || ''),
-            String(args.name || '')
-          );
+          const id = String(args.id || '');
+          if (args.hub) {
+            const req = this._state.requests.find(r => r.id === id);
+            for (const uploader of req?.uploaders || []) {
+              const entry = uploader.entries.find(
+                e => e.upload_id === args.uploadId
+              );
+              if (req && entry) {
+                void this._removeHubUpload(req, entry);
+                return;
+              }
+            }
+          } else if (args.uploader === undefined) {
+            void this._removeEntry(id, String(args.name || ''), true);
+          } else {
+            void this._removeUpload(
+              id,
+              String(args.uploader || ''),
+              String(args.name || ''),
+              true
+            );
+          }
         }
       });
       c.addCommand('share-files-panel:delete-request', {
@@ -3385,7 +3470,11 @@ export class ShareFilesPanel extends Widget {
               e => e.upload_id === args.uploadId
             );
             if (req && entry) {
-              return this._fetchUploadFlow(req, entry);
+              return this._fetchUploadFlow(
+                req,
+                entry,
+                `request:${req.id}/${uploader.hash || uploader.name}/${entry.name}`
+              );
             }
           }
         }
@@ -3646,7 +3735,13 @@ export class ShareFilesPanel extends Widget {
    * (ACC-SAVE-170). The hub reads no single entry, so the server fetches the
    * record and moves this one out of it. */
   async saveHubEntryFlow(shareId: string, name: string): Promise<void> {
+    const key = `share:${shareId}/${name}`;
+    if (this._state.busyKeys.has(key)) {
+      return;
+    }
     const pending = Notification.emit(`Saving ${name}...`, 'in-progress');
+    this._state.busyKeys.add(key);
+    this._render();
     try {
       const { path } = await saveRecord(
         this._serverSettings,
@@ -3669,6 +3764,9 @@ export class ShareFilesPanel extends Widget {
         type: 'error',
         autoClose: 8000
       });
+    } finally {
+      this._state.busyKeys.delete(key);
+      this._render();
     }
   }
 
@@ -3711,7 +3809,14 @@ export class ShareFilesPanel extends Widget {
     sourcePath: string,
     entryName: string
   ): Promise<void> {
+    const key = `download:${sourcePath}`;
+    // one copy per row at a time: a second would race for the same name
+    if (this._state.busyKeys.has(key)) {
+      return;
+    }
     const target = this._getCurrentDir();
+    this._state.busyKeys.add(key);
+    this._render();
     try {
       await this._contents.copy(sourcePath, target);
       const dest = target ? `./${target}/` : './';
@@ -3722,6 +3827,9 @@ export class ShareFilesPanel extends Widget {
       Notification.error(`Could not copy: ${err.message || err}`, {
         autoClose: 8000
       });
+    } finally {
+      this._state.busyKeys.delete(key);
+      this._render();
     }
   }
 
@@ -3969,8 +4077,24 @@ export class ShareFilesPanel extends Widget {
   private async _removeUpload(
     requestId: string,
     uploader: string,
-    name: string
+    name: string,
+    confirm = false
   ): Promise<void> {
+    if (confirm) {
+      const restore = this._keepFocus();
+      const result = await showDialog({
+        title: `Remove "${name}" from the request?`,
+        body: `The request deletes its copy. The uploader still has the original file.`,
+        buttons: [
+          Dialog.cancelButton(),
+          Dialog.warnButton({ label: REMOVE_LABEL })
+        ]
+      });
+      restore();
+      if (!result.button.accept) {
+        return;
+      }
+    }
     this._state.busyKeys.add(requestId);
     this._render();
     try {
@@ -3990,16 +4114,69 @@ export class ShareFilesPanel extends Widget {
     }
   }
 
-  /** Hub mode: copy one recipient upload into the file browser's current
-   * folder through the hub's transfer job - the bytes never pass the panel. */
-  private async _fetchUploadFlow(
+  /** Hub mode: remove one recipient upload from the hub. The hub owns the
+   * bytes, so it does the removal: 204 takes the row away, 404 says the
+   * upload is gone or not yet committed, and 409 fetch_running names the
+   * whole-inbox fetch and leaves the row in place. */
+  private async _removeHubUpload(
     req: IRequest,
     entry: IShareEntry
   ): Promise<void> {
     if (!entry.upload_id) {
       return;
     }
+    const restore = this._keepFocus();
+    const result = await showDialog({
+      title: `Remove "${entry.name}" from the request?`,
+      body: `The request deletes its copy. The uploader still has the original file.`,
+      buttons: [
+        Dialog.cancelButton(),
+        Dialog.warnButton({ label: REMOVE_LABEL })
+      ]
+    });
+    restore();
+    if (!result.button.accept) {
+      return;
+    }
     this._state.busyKeys.add(req.id);
+    this._render();
+    try {
+      await removeHubUpload(this._serverSettings, req.id, entry.upload_id);
+    } catch (err: any) {
+      if (err?.reason === 'fetch_running') {
+        Notification.warning(hubReasonText('fetch_running'), {
+          autoClose: 8000
+        });
+      } else if (err?.response?.status === 404) {
+        Notification.warning(
+          'That upload is gone, or the hub has not committed it yet.',
+          { autoClose: 8000 }
+        );
+      } else {
+        Notification.error(`Could not remove: ${err.message || err}`, {
+          autoClose: 8000
+        });
+      }
+    } finally {
+      this._state.busyKeys.delete(req.id);
+      // a running fetch leaves the upload where it is; the refresh only
+      // clears the row's spinner and reads the hub's current list
+      await this.refresh();
+    }
+  }
+
+  /** Hub mode: copy one recipient upload into the file browser's current
+   * folder through the hub's transfer job - the bytes never pass the panel. */
+  private async _fetchUploadFlow(
+    req: IRequest,
+    entry: IShareEntry,
+    key: string
+  ): Promise<void> {
+    if (!entry.upload_id || this._state.busyKeys.has(key)) {
+      return;
+    }
+    this._state.busyKeys.add(req.id);
+    this._state.busyKeys.add(key);
     this._render();
     try {
       const res = await fetchRequestUpload(
@@ -4018,6 +4195,7 @@ export class ShareFilesPanel extends Widget {
       });
     } finally {
       this._state.busyKeys.delete(req.id);
+      this._state.busyKeys.delete(key);
       this._render();
     }
   }
@@ -5342,18 +5520,27 @@ export class ShareFilesPanel extends Widget {
   /**
    * The layer a row in transfer wears: an accent tint lying over the row
    * from its left edge to `fraction`, transparent enough to read the row
-   * through (ACC-PROG-172). It is the only place the fraction is stated, so
-   * it says it as a progressbar for a screen reader too.
+   * through (ACC-PROG-172). `fraction` null paints the whole row as a fixed
+   * wash for a copy whose source reports no progress; the aria value is
+   * omitted then, which a reader takes as indeterminate.
    */
-  private _progressOverlay(fraction: number, label: string): HTMLElement {
-    const pct = Math.max(0, Math.min(100, Math.floor(100 * fraction)));
+  private _progressOverlay(
+    fraction: number | null,
+    label: string
+  ): HTMLElement {
+    const pct =
+      fraction === null
+        ? null
+        : Math.max(0, Math.min(100, Math.floor(100 * fraction)));
     const fill = document.createElement('div');
     fill.className = 'jp-ShareFilesPanel-itemProgress';
-    fill.style.width = `${pct}%`;
+    fill.style.width = `${pct ?? 100}%`;
     fill.setAttribute('role', 'progressbar');
     fill.setAttribute('aria-valuemin', '0');
     fill.setAttribute('aria-valuemax', '100');
-    fill.setAttribute('aria-valuenow', String(pct));
+    if (pct !== null) {
+      fill.setAttribute('aria-valuenow', String(pct));
+    }
     fill.setAttribute('aria-label', label);
     return fill;
   }

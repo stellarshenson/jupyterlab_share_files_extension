@@ -153,7 +153,8 @@ test('every entry of a share row and a share entry menu carries an icon', async 
   await expect(items).toHaveText([
     'Download to Current Folder',
     'Show in File Browser',
-    'Copy'
+    'Copy',
+    'Remove from Share'
   ]);
   expect(await bare.allTextContents()).toEqual([]);
   expect(await pathOf('Download to Current Folder')).toBe(ARROW);

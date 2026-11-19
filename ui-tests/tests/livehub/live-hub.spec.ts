@@ -300,6 +300,58 @@ test('a request is created on the hub and deleted', async ({ page }) => {
   await expect(item(page, name)).toHaveCount(0);
 });
 
+test('a request upload of its own is removed from its menu on the real hub', async ({
+  page,
+  request
+}) => {
+  // ACC-ROWS-239: the hub deletes one upload by id; the request carries the
+  // run's prefix, so the sweep after the test deletes the request itself
+  test.setTimeout(240000);
+  const name = `${RUN}-upload`;
+  const created = await api(page, 'POST', `${API}/requests`, { name });
+  expect(created.status).toBe(200);
+  // a recipient uploads into the request through its link
+  const up = await request.post(`${created.data.link}/u`, {
+    headers: { 'X-Filename': 'remove-me.txt' },
+    data: 'live upload\n'
+  });
+  expect(up.status()).toBe(200);
+  await expect
+    .poll(
+      async () => (await row(page, 'requests', created.data.id))?.upload_count,
+      {
+        timeout: 60000,
+        message: 'the hub lists the recipient upload'
+      }
+    )
+    .toBe(1);
+  await openPanel(page);
+  await refreshPanel(page);
+  const requestRow = item(page, name);
+  await requestRow.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const upload = requestRow.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'remove-me.txt'
+  });
+  await expect(upload).toBeVisible();
+  await upload.click({ button: 'right' });
+  await page.locator('.lm-Menu .lm-Menu-item', { hasText: /^Remove$/ }).click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText(
+    'Remove "remove-me.txt" from the request?'
+  );
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(upload).toHaveCount(0);
+  await expect
+    .poll(
+      async () => (await row(page, 'requests', created.data.id))?.upload_count,
+      {
+        timeout: 60000,
+        message: 'the hub no longer lists the upload'
+      }
+    )
+    .toBe(0);
+});
+
 test('the hub refuses what it cannot do and the lab relays the reason', async ({
   page,
   tmpPath

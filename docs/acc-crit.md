@@ -1575,3 +1575,64 @@ The jupyterlab_share_files CLI and what it ships for AI assistants
   - log: 2026-10-02T01:04:43Z @kj skill renamed and cut to 19 lines, shared-data line added, README has both link lines; a wheel built into the scratchpad lists the skill under data/share/jupyter/agents/skills; test_installed_agent_skill_matches_repository fails until make install puts the copy under sys.prefix
   - log: 2026-10-02T01:14:56Z @kj closed
 
+## Panel row layout and row menus `ROWS`
+
+Indent depth, collapse triangle size, and the per-row Download and Remove menu
+
+- log: 2026-11-18T13:00:53Z @kj category created
+
+- [x] `ACC-ROWS-235-INDENT` **Row indent depth** - MEDIUM; a request upload row sits at the indent of its uploader group, not one step deeper; every entry row takes at most one indent step
+  - evidence: row-menu.spec.ts:120 in the full standalone suite 55 of 55: the upload row icon x equals the uploader group icon x, every entry row carries at most one indent span
+  - test: Galata: open a request holding one upload and compare the upload row icon x with the uploader group icon x
+  - test-tags: E2E
+  - log: 2026-11-18T13:00:53Z @kj added
+  - log: 2026-11-18T14:11:49Z @kj edited text "a request upload row sits at the indent of its uploader group, not one step deeper; a row takes at most one indent step, so a 30-character file name shows in full in the 280 px panel" -> "MEDIUM; a request upload row sits at the indent of its uploader group, not one step deeper; every entry row takes at most one indent step"; importance "MEDIUM" -> "MEDIUM"; test "Galata: open a request holding one upload, assert the upload row name is not truncated; compare its left edge with the uploader group icon" -> "Galata: open a request holding one upload and compare the upload row icon x with the uploader group icon x"; test-tags "E2E" -> "E2E"; reason: owner chose indent-only on 2026-11-18: the 30-character name needs 192 px and has 146 px at the panel width, spent by the size label and the hover remove button, not by the indent
+  - log: 2026-11-18T14:11:49Z @kj amended on owner decision: indent assertion only, name truncation stays normal panel ellipsis; verifier measured 192 px needed, 146 px available
+  - log: 2026-11-18T22:16:48Z @kj closed: indent shipped
+- [x] `ACC-ROWS-236-TWISTY` **Collapse triangle size** - MEDIUM; the collapse triangle of a section header and of a share or request row paints 12 px or taller, and its click target is at least 20 px square
+  - evidence: row-menu.spec.ts:76 in the full standalone suite 55 of 55: sectionTwisty and itemTwisty boxes 20x20, computed font 14 px, section and item headers 24 px
+  - test: Galata: read the bounding box and computed font size of .jp-ShareFilesPanel-sectionTwisty and .jp-ShareFilesPanel-itemTwisty
+  - test-tags: E2E
+  - log: 2026-11-18T13:00:56Z @kj added
+  - log: 2026-11-18T22:16:48Z @kj closed: twisties shipped
+- [x] `ACC-ROWS-237-DOWNLOAD` **Download in the row menu** - HIGH; the right-click menu of an own file or folder row offers Download to Current Folder, which copies that file or folder into the folder open in the file browser; own shares in both modes and request uploads in both modes; the browser Downloads folder is not used
+  - evidence: standalone row-menu.spec.ts:226 and hub hub-mode.spec.ts:3299 and :3349 pass in the full suites 55 of 55 and 105 of 105: file and folder land in the open folder, a hub folder moved out of the whole-record fetch
+  - test: Galata: right-click one file row and one folder row of an own share in both modes, choose Download to Current Folder, assert the file and the folder land in the open folder with their bytes
+  - test-tags: E2E
+  - log: 2026-11-18T13:00:59Z @kj added
+  - log: 2026-11-18T17:46:06Z @kj edited text "the right-click menu of an own file row offers Download, which saves that file to the Downloads folder of the browser; on an own folder row Download saves a zip named after the folder; own shares in both modes and request uploads in both modes" -> "HIGH; the right-click menu of an own file or folder row offers Download to Current Folder, which copies that file or folder into the folder open in the file browser; own shares in both modes and request uploads in both modes; the browser Downloads folder is not used"; importance "HIGH" -> "HIGH"; test "Galata: right-click a file row of an own share, assert a Download item, click it and assert one download; repeat on a folder row and assert a zip" -> "Galata: right-click one file row and one folder row of an own share in both modes, choose Download to Current Folder, assert the file and the folder land in the open folder with their bytes"; test-tags "E2E" -> "E2E"; reason: owner correction 2026-11-18: downloading is to the folder in the lab, not the browser; the browser-download route and menu item built in this campaign are unrequested and will be reverted
+  - log: 2026-11-18T17:46:06Z @kj amended on owner correction: the action is Download to Current Folder, not a browser download; the browser route is being reverted
+  - log: 2026-11-18T22:16:49Z @kj closed: download to the lab folder shipped
+- [x] `ACC-ROWS-238-REMOVE` **Remove in the row menu** - HIGH; the right-click menu of an own file or folder row offers Remove, which removes only that item after one confirmation; own shares in both modes; the items left keep their place in the list
+  - evidence: row-menu.spec.ts:303 and the hub remove tests at hub-mode.spec.ts:1603 pass in the full suites 55 of 55 and 105 of 105: one confirmation, only the chosen row goes, the other row stays
+  - test: Galata: right-click one file of a two-file share, choose Remove, confirm, assert the other file stays listed
+  - test-tags: E2E
+  - log: 2026-11-18T13:01:02Z @kj added
+  - log: 2026-11-18T22:16:49Z @kj closed: row menu Remove shipped
+- [x] `ACC-ROWS-239-UPLOAD-REMOVE` **Remove an upload from its row menu** - MEDIUM; the right-click menu of a request upload row offers Remove, which removes only that upload after one confirmation, in standalone and on the hub; on the hub the bytes on the hub volume go with it
+  - evidence: row-menu.spec.ts:163 standalone and hub-mode.spec.ts:3502 pass in the full suites 55 of 55 and 105 of 105: one confirmation, one DELETE carrying the lab token, only the chosen upload goes
+  - test: live hub and standalone: right-click one of two uploads of a request, choose Remove, confirm, assert the other upload stays listed
+  - test-tags: E2E
+  - log: 2026-11-18T13:01:07Z @kj added
+  - log: 2026-11-18T14:11:53Z @kj standalone met; hub half blocked: 10 delete shapes on the real hub all 404/405 and the upload survived; owner 2026-11-18: the hub will have it shortly, check again in 2h
+  - log: 2026-11-18T22:16:53Z @kj closed: upload Remove shipped in both modes
+- [x] `ACC-ROWS-240-HUB-UPLOADER` **Uploader name on a hub upload row** - MEDIUM; a hub request upload row shows the uploader name the recipient gave on the request page, as drawn from the listing uploader field; an upload made before the hub build carries an empty name and shows anonymous
+  - evidence: hub-mode.spec.ts:3611 asserts the groups Ada and anonymous; pytest test_request_from_item_groups_uploads_by_the_hubs_uploader_name passes in 663
+  - test: mock hub: list a request whose uploads carry uploader ada and an empty one, assert the rows read ada and anonymous
+  - test-tags: E2E
+  - log: 2026-11-18T16:44:12Z @kj added
+  - log: 2026-11-18T22:16:54Z @kj closed: uploader name shipped
+- [x] `ACC-ROWS-241-REMOVE-REFUSED` **A hub Remove refused while a fetch runs** - MEDIUM; when the hub answers a Remove with 409 fetch_running, the panel names the running fetch as the reason and the upload stays in the list
+  - evidence: hub-mode.spec.ts:3573 passes in 105 of 105: the fetch_running warning names the running fetch and the row stays; pytest test_removing_a_hub_upload_relays_204_404_and_409 in 663
+  - test: mock hub: answer DELETE with 409 fetch_running, choose Remove, assert the warning names the running fetch and the row stays
+  - test-tags: E2E
+  - log: 2026-11-18T16:44:12Z @kj added
+  - log: 2026-11-18T22:16:54Z @kj closed: 409 refusal shipped
+- [x] `ACC-ROWS-242-DOWNLOAD-PROGRESS` **Download progress background** - MEDIUM; while a Download to Current Folder runs, the row it copies paints the panel's transfer background in the same look as an add row, at the fraction when the copy reports one and as a fixed wash otherwise; the row clears when the copy ends
+  - evidence: row-menu.spec.ts:304 and hub-mode.spec.ts:3412 pass in 55 of 55 and 105 of 105: the row wears the wash while the copy runs, no aria-valuenow, clears on success and failure, size text lifted
+  - test: Galata: start a Download to Current Folder on a file and on a folder in both modes, assert the row carries the progress layer while the copy runs and loses it when it ends
+  - test-tags: E2E
+  - log: 2026-11-18T18:05:44Z @kj added
+  - log: 2026-11-18T18:06:57Z @kj owner picked option A from the row-progress mockup on 2026-11-18: downloads reuse the add look, rgb(33 150 243 / 20%) wash with an inset -2px 0 0 edge at the fraction
+  - log: 2026-11-18T22:16:54Z @kj closed: download progress shipped
+

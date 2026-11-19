@@ -740,7 +740,8 @@ def build_parser() -> argparse.ArgumentParser:
         "print the files uploaded into one of your requests, grouped by uploader: hash, name,\n"
         "and each file's name, path and type. The listing names every file: use --json and\n"
         "keep the fields you need.\n\n"
-        "hub: all files are in one group named Uploads, with no path.",
+        "hub: files are grouped by uploader name, an empty name shown as anonymous,\n"
+        "with no path.",
         "  jupyterlab_share_files list-request-uploads RQ77ZZ12",
     )
     p.add_argument("id", help="the request's id, as list-items prints it")

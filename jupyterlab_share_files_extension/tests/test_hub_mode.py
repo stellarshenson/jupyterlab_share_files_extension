@@ -93,6 +93,10 @@ def test_hub_mode_registers_no_public_and_no_static_route(hub_env):
         assert "/api/" in pattern, pattern
 
 
+def test_hub_table_keeps_its_routes(hub_env):
+    assert len(_table()) == 20
+
+
 def test_every_hub_route_method_is_authenticated(hub_env):
     """Every HTTP method the extension itself implements on a registered
     handler carries the ``tornado.web.authenticated`` wrapper."""
@@ -389,11 +393,30 @@ def test_request_from_item_groups_uploads_and_derives_counts():
     assert row["last_seen_upload_at"] == 5
     assert row["has_password"] is True
     assert len(row["uploaders"]) == 1
+    # an upload made before the hub returned an uploader shows as anonymous
+    assert row["uploaders"][0]["name"] == "anonymous"
     entries = row["uploaders"][0]["entries"]
     assert [e["upload_id"] for e in entries] == ["u1", "u2"]
     assert entries[1] == {"name": "b.csv", "type": "file", "size": 20, "upload_id": "u2", "mtime": _epoch("2026-09-03T22:00:00Z")}
     empty = hub_routes.request_from_item(LIVE_REQUEST, [], "")
     assert empty["uploaders"] == [] and empty["upload_count"] == 0 and empty["last_upload_at"] == 0
+
+
+def test_request_from_item_groups_uploads_by_the_hubs_uploader_name():
+    """The hub listing names each upload's uploader and no identity, so
+    uploads are grouped by that name; an absent name is the anonymous pool."""
+    uploads = [
+        {"upload_id": "u1", "filename": "a.csv", "uploader": "Ada"},
+        {"upload_id": "u2", "filename": "b.csv", "uploader": "Ada"},
+        {"upload_id": "u3", "filename": "c.csv", "uploader": ""},
+        {"upload_id": "u4", "filename": "d.csv"},
+    ]
+    row = hub_routes.request_from_item(LIVE_REQUEST, uploads, "")
+    assert [
+        (group["name"], [e["name"] for e in group["entries"]])
+        for group in row["uploaders"]
+    ] == [("Ada", ["a.csv", "b.csv"]), ("anonymous", ["c.csv", "d.csv"])]
+    assert row["upload_count"] == 4
 
 
 def test_request_from_item_drops_excluded_uploads():

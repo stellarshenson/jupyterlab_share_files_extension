@@ -2156,7 +2156,10 @@ test('a recipient upload is fetched into the workspace through the hub', async (
   await expect(upload).toBeVisible();
   // the save is the row's menu item, not a button on the row
   await expect(upload.locator('button')).toHaveCount(0);
-  expect(await menuOf(page, upload)).toEqual(['Download to Current Folder']);
+  expect(await menuOf(page, upload)).toEqual([
+    'Download to Current Folder',
+    'Remove'
+  ]);
   await upload.click({ button: 'right' });
   await page
     .locator('.lm-Menu .lm-Menu-item', {
@@ -3341,6 +3344,312 @@ test('a file of a hub share saves to the current folder from its menu', async ({
       { message: 'the record is fetched so the entry can be moved out' }
     )
     .toBe(1);
+});
+
+test('a folder of a hub share saves to the current folder from its menu', async ({
+  page,
+  request,
+  tmpPath
+}) => {
+  // ACC-ROWS-237: the hub reads no folder by name either, so the server
+  // fetches the record whole and moves this one folder into the folder the
+  // file browser shows; no archive reaches the browser.
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'Has Folder',
+    paths: []
+  });
+  await request.post(`${HUB}/_control/files`, {
+    data: { id: made.data.id, names: ['picked.csv', 'folder/inner.csv'] }
+  });
+  await openPanel(page);
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Has Folder'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const entry = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'folder/'
+  });
+  await expect(entry).toBeVisible();
+  expect(await menuOf(page, entry)).toEqual([
+    'Download to Current Folder',
+    'Rename',
+    'Remove from Share'
+  ]);
+  // the folder the file browser shows is the one this save writes into
+  expect(await page.filebrowser.getCurrentDirectory()).toBe(tmpPath);
+  await entry.click({ button: 'right' });
+  await page
+    .locator('.lm-Menu .lm-Menu-item', {
+      hasText: 'Download to Current Folder'
+    })
+    .click();
+
+  await expect
+    .poll(() => page.contents.fileExists(`${tmpPath}/folder/inner.csv`), {
+      timeout: 15000,
+      message: 'the folder lands in the folder the file browser shows'
+    })
+    .toBe(true);
+  // the record is fetched once, so the folder can be moved out of it
+  await expect
+    .poll(
+      async () =>
+        (
+          await (await request.get(`${HUB}/_control/calls`)).json()
+        ).calls.filter((c: any) => c.path.endsWith('/fetch')).length,
+      { message: 'the record is fetched so the folder can be moved out' }
+    )
+    .toBe(1);
+  // nothing of the fetched record is left behind beside the folder
+  const names = (
+    await page.contents.getContentMetadata(tmpPath, 'directory')
+  )?.content.map((c: any) => c.name);
+  expect(names.filter((n: string) => n.startsWith('.'))).toEqual([]);
+  expect(names).not.toContain('picked.csv');
+});
+
+test('a hub file and folder row wear the transfer layer while the save runs and clear it after', async ({
+  page,
+  request,
+  tmpPath
+}) => {
+  // ACC-ROWS-242 on a hub: the save is one opaque route answer, so the
+  // running row carries the fixed wash over its whole width, and clears on
+  // success and failure
+  const made = await api(page, 'POST', `${API}/shares`, {
+    name: 'Layered hub',
+    paths: []
+  });
+  await request.post(`${HUB}/_control/files`, {
+    data: {
+      id: made.data.id,
+      names: ['picked.csv', 'folder/inner.csv']
+    }
+  });
+  await openPanel(page);
+  await refreshPanel(page);
+  const item = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Layered hub'
+  });
+  await item.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const row = (name: string) =>
+    item.locator('.jp-ShareFilesPanel-entry', { hasText: name });
+  const layer = (name: string) =>
+    row(name).locator('.jp-ShareFilesPanel-itemProgress');
+  const pick = async (name: string) => {
+    await row(name).click({ button: 'right' });
+    await page
+      .locator('.lm-Menu .lm-Menu-item', {
+        hasText: 'Download to Current Folder'
+      })
+      .click();
+  };
+  // hold the lab's save answer: the hub writes only when it is released
+  const held: any[] = [];
+  await page.route(`**${API}/shares/*/save*`, async (route: any) => {
+    if (route.request().method() === 'POST') {
+      held.push(route);
+      return;
+    }
+    await route.continue();
+  });
+
+  await pick('picked.csv');
+  await expect(layer('picked.csv')).toHaveCount(1);
+  await expect(layer('picked.csv')).toHaveAttribute(
+    'aria-label',
+    'Downloading picked.csv'
+  );
+  // no fraction is reported, so no value is stated
+  expect(await layer('picked.csv').getAttribute('aria-valuenow')).toBeNull();
+  const fileLayer = (await layer('picked.csv').boundingBox())!;
+  const fileRow = (await row('picked.csv').boundingBox())!;
+  expect(Math.abs(fileLayer.width - fileRow.width)).toBeLessThan(2);
+  await expect.poll(() => held.length).toBe(1);
+  await held.shift().continue();
+  await expect(layer('picked.csv')).toHaveCount(0);
+  await expect
+    .poll(() => page.contents.fileExists(`${tmpPath}/picked.csv`), {
+      timeout: 15000
+    })
+    .toBe(true);
+
+  // the folder row wears it too
+  await pick('folder/');
+  await expect(layer('folder/')).toHaveCount(1);
+  await expect(layer('folder/')).toHaveAttribute(
+    'aria-label',
+    'Downloading folder'
+  );
+  await expect.poll(() => held.length).toBe(1);
+  await held.shift().continue();
+  await expect(layer('folder/')).toHaveCount(0);
+  await expect
+    .poll(() => page.contents.fileExists(`${tmpPath}/folder/inner.csv`), {
+      timeout: 15000
+    })
+    .toBe(true);
+
+  // a refused save clears the layer as well
+  await pick('picked.csv');
+  await expect(layer('picked.csv')).toHaveCount(1);
+  await expect.poll(() => held.length).toBe(1);
+  await held.shift().fulfill({ status: 500, json: { message: 'save failed' } });
+  await expect(layer('picked.csv')).toHaveCount(0);
+});
+
+test('a hub request upload removes from its menu and leaves the other row', async ({
+  page,
+  request
+}) => {
+  // ACC-ROWS-239: the hub deletes one upload by its id (hub author, 2026-11-18)
+  await openPanel(page);
+  const created = await api(page, 'POST', `${API}/requests`, {
+    name: 'Remove Inbox'
+  });
+  expect(created.status).toBe(200);
+  for (const [upload_id, filename] of [
+    ['keep', 'keep.csv'],
+    ['drop', 'drop.csv']
+  ]) {
+    await request.post(`${HUB}/_control/upload`, {
+      data: {
+        request_id: created.data.id,
+        upload_id,
+        filename,
+        uploader: 'Ada'
+      }
+    });
+  }
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Remove Inbox'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const drop = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'drop.csv'
+  });
+  const keep = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'keep.csv'
+  });
+  const dialog = page.locator('.jp-Dialog');
+  // cancel once: both uploads stay
+  await drop.click({ button: 'right' });
+  await page.locator('.lm-Menu .lm-Menu-item', { hasText: /^Remove$/ }).click();
+  await expect(dialog).toContainText('Remove "drop.csv" from the request?');
+  await dialog.locator('button.jp-mod-reject').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(drop).toHaveCount(1);
+  // accept: only that upload goes, the other keeps its place
+  await drop.click({ button: 'right' });
+  await page.locator('.lm-Menu .lm-Menu-item', { hasText: /^Remove$/ }).click();
+  await expect(dialog).toContainText('Remove "drop.csv" from the request?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect(drop).toHaveCount(0);
+  await expect(keep).toHaveCount(1);
+  // the proof is the hub's side: one delete, carrying the lab token
+  const deletes = (
+    (await (await request.get(`${HUB}/_control/calls`)).json()).calls as any[]
+  ).filter(
+    (c: any) =>
+      c.method === 'DELETE' &&
+      c.path.endsWith(`/requests/${created.data.id}/uploads/drop`)
+  );
+  expect(deletes.length).toBe(1);
+  expect(deletes[0].auth).toBe('token test-token');
+  const listed = async () =>
+    (
+      await request.get(
+        `${HUB}/hub/api/fileshare/requests/${created.data.id}/uploads`,
+        { headers: { Authorization: 'token test-token' } }
+      )
+    ).json();
+  await expect
+    .poll(async () => (await listed()).uploads.map((u: any) => u.filename))
+    .toEqual(['keep.csv']);
+});
+
+test('a hub upload removal during a whole-inbox fetch warns and leaves the row', async ({
+  page,
+  request
+}) => {
+  // the hub answers 409 fetch_running; the row stays and the fetch is named
+  await openPanel(page);
+  const created = await api(page, 'POST', `${API}/requests`, {
+    name: 'Busy Inbox'
+  });
+  await request.post(`${HUB}/_control/upload`, {
+    data: {
+      request_id: created.data.id,
+      upload_id: 'u1',
+      filename: 'busy.csv',
+      uploader: 'Ada'
+    }
+  });
+  await request.post(`${HUB}/_control/fetch`, { data: { running: true } });
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Busy Inbox'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  const upload = row.locator('.jp-ShareFilesPanel-entry', {
+    hasText: 'busy.csv'
+  });
+  await upload.click({ button: 'right' });
+  await page.locator('.lm-Menu .lm-Menu-item', { hasText: /^Remove$/ }).click();
+  const dialog = page.locator('.jp-Dialog');
+  await expect(dialog).toContainText('Remove "busy.csv" from the request?');
+  await dialog.locator('button.jp-mod-accept').click();
+  await expect
+    .poll(() => notes(page, 'warning', "fetching this request's uploads"))
+    .toBe(1);
+  await expect(upload).toHaveCount(1);
+  await request.post(`${HUB}/_control/fetch`, { data: { running: false } });
+});
+
+test('a hub request groups and names its uploaders, an empty name reads anonymous', async ({
+  page,
+  request
+}) => {
+  // the hub listing's uploader field, shown as the standalone request shows it
+  await openPanel(page);
+  const created = await api(page, 'POST', `${API}/requests`, {
+    name: 'Name Inbox'
+  });
+  for (const [upload_id, filename, uploader] of [
+    ['u1', 'ada.csv', 'Ada'],
+    ['u2', 'old.csv', ''],
+    ['u3', 'ada2.csv', 'Ada']
+  ]) {
+    await request.post(`${HUB}/_control/upload`, {
+      data: {
+        request_id: created.data.id,
+        upload_id,
+        filename,
+        uploader
+      }
+    });
+  }
+  await refreshPanel(page);
+  const row = page.locator(`${PANEL} .jp-ShareFilesPanel-item`, {
+    hasText: 'Name Inbox'
+  });
+  await row.locator('.jp-ShareFilesPanel-itemHeader').click();
+  await expect(
+    row
+      .locator('.jp-ShareFilesPanel-uploaderHeader')
+      .locator('.jp-ShareFilesPanel-uploaderName')
+  ).toHaveText(['Ada', 'anonymous']);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'ada.csv' })
+  ).toHaveCount(1);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'ada2.csv' })
+  ).toHaveCount(1);
+  await expect(
+    row.locator('.jp-ShareFilesPanel-entry', { hasText: 'old.csv' })
+  ).toHaveCount(1);
 });
 
 // --------------------------------------------------------------------------- //

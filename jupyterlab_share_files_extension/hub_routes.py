@@ -8,9 +8,9 @@ the same ``api/*`` paths with the same response shapes - only the backend
 changes: paths are sent to the hub, which copies the bytes with its own
 transfer job, and recipients are served by the hub's fileshare app.
 
-What has no hub equivalent is simply not mounted: removing a single upload,
-downloading a connected entry through the lab, and the per-user Cloudflare
-tunnel. The tunnel toggle survives with a new meaning - every hub record
+What has no hub equivalent is simply not mounted: downloading a connected
+entry through the lab and the per-user Cloudflare tunnel. The tunnel toggle
+survives with a new meaning - every hub record
 carries its own tunnel switch, and the toggle flips them all and sets the
 default for the next one. A connection is another user's record, read and
 written through its link as a recipient's browser does: the hub answers 404
@@ -255,19 +255,23 @@ def request_from_item(
     excluded: Sequence[str] = EXCLUDED_NAMES,
 ) -> dict:
     """One hub ``items`` row of kind request plus its uploads -> the panel's
-    request shape. The hub does not group uploads by uploader, so every
-    upload sits in one group; ``upload_id`` rides on the entry for fetch."""
-    entries = []
+    request shape. The hub names the uploader each upload carries and keeps no
+    separate identity for one, so uploads are grouped by that name and an
+    upload made before the hub returned a name shows as anonymous;
+    ``upload_id`` rides on the entry for fetch and remove."""
+    groups: dict[str, list[dict]] = {}
     for u in uploads or []:
         if is_excluded_path(u.get("filename", ""), excluded):
             continue
-        entries.append({
+        name = str(u.get("uploader") or "")
+        groups.setdefault(name, []).append({
             "name": u.get("filename", ""),
             "type": "file",
             "size": int(u.get("size") or 0),
             "upload_id": u.get("upload_id", ""),
             "mtime": _ts(u.get("uploaded_at")),
         })
+    entries = [e for group in groups.values() for e in group]
     last_upload = max((e["mtime"] for e in entries), default=0)
     row = {
         "id": item.get("id", ""),
@@ -278,9 +282,10 @@ def request_from_item(
         "upload_count": len(entries),
         "last_upload_at": last_upload,
         "last_seen_upload_at": last_seen,
-        "uploaders": (
-            [{"hash": "Uploads", "name": "Uploads", "entries": entries}] if entries else []
-        ),
+        "uploaders": [
+            {"hash": name, "name": name or "anonymous", "entries": group}
+            for name, group in groups.items()
+        ],
         "link": link,
         "has_password": bool(item.get("has_password")),
         "tunnel": bool(item.get("tunnel")),
@@ -1316,6 +1321,25 @@ class HubUploadFetchHandler(_HubBase):
         self.write_json({"ok": True, "path": path or rel})
 
 
+class HubUploadDeleteHandler(_HubBase):
+    """api/requests/<id>/uploads/<upload_id> - remove one recipient upload
+    from the hub (hub author, 2026-11-18). The bytes are the hub's, so the hub
+    does the removing. Its 404 (no such upload, or one still arriving with no
+    commit marker) and 409 ``fetch_running`` (a whole-inbox fetch is running)
+    are relayed as they are; the panel has its own sentence for each.
+    """
+
+    @tornado.web.authenticated
+    async def delete(self, id_, upload_id):
+        answer = await self._hub("DELETE", f"requests/{id_}/uploads/{upload_id}")
+        if answer is None:
+            return
+        code, data = answer
+        if code != 204:
+            return self._relay(code, data)
+        self.write_json({"ok": True})
+
+
 class HubRecordSaveHandler(_HubBase):
     """api/<shares|requests>/<id>/save - a whole record written into the
     workspace, as its files or as one zip (ACC-SAVE-171).
@@ -2151,6 +2175,7 @@ def hub_handlers(base_url: str, ns: str) -> list:
         (api("shares", HUB_ID, "name"), HubShareNameHandler),
         (api("requests"), HubRequestsListHandler),
         (api("requests", HUB_ID), HubRequestItemHandler),
+        (api("requests", HUB_ID, "uploads", UPLOAD_ID), HubUploadDeleteHandler),
         (api("requests", HUB_ID, "uploads", UPLOAD_ID, "fetch"), HubUploadFetchHandler),
         (api("connections"), HubConnectionsHandler),
         (api("connections", r"([^/]+)", "save"), HubConnectionSaveHandler),

@@ -247,6 +247,73 @@ def _token_expiry(token: str) -> int:
     return int(head) if head.isdigit() else 0
 
 
+class _DownloadMixin:
+    """Stream one file, or one folder as a zip, to the browser. Shared by the
+    unauthenticated public routes."""
+
+    async def _serve_zip(self, directory: Path, name: str, prefix: str):
+        """Stream ``directory`` as ``<name>.zip``, members named under
+        ``prefix`` ('' for bare relative names). Every chunk read goes
+        through zipfile's compressor and straight to the response, so one
+        chunk and the compressor's state are all that is held; no
+        Content-Length, the archive's size is known only at its end."""
+        self.set_header("Content-Type", "application/zip")
+        # RFC 5987 form: a plain filename= is latin-1 only, and tornado refuses
+        # a header value with a character above U+00FF
+        self.set_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(name + ".zip"))
+        sink = _ZipSink()
+        try:
+            with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED) as zf:
+                for root, _dirs, files in os.walk(directory):
+                    for fname in files:
+                        abs_path = os.path.join(root, fname)
+                        arcname = os.path.join(prefix, os.path.relpath(abs_path, directory))
+                        # a date outside zip's 1980-2107 range is clamped, as
+                        # every archiver does, instead of failing the folder
+                        info = zipfile.ZipInfo.from_file(abs_path, arcname, strict_timestamps=False)
+                        info.compress_type = zipfile.ZIP_DEFLATED
+                        with zf.open(info, "w") as dst, open(abs_path, "rb") as src:
+                            while chunk := src.read(_EXTRACT_CHUNK_BYTES):
+                                dst.write(chunk)
+                                self.write(sink.take())
+                                await self.flush()
+        except (OSError, ValueError):
+            # zipfile refuses a member whose name is not UTF-8 with a ValueError
+            if not self._headers_written:
+                # the first member failed before any byte was out: a status
+                # line is the only way the browser can name the failure, and
+                # the answer is the sentence every public error carries, not
+                # the archive
+                self.clear_header("Content-Disposition")
+                self.set_header("Content-Type", "application/json")
+                self.set_status(500)
+                self.finish(json.dumps({"error": "Could not read the folder"}))
+                return
+            # a member vanished under the walk, or the browser gave up: bytes
+            # are out, so the closed connection is what marks the download
+            # failed - a finished answer would pass a cut archive as complete
+            self.request.connection.close()
+            return
+        # the central directory, written when the archive closed
+        self.write(sink.take())
+        await self.flush()
+        self.finish()
+
+    async def _serve_file(self, path: Path, name: str = ""):
+        """Stream one file; ``name`` names it in the answer, defaulting to the
+        file's own."""
+        self.set_header("Content-Type", "application/octet-stream")
+        self.set_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(name or path.name))
+        self.set_header("Content-Length", str(path.stat().st_size))
+        # flushed chunk by chunk: without the flush tornado keeps the whole
+        # file in its write buffer until finish()
+        with open(path, "rb") as f:
+            while chunk := f.read(_EXTRACT_CHUNK_BYTES):
+                self.write(chunk)
+                await self.flush()
+        self.finish()
+
+
 class _Base(APIHandler):
     """Common helpers: store factories, JSON body parsing, error reporting."""
 
@@ -544,7 +611,7 @@ class _PublicStaticFileHandler(StaticFileHandler):
         return super().head(path)
 
 
-class _PublicBase(tornado.web.RequestHandler):
+class _PublicBase(_DownloadMixin, tornado.web.RequestHandler):
     """Unauthenticated base for standalone pages and cross-peer endpoints.
 
     Extends plain tornado RequestHandler (not JupyterHandler) so we don't
@@ -554,54 +621,6 @@ class _PublicBase(tornado.web.RequestHandler):
 
     def check_xsrf_cookie(self):  # noqa: D401
         return None
-
-    async def _serve_zip(self, directory: Path, name: str, prefix: str):
-        """Stream ``directory`` as ``<name>.zip``, members named under
-        ``prefix`` ('' for bare relative names). Every chunk read goes
-        through zipfile's compressor and straight to the response, so one
-        chunk and the compressor's state are all that is held; no
-        Content-Length, the archive's size is known only at its end."""
-        self.set_header("Content-Type", "application/zip")
-        # RFC 5987 form: a plain filename= is latin-1 only, and tornado refuses
-        # a header value with a character above U+00FF
-        self.set_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(name + ".zip"))
-        sink = _ZipSink()
-        try:
-            with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED) as zf:
-                for root, _dirs, files in os.walk(directory):
-                    for fname in files:
-                        abs_path = os.path.join(root, fname)
-                        arcname = os.path.join(prefix, os.path.relpath(abs_path, directory))
-                        # a date outside zip's 1980-2107 range is clamped, as
-                        # every archiver does, instead of failing the folder
-                        info = zipfile.ZipInfo.from_file(abs_path, arcname, strict_timestamps=False)
-                        info.compress_type = zipfile.ZIP_DEFLATED
-                        with zf.open(info, "w") as dst, open(abs_path, "rb") as src:
-                            while chunk := src.read(_EXTRACT_CHUNK_BYTES):
-                                dst.write(chunk)
-                                self.write(sink.take())
-                                await self.flush()
-        except (OSError, ValueError):
-            # zipfile refuses a member whose name is not UTF-8 with a ValueError
-            if not self._headers_written:
-                # the first member failed before any byte was out: a status
-                # line is the only way the browser can name the failure, and
-                # the answer is the sentence every public error carries, not
-                # the archive
-                self.clear_header("Content-Disposition")
-                self.set_header("Content-Type", "application/json")
-                self.set_status(500)
-                self.finish(json.dumps({"error": "Could not read the folder"}))
-                return
-            # a member vanished under the walk, or the browser gave up: bytes
-            # are out, so the closed connection is what marks the download
-            # failed - a finished answer would pass a cut archive as complete
-            self.request.connection.close()
-            return
-        # the central directory, written when the archive closed
-        self.write(sink.take())
-        await self.flush()
-        self.finish()
 
     def set_default_headers(self):
         # Cooperative call so this class never terminates the chain. Note the
@@ -2272,18 +2291,6 @@ class PublicShareDownloadHandler(_PublicBase):
             await self._serve_zip(target, target.name, target.name)
         else:
             await self._serve_file(target)
-
-    async def _serve_file(self, path: Path):
-        self.set_header("Content-Type", "application/octet-stream")
-        self.set_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(path.name))
-        self.set_header("Content-Length", str(path.stat().st_size))
-        # flushed chunk by chunk: without the flush tornado keeps the whole
-        # file in its write buffer until finish()
-        with open(path, "rb") as f:
-            while chunk := f.read(_EXTRACT_CHUNK_BYTES):
-                self.write(chunk)
-                await self.flush()
-        self.finish()
 
 
 class PublicShareDownloadAllHandler(_PublicBase):

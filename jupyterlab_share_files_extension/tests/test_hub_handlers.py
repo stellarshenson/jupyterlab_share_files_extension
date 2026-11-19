@@ -68,6 +68,8 @@ class FakeHub:
         self.tunnel_registered = True
         self.items: list[dict] = []
         self.uploads: dict[str, list[dict]] = {}
+        # the hub refuses every upload removal while a whole-inbox fetch runs
+        self.fetch_running = False
         self.overrides: dict[tuple[str, str], tuple[int, dict]] = {}
         self.unavailable = False
         self.raise_for: set[str] = set()
@@ -76,6 +78,9 @@ class FakeHub:
         self.pending_add: tuple[str, list[str]] | None = None
         # where a fetch writes, set by the fixture to the server's root
         self.workspace_root = ""
+        # the names every fetched record holds; a test adds `folder/file`
+        # to serve a folder entry
+        self.fetch_files = ["report.csv"]
         # how many switches on the hub answers `busy`, as it does while it
         # copies a record's files (DEF-HUB-128), and what each one runs
         self.busy_switches = 0
@@ -180,7 +185,10 @@ class FakeHub:
             if dest.exists():
                 return 400, {"status": 400, "message": "The files were not copied (bad_path)"}
             dest.mkdir(parents=True)
-            (dest / "report.csv").write_text("from the hub\n", encoding="utf-8")
+            for name in self.fetch_files:
+                path = dest / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("from the hub\n", encoding="utf-8")
             return 200, {"path": str(dest)}
         m = re.fullmatch(r"(shares|requests)/([^/]+)", path)
         if m and method == "DELETE":
@@ -218,6 +226,16 @@ class FakeHub:
         m = re.fullmatch(r"requests/([^/]+)/uploads", path)
         if m and method == "GET":
             return 200, {"uploads": list(self.uploads.get(m.group(1), []))}
+        m = re.fullmatch(r"requests/([^/]+)/uploads/([^/]+)", path)
+        if m and method == "DELETE":
+            if self.fetch_running:
+                return 409, {"reason": "fetch_running", "message": "A fetch of this inbox is running"}
+            rows = self.uploads.get(m.group(1), [])
+            kept = [u for u in rows if u["upload_id"] != m.group(2)]
+            if len(kept) == len(rows):
+                return 404, {"status": 404, "message": None}
+            self.uploads[m.group(1)] = kept
+            return 204, {}
         m = re.fullmatch(r"requests/([^/]+)/uploads/([^/]+)/fetch", path)
         if m and method == "POST":
             return 200, {"path": body["dest"] + "/report.csv"}
@@ -1797,6 +1815,31 @@ async def test_request_lifecycle_with_uploads_and_fetch(jp_fetch, fake_hub, jp_r
     assert _json(resp) == {"ok": True}
 
 
+async def test_removing_a_hub_upload_relays_204_404_and_409(jp_fetch, fake_hub):
+    """The lab's DELETE proxies to the hub's removal: 204 takes the upload
+    away, 404 stays 404 and 409 keeps the hub's `fetch_running` slug."""
+    row = _json(await _post(jp_fetch, "api", "requests", body={"name": "Inbox"}))
+    fake_hub.uploads[row["id"]] = [
+        {"upload_id": "u1", "filename": "a.csv", "size": 3, "sha256": "x", "uploader": "Ada",
+         "uploaded_at": "2026-09-03T21:00:00Z"},
+        {"upload_id": "u2", "filename": "b.csv", "size": 3, "sha256": "x", "uploader": "",
+         "uploaded_at": "2026-09-03T21:00:00Z"},
+    ]
+    resp = await jp_fetch(NS, "api", "requests", row["id"], "uploads", "u1", method="DELETE")
+    assert _json(resp) == {"ok": True}
+    assert ("DELETE", f"requests/{row['id']}/uploads/u1", None) in fake_hub.calls
+    assert [u["upload_id"] for u in fake_hub.uploads[row["id"]]] == ["u2"]
+    with pytest.raises(HTTPClientError) as err:
+        await jp_fetch(NS, "api", "requests", row["id"], "uploads", "u1", method="DELETE")
+    assert err.value.code == 404
+    fake_hub.fetch_running = True
+    with pytest.raises(HTTPClientError) as err:
+        await jp_fetch(NS, "api", "requests", row["id"], "uploads", "u2", method="DELETE")
+    assert err.value.code == 409
+    assert json.loads(err.value.response.body)["reason"] == "fetch_running"
+    assert [u["upload_id"] for u in fake_hub.uploads[row["id"]]] == ["u2"]
+
+
 async def test_fetch_picks_a_fresh_directory_and_refuses_a_missing_folder(jp_fetch, fake_hub, jp_root_dir):
     row = _json(await _post(jp_fetch, "api", "requests", body={"name": "Inbox"}))
     (jp_root_dir / "Inbox").mkdir()
@@ -2844,6 +2887,22 @@ async def test_one_entry_of_a_hub_share_is_moved_out_of_a_fetched_record(
     assert answer["path"] == "out/report.csv"
     assert (jp_root_dir / "out" / "report.csv").read_text() == "from the hub\n"
     assert [p.name for p in (jp_root_dir / "out").iterdir()] == ["report.csv"]
+
+
+async def test_a_folder_of_a_hub_share_is_moved_out_of_a_fetched_record(
+    jp_fetch, fake_hub, jp_root_dir
+):
+    """ACC-ROWS-237: the hub reads no folder by name either, so the record is
+    fetched whole and the folder is moved out of it; the rest goes."""
+    (jp_root_dir / "out").mkdir()
+    fake_hub.fetch_files = ["report.csv", "folder/inner.csv"]
+    row = _json(await _post(jp_fetch, "api", "shares", body={"name": "Picked", "paths": []}))
+    answer = _json(await _post(jp_fetch, "api", "shares", row["id"], "save",
+                               body={"target_dir": "out", "name": "folder"}))
+    assert answer["path"] == "out/folder"
+    assert (jp_root_dir / "out" / "folder" / "inner.csv").read_text() == "from the hub\n"
+    # the rest of the fetched record went with the staging folder
+    assert [p.name for p in (jp_root_dir / "out").iterdir()] == ["folder"]
 
 
 async def test_an_entry_the_record_does_not_hold_leaves_nothing_behind(
